@@ -34,12 +34,19 @@ jobs:
       - name: Typecheck and event validation
         run: npm run typecheck && npm test
       - name: Validate WhatsApp bot syntax
-        run: node --check bot/index.mjs
+        run: npm --prefix bot run check
+      - name: Validate Windows service scripts
+        shell: pwsh
+        run: |
+          [scriptblock]::Create((Get-Content -Raw bot/install-service.ps1)) | Out-Null
+          [scriptblock]::Create((Get-Content -Raw bot/uninstall-service.ps1)) | Out-Null
+          [scriptblock]::Create((Get-Content -Raw bot/run-service.ps1)) | Out-Null
       - name: Schema and functional database tests
         run: |
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/bootstrap.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/schema.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/whatsapp_bridge.sql
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913042848_whatsapp_bot_runtime.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/auction.sql
       - name: Concurrent buyouts and duplicate events
         run: python3 tests/concurrency.py

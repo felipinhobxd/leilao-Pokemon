@@ -56,6 +56,7 @@ jobs:
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913045819_auction_lot_edit_guard.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913045826_card_images_bucket.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913045842_create_auction_wizard_rpc.sql
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913050837_auction_lot_sequence_service_role_grant.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/auction.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/auction-wizard.sql
       - name: Concurrent buyouts and duplicate events

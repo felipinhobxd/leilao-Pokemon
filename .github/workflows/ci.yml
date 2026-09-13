@@ -33,10 +33,18 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Typecheck and event validation
         run: npm run typecheck && npm test
-      - name: Validate WhatsApp bot syntax
+      - name: Validate WhatsApp bot clean install and syntax
         run: |
-          npm --prefix bot ci --no-audit --no-fund
+          if [ ! -f bot/package-lock.json ]; then npm --prefix bot install --package-lock-only --ignore-scripts --no-audit --no-fund; fi
+          npm --prefix bot ci --ignore-scripts --no-audit --no-fund
           npm --prefix bot run check
+      - name: Upload generated bot lock
+        if: ${{ hashFiles('bot/package-lock.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: bot-package-lock
+          path: bot/package-lock.json
+          if-no-files-found: ignore
       - name: Validate Windows service scripts
         shell: pwsh
         run: |

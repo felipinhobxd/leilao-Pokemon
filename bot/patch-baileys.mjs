@@ -8,7 +8,6 @@ const libDir = path.dirname(baileysEntry);
 const recvTarget = path.join(libDir, "Socket", "messages-recv.js");
 const socketTarget = path.join(libDir, "Socket", "socket.js");
 const companionTarget = path.join(libDir, "Utils", "companion-reg-client-utils.js");
-const processMessageTarget = path.join(libDir, "Utils", "process-message.js");
 const checkOnly = process.argv.includes("--check");
 
 function occurrences(source, needle) {
@@ -159,135 +158,13 @@ async function patchCompanionRegistrationRefresh() {
   return "applied";
 }
 
-const pollUpdateReplacement = `} else if (content?.pollUpdateMessage) {
-        // LEILAO_POLL_UPDATES_PATCH_V2: rc14 shipped this handler commented out and PN-only decryption breaks during LID migration.
-        const creationMsgKey = content.pollUpdateMessage.pollCreationMessageKey;
-        const pollMsg = await getMessage(creationMsgKey);
-        if (pollMsg) {
-            const meIdNormalised = jidNormalizedUser(meId);
-            const pollEncKey = pollMsg.messageContextInfo?.messageSecret;
-            if (!pollEncKey) {
-                logger?.warn({ creationMsgKey }, 'poll creation message has no messageSecret, cannot decrypt update');
-            }
-            else {
-                const addCandidate = (list, jid) => {
-                    if (!jid || String(jid).endsWith('@g.us')) return;
-                    const normalized = jidNormalizedUser(jid);
-                    if (normalized && !list.includes(normalized)) list.push(normalized);
-                };
-                const expandCandidate = async (list, jid) => {
-                    if (!jid || String(jid).endsWith('@g.us')) return;
-                    const normalized = jidNormalizedUser(jid);
-                    addCandidate(list, normalized);
-                    try {
-                        if (isLidUser(normalized)) {
-                            addCandidate(list, await signalRepository.lidMapping.getPNForLID(normalized));
-                        }
-                        else if (String(normalized).endsWith('@s.whatsapp.net')) {
-                            addCandidate(list, await signalRepository.lidMapping.getLIDForPN(normalized));
-                        }
-                    }
-                    catch {}
-                };
-
-                const creatorCandidates = [];
-                await expandCandidate(creatorCandidates, creationMsgKey.participant);
-                await expandCandidate(creatorCandidates, creationMsgKey.participantAlt);
-                await expandCandidate(creatorCandidates, getKeyAuthor(creationMsgKey, meIdNormalised));
-                await expandCandidate(creatorCandidates, meIdNormalised);
-
-                const voterCandidates = [];
-                await expandCandidate(voterCandidates, message.key.participant);
-                await expandCandidate(voterCandidates, message.key.participantAlt);
-                await expandCandidate(voterCandidates, message.key.remoteJidAlt);
-                await expandCandidate(voterCandidates, getKeyAuthor(message.key, meIdNormalised));
-
-                let voteMsg;
-                let decryptContext;
-                let lastError;
-                for (const pollCreatorJid of creatorCandidates) {
-                    for (const voterJid of voterCandidates) {
-                        try {
-                            voteMsg = decryptPollVote(content.pollUpdateMessage.vote, {
-                                pollEncKey,
-                                pollCreatorJid,
-                                pollMsgId: creationMsgKey.id,
-                                voterJid
-                            });
-                            decryptContext = { pollCreatorJid, voterJid };
-                            break;
-                        }
-                        catch (err) {
-                            lastError = err;
-                        }
-                    }
-                    if (voteMsg) break;
-                }
-
-                if (!voteMsg) {
-                    logger?.warn({
-                        err: lastError,
-                        creationMsgKey,
-                        creatorCandidates,
-                        voterCandidates
-                    }, 'failed to decrypt poll vote with PN/LID candidates');
-                }
-                else {
-                    logger?.debug({ creationMsgKey, decryptContext }, 'poll vote decrypted with PN/LID compatibility');
-                    const rawTimestamp = content.pollUpdateMessage.senderTimestampMs;
-                    const senderTimestampMs = Number(rawTimestamp?.toString?.() ?? rawTimestamp ?? Date.now());
-                    ev.emit('messages.update', [{
-                            key: creationMsgKey,
-                            update: {
-                                pollUpdates: [{
-                                        pollUpdateMessageKey: message.key,
-                                        vote: voteMsg,
-                                        senderTimestampMs
-                                    }]
-                            }
-                        }]);
-                }
-            }
-        }
-        else {
-            logger?.warn({ creationMsgKey }, 'poll creation message not found, cannot decrypt update');
-        }
-    }
-    `;
-
-async function patchPollVoteDecryption() {
-  let source = await readFile(processMessageTarget, "utf8");
-  if (source.includes("LEILAO_POLL_UPDATES_PATCH_V2")) return "already";
-  if (checkOnly) throw new Error("Baileys PN/LID poll vote decryption patch is missing.");
-
-  if (source.includes("LEILAO_POLL_UPDATES_PATCH:")) {
-    const legacyPatchedHandler = /}\s*else if \(content\?\.pollUpdateMessage\) \{[\s\S]*?LEILAO_POLL_UPDATES_PATCH:[\s\S]*?\n    }\n    (?=if \(Object\.keys\(chat\)\.length > 1\))/;
-    const legacyMatch = source.match(legacyPatchedHandler);
-    if (!legacyMatch || legacyMatch.length !== 1) {
-      throw new Error("Could not locate the previous Leilao poll patch. Refusing to upgrade an unknown build.");
-    }
-    source = source.replace(legacyPatchedHandler, pollUpdateReplacement);
-  } else {
-    const commentedPollHandler = /}\s*\/\*\s*else if\(content\?\.pollUpdateMessage\) \{[\s\S]*?}\s*\*\/\s*(?=if \(Object\.keys\(chat\)\.length > 1\))/;
-    const match = source.match(commentedPollHandler);
-    if (!match || match.length !== 1) {
-      throw new Error("Could not locate rc14's commented poll-update handler. Refusing to patch an unknown build.");
-    }
-    source = source.replace(commentedPollHandler, pollUpdateReplacement);
-  }
-
-  await writeFile(processMessageTarget, source, "utf8");
-  return "applied";
-}
-
 const ackResult = await patchPreLoginAck();
 const refreshResult = await patchCompanionRegistrationRefresh();
-const pollResult = await patchPollVoteDecryption();
 
 if (checkOnly) {
-  console.log("Baileys QR pairing and PN/LID poll vote patches verified.");
+  console.log("Baileys QR pairing patches verified. Poll votes are handled by the bot without patching process-message.js.");
 } else {
   console.log(`Baileys pre-login ACK patch: ${ackResult}.`);
   console.log(`Baileys companion_reg_refresh patch: ${refreshResult}.`);
-  console.log(`Baileys PN/LID poll vote decryption patch: ${pollResult}.`);
+  console.log("Baileys poll vote patch: not needed (raw pollUpdate handled by bot)." );
 }

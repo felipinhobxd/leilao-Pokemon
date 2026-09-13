@@ -37,8 +37,8 @@ $currentUser = "$env:USERDOMAIN\$env:USERNAME"
 $arguments = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runner`" -NodePath `"$node`""
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arguments
 $triggers = @(
-  New-ScheduledTaskTrigger -AtLogOn -User $currentUser,
-  New-ScheduledTaskTrigger -AtStartup
+  (New-ScheduledTaskTrigger -AtLogOn -User $currentUser)
+  (New-ScheduledTaskTrigger -AtStartup)
 )
 $principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet `
@@ -69,4 +69,4 @@ Write-Host ""
 Write-Host "Bot instalado em segundo plano com sucesso." -ForegroundColor Green
 Write-Host "Tarefa: $taskName"
 Write-Host "Logs: $(Join-Path $PSScriptRoot 'logs\bot-service.log')"
-Write-Host "O bot inicia automaticamente após reboot/login e reinicia se o supervisor encerrar." 
+Write-Host "O bot inicia automaticamente após reboot/login e reinicia se o supervisor encerrar."

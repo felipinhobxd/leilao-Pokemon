@@ -81,3 +81,13 @@ jobs:
         run: npm run build
       - name: Authenticated route guards
         run: node tests/smoke.mjs
+
+  windows-startup:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Web and bot process lifecycle
+        run: node --test tests/start-all.test.mjs

@@ -36,14 +36,24 @@ test("detects Japanese characters without relying on the Pokemon name", () => {
 });
 
 test("extracts visible collector numbers", () => {
-  assert.deepEqual(extractCardNumber("©1999 Nintendo 35/64"), { cardNumber: "35/64", localId: "35", denominator: 64 });
-  assert.deepEqual(extractCardNumber("TG05/TG30"), { cardNumber: "TG05/TG30", localId: "TG05", denominator: 30 });
-  assert.deepEqual(extractCardNumber("SV001/SV122"), { cardNumber: "SV001/SV122", localId: "SV001", denominator: 122 });
-  assert.deepEqual(extractCardNumber("001 / 165"), { cardNumber: "001/165", localId: "001", denominator: 165 });
+  for (const [text, number, localId, denominator] of [
+    ["©1999 Nintendo 35/64", "35/64", "35", 64],
+    ["TG05/TG30", "TG05/TG30", "TG05", 30],
+    ["SV001/SV122", "SV001/SV122", "SV001", 122],
+    ["001 / 165", "001/165", "001", 165],
+  ]) {
+    const result = extractCardNumber(text);
+    assert.equal(result.cardNumber, number);
+    assert.equal(result.localId, localId);
+    assert.equal(result.denominator, denominator);
+    assert.ok(result.localIdVariants.includes(localId));
+  }
 });
 
 test("extracts a plausible top-line name but rejects rules text", () => {
   assert.equal(extractLikelyName("Exeggutor        HP 90\nSTAGE 1\nEvolves from Exeggcute"), "Exeggutor");
+  assert.equal(extractLikelyName("Mr. Mime HP 90"), "Mr. Mime");
+  assert.equal(extractLikelyName("Iron Hands HP 120"), "Iron Hands");
   assert.equal(extractLikelyName("Weakness Resistance Retreat\nDuring your next turn"), "");
 });
 
@@ -128,7 +138,11 @@ test("ranking 50-image-equivalent candidate batches is cheap and deterministic",
       hp: index === 0 ? 60 : 50,
       image: null,
     }));
-    assert.equal(rankRecognitionCandidates(candidates, hints).length, 5);
+    const ranked = rankRecognitionCandidates(candidates, hints);
+    assert.ok(ranked.length > 0 && ranked.length <= 5);
+    assert.equal(ranked[0].id, `${image}-0`);
+    assert.ok(ranked.every(candidate => candidate.evidence.strongEvidence && candidate.score >= 45));
+    assert.deepEqual(ranked, rankRecognitionCandidates(candidates, hints));
   }
   assert.ok(performance.now() - started < 1500);
 });

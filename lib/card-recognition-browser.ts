@@ -16,10 +16,12 @@ import {
   type RecognitionResult,
 } from "@/lib/card-recognition-core";
 
+import { needsVisualFallback, recognizeVisually, shutdownVisualRecognition } from "@/lib/card-recognition-visual";
+
 const TESSERACT_VERSION = "7.0.0";
 const TESSERACT_SCRIPT = `https://cdn.jsdelivr.net/npm/tesseract.js@${TESSERACT_VERSION}/dist/tesseract.min.js`;
 const TCGDEX_BASE = "https://api.tcgdex.net/v2";
-const SESSION_CACHE_PREFIX = "leilao:card-recognition:v2:";
+const SESSION_CACHE_PREFIX = "leilao:card-recognition:v3:";
 const CATALOG_TTL_MS = 30 * 60_000;
 const MAX_CATALOG_DETAILS = 4;
 const DETECTION_WIDTH = 300;
@@ -352,9 +354,11 @@ async function recognizeWithWorker(
   psm: "6" | "7" | "11" | "13",
   whitelist = "",
 ): Promise<OcrRead> {
-  await worker.setParameters({ tessedit_pageseg_mode: psm, tessedit_char_whitelist: whitelist });
-  const result = await worker.recognize(canvas, { rotateAuto: false });
-  return { text: String(result.data.text ?? "").trim(), confidence: Number(result.data.confidence ?? 0) };
+  try {
+    await worker.setParameters({ tessedit_pageseg_mode: psm, tessedit_char_whitelist: whitelist });
+    const result = await worker.recognize(canvas, { rotateAuto: false });
+    return { text: String(result.data.text ?? "").trim(), confidence: Number(result.data.confidence ?? 0) };
+  } finally { canvas.width = canvas.height = 0; }
 }
 
 function nameReadScore(read: OcrRead) {
@@ -368,7 +372,7 @@ async function recognizeName(source: HTMLCanvasElement, box: CardBox, worker: Te
   const reads: OcrRead[] = [];
   const primary = cropCardRegion(source, box, 0, 0, 0.94, 0.14, "gray");
   reads.push(await recognizeWithWorker(worker, primary, "6"));
-  if (nameReadScore(reads[0]) < 45) reads.push(await recognizeWithWorker(worker, primary, "11"));
+  if (nameReadScore(reads[0]) < 45) reads.push(await recognizeWithWorker(worker, cropCardRegion(source, box, 0, 0, 0.94, 0.14, "gray"), "11"));
   if (Math.max(...reads.map(nameReadScore)) < 50) {
     const alternate = cropCardRegion(source, box, 0, 0, 0.94, 0.19, "contrast");
     reads.push(await recognizeWithWorker(worker, alternate, "11"));
@@ -445,12 +449,14 @@ function sessionRecognition(hash: string) {
     const raw = sessionStorage.getItem(`${SESSION_CACHE_PREFIX}${hash}`);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as RecognitionResult;
+    if (recognitionMemoryCache.size >= 64) recognitionMemoryCache.delete(recognitionMemoryCache.keys().next().value!);
     recognitionMemoryCache.set(hash, parsed);
     return { ...parsed, source: "cache" as const, elapsedMs: 0, catalogRequests: 0 };
   } catch { return null; }
 }
 
 function saveSessionRecognition(hash: string, result: RecognitionResult) {
+  if (recognitionMemoryCache.size >= 64) recognitionMemoryCache.delete(recognitionMemoryCache.keys().next().value!);
   recognitionMemoryCache.set(hash, result);
   try { sessionStorage.setItem(`${SESSION_CACHE_PREFIX}${hash}`, JSON.stringify(result)); } catch { /* cache is optional */ }
 }
@@ -464,6 +470,7 @@ async function fetchCatalog<T>(url: string, stats: CatalogStats): Promise<T> {
   if (response.status === 404) throw Object.assign(new Error("not-found"), { status: 404 });
   if (!response.ok) throw new Error(`TCGdex respondeu ${response.status}.`);
   const value = await response.json() as T;
+  if (catalogCache.size >= 256) catalogCache.delete(catalogCache.keys().next().value!);
   catalogCache.set(url, { expires: Date.now() + CATALOG_TTL_MS, value });
   return value;
 }
@@ -582,7 +589,7 @@ async function candidatesForLanguage(hints: OcrHints, language: RecognitionLangu
   return rankRecognitionCandidates([...collected.values()], hints);
 }
 
-async function resolveCatalog(hints: OcrHints, preferredLanguage: string | undefined, stats: CatalogStats) {
+export async function resolveCatalog(hints: OcrHints, preferredLanguage: string | undefined, stats: CatalogStats) {
   const candidates = new Map<string, Omit<RecognitionCandidate, "score" | "evidence">>();
   const trustedLanguage = hints.language != null && hints.languageConfidence >= 55;
   for (const language of uniqueLanguages(hints, preferredLanguage)) {
@@ -594,7 +601,7 @@ async function resolveCatalog(hints: OcrHints, preferredLanguage: string | undef
       }
     } catch { /* one catalog/language failure must not block manual flow */ }
     const ranked = rankRecognitionCandidates([...candidates.values()], hints);
-    if (ranked.length && (strongEnough(ranked) || (trustedLanguage && ranked[0].score >= 82))) return ranked;
+    if (trustedLanguage && ranked[0]?.language === hints.language && (strongEnough(ranked) || ranked[0].score >= 82)) return ranked;
   }
   return rankRecognitionCandidates([...candidates.values()], hints);
 }
@@ -622,7 +629,7 @@ async function recognizeFromOrientedSource(source: HTMLCanvasElement, fileName: 
 
   const stats: CatalogStats = { requests: 0, queries: [] };
   onProgress?.("🃏 Confirmando no catálogo");
-  let ranked = await resolveCatalog(hints, preferredLanguage, stats);
+  let ranked: RecognitionCandidate[] = await resolveCatalog(hints, preferredLanguage, stats);
 
   const shouldTryJapanese = (!hints.language || hints.languageConfidence < 45) && (!ranked.length || ranked[0].score < 70);
   if (shouldTryJapanese) {
@@ -651,9 +658,12 @@ async function performRecognition(file: File, preferredLanguage?: string, onProg
 
   const decoded = await decodeImage(file);
   let source = sourceCanvasForImage(decoded);
+  const canvases = [source];
+  try {
   if (source.width > source.height * 1.08) {
     const clockwise = rotateCanvas(source, 90);
     const counterClockwise = rotateCanvas(source, 270);
+    canvases.push(clockwise, counterClockwise);
     source = locateCard(clockwise).score >= locateCard(counterClockwise).score ? clockwise : counterClockwise;
   }
 
@@ -661,12 +671,36 @@ async function performRecognition(file: File, preferredLanguage?: string, onProg
   // Cheap upside-down fallback only when the fast pass found no meaningful image evidence.
   if (!run.hints.name && !run.hints.localId && !run.ranked.length) {
     const rotated = rotateCanvas(source, 180);
+    canvases.push(rotated);
     run = await recognizeFromOrientedSource(rotated, file.name, preferredLanguage, onProgress);
     source = rotated;
   }
 
+  let visualUsed = false;
+  let visualBackend: string | undefined;
+  if (needsVisualFallback(run.ranked)) {
+    onProgress?.("🖼️ Comparando os candidatos visualmente");
+    const normalized = document.createElement("canvas");
+    normalized.width = 224; normalized.height = 312;
+    canvases.push(normalized);
+    const ctx = normalized.getContext("2d");
+    if (ctx) {
+      ctx.drawImage(source, run.box.x, run.box.y, run.box.width, run.box.height, 0, 0, 224, 312);
+      const blob = await new Promise<Blob | null>(resolve => normalized.toBlob(resolve, "image/png"));
+      if (blob) {
+        const visual = await recognizeVisually(blob, run.ranked);
+        run.ranked = visual.candidates;
+        visualUsed = visual.used;
+        visualBackend = visual.backend;
+      }
+    }
+  }
   const elapsedMs = Math.round(performance.now() - started);
   const result = resultFromCandidates(run.hints, run.ranked, elapsedMs, run.stats.requests, "ocr");
+  result.visualUsed = visualUsed;
+  result.visualBackend = visualBackend;
+  // Visual similarities have not been calibrated against real photos yet.
+  if (visualUsed && result.level === "high") { result.level = "medium"; result.confidence = Math.min(result.confidence, 79); }
   saveSessionRecognition(hash, result);
   pushDebug({
     file: { name: file.name, width: source.width, height: source.height },
@@ -685,6 +719,7 @@ async function performRecognition(file: File, preferredLanguage?: string, onProg
       ? `🟡 ${result.name ?? "Possível carta"} — ${result.confidence}% — confirme os dados`
       : "🔴 Não consegui identificar");
   return result;
+  } finally { for (const canvas of canvases) canvas.width = canvas.height = 0; }
 }
 
 export function recognizePokemonCard(file: File, preferredLanguage?: string, onProgress?: (message: string) => void) {
@@ -695,6 +730,8 @@ export function recognizePokemonCard(file: File, preferredLanguage?: string, onP
 }
 
 export async function shutdownCardRecognition() {
+  await recognitionTail;
+  shutdownVisualRecognition();
   const workers = [latinWorkerPromise, japaneseWorkerPromise].filter(Boolean) as Array<Promise<TesseractWorker>>;
   latinWorkerPromise = null;
   japaneseWorkerPromise = null;
@@ -707,5 +744,5 @@ export const cardRecognitionRuntime = {
   concurrency: 1,
   detectionWidth: DETECTION_WIDTH,
   maxCatalogDetailsPerSearch: MAX_CATALOG_DETAILS,
-  cacheVersion: 2,
+  cacheVersion: 3,
 };

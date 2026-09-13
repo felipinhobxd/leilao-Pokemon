@@ -39,6 +39,7 @@ export type RecognitionCandidate = {
   variant?: string;
   score: number;
   evidence?: CandidateEvidence;
+  visualSimilarity?: number;
 };
 
 export type RecognitionResult = {
@@ -54,11 +55,13 @@ export type RecognitionResult = {
   source: "cache" | "ocr";
   elapsedMs: number;
   catalogRequests: number;
+  visualUsed?: boolean;
+  visualBackend?: string;
 };
 
 export type ManualFieldMap = Partial<Record<RecognizableField, boolean>>;
 
-const CARD_NUMBER_RE = /([A-Z]{0,3}\s*[0-9OQILlS]{1,4})\s*[\\/|]\s*([A-Z]{0,3}\s*[0-9OQILlS]{1,4})/gi;
+const CARD_NUMBER_RE = /(?<![\p{L}\p{N}])([A-Z]{0,3}\s*[0-9OQILlS]{1,4})\s*[\\/|]\s*([A-Z]{0,3}\s*[0-9OQILlS]{1,4})/giu;
 const HP_RE = /\b(?:HP|PS)\s*([0-9]{2,3})\b/i;
 
 const stopNameLines = [
@@ -211,6 +214,10 @@ export function extractHp(text: string) {
 }
 
 function cleanNameLine(line: string) {
+  // Reject the original sentence before removing vocabulary; otherwise rule fragments become names.
+  const rawWords = normalizeForCompare(line).split(/\s+/);
+  if (rawWords.filter(word => rulesVocabulary.has(word)).length >= 2 ||
+      /\b(?:during|durante|evolves from|evolui de|flip a coin|this pokemon|este pokemon)\b/.test(normalizeForCompare(line))) return "";
   let value = normalizeRecognitionText(line)
     .replace(/\b(?:HP|PS)\s*\d{2,3}\b/gi, " ")
     .replace(/\b\d{2,4}\b/g, " ")
@@ -219,7 +226,7 @@ function cleanNameLine(line: string) {
   const tokens = value.match(/[\p{L}][\p{L}.'’\-♀♂]{1,24}/gu) ?? [];
   const useful = tokens.filter(token => {
     const normalized = normalizeForCompare(token);
-    if (!normalized || normalized.length < 3) return false;
+    if (!normalized || (normalized.length < 3 && !["mr", "jr", "ex", "gx", "v"].includes(normalized))) return false;
     if (stopNameLines.some(stop => normalized === normalizeForCompare(stop))) return false;
     if (rulesVocabulary.has(normalized)) return false;
     return true;

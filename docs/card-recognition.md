@@ -32,7 +32,7 @@ O OCR pesado é serializado em um worker reutilizável. Embora 2–3 jobs simult
 
 O catálogo possui cache em memória de 30 minutos e o reconhecimento completo possui cache por SHA-256 em memória + `sessionStorage`. A mesma imagem adicionada novamente na mesma sessão não repete o OCR pesado.
 
-As consultas ao TCGdex são limitadas: primeiro combinam `localId` e nome quando disponíveis, com paginação explícita de até 12 candidatos; fallback por número ou nome acontece apenas quando a busca mais restrita não encontra nada. Detalhes de no máximo 12 candidatos por idioma são carregados.
+As consultas ao TCGdex são limitadas: primeiro combinam `localId` e nome quando disponíveis, com paginação explícita de até 12 candidatos; fallback por número ou nome acontece apenas quando a busca mais restrita não encontra nada. Cada busca carrega detalhes de no máximo 4 candidatos.
 
 ## Campos automáticos
 
@@ -74,3 +74,46 @@ Cada reconhecimento mantém:
 - indicação quando o resultado veio do cache da sessão.
 
 Essas métricas ajudam a coletar um benchmark real sem enviar imagens ou telemetria adicional ao servidor.
+
+## Fallback visual local
+
+Após localizar/orientar a carta e consultar o catálogo, somente 2–5 candidatos com
+forte evidência OCR e imagens oficiais podem acionar DINOv2-small ONNX. Um acerto
+inequívoco de nome + número não cria worker neural. Nenhum modelo roda em idle.
+
+`@huggingface/transformers` 4.2.0 roda em worker dedicado: WebGPU q4, depois WASM q4,
+com int8 como último fallback. Pesos q4: 16,9 MB; int8: 24,4 MB, além do runtime.
+Modelo original e biblioteca: Apache-2.0. Fontes:
+https://huggingface.co/onnx-community/dinov2-small-ONNX/tree/main/onnx
+https://github.com/facebookresearch/dinov2/blob/main/LICENSE
+
+Uma foto normalizada é comparada serialmente às imagens oficiais. Similaridade
+cosseno só reordena candidatos quando há separação suficiente; nunca admite
+candidatos descartados pelo OCR. Resultados neurais continuam pedindo revisão,
+pois os limiares ainda não foram calibrados com fotos reais.
+
+O worker mantém até 64 embeddings oficiais, encerra após 2 minutos sem uso e é
+terminado após 90 segundos de espera sem resposta. Falhas preservam o resultado
+OCR e suspendem novas tentativas por 2 minutos. Cache completo SHA-256 v3 inclui
+`visualUsed` e `visualBackend`; pesos e embeddings não passam pelo Supabase.
+O cache em memória tem limites de 64 reconhecimentos e 256 respostas de catálogo.
+
+## Iniciar Web + bot no Windows
+
+Na raiz, depois de configurar os ambientes:
+
+```powershell
+npm.cmd ci
+npm.cmd --prefix bot ci
+npm.cmd run build
+npm.cmd start
+```
+
+`npm.cmd run start:web` inicia somente Next.js. O launcher usa o supervisor
+existente. Ctrl+C encerra a árvore de processos; falha de um componente encerra
+ambos. Um guard compartilhado pelo supervisor e modo foreground impede duas
+instâncias locais de usarem a mesma pasta de sessão, inclusive o serviço Windows.
+Não impede outra máquina de usar uma cópia da sessão.
+
+Fotos reais não estavam disponíveis nesta implementação: acurácia, uso de IA em
+X/Y fotos, requests TCGdex reais e consumo CPU/RAM/GPU não medidos.

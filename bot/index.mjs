@@ -1,3 +1,4 @@
+import "./session-guard.mjs";
 import makeWASocket, {
   BufferJSON,
   DisconnectReason,

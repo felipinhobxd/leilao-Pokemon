@@ -1,14 +1,15 @@
 {
   "name": "leilao-pokemon-whatsapp-bot",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "engines": {
     "node": ">=24"
   },
   "scripts": {
-    "start": "node --env-file=.env index.mjs",
-    "check": "node --check index.mjs"
+    "start": "node --env-file=.env service.mjs",
+    "start:foreground": "node --env-file=.env index.mjs",
+    "check": "node --check index.mjs && node --check service.mjs && node --check instrument.mjs && node --check sync-groups.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.116.0",

@@ -6,13 +6,17 @@ import type { Session } from "@supabase/supabase-js";
 import { buildPollPlan, cardConditions, cardLanguages, DEFAULT_POLL_OPTIONS, MAX_POLL_OPTIONS } from "@/lib/auction-wizard";
 import { brasiliaInputToIso, formatBrasiliaDateTime, formatBrasiliaTime, toBrasiliaInput } from "@/lib/brasilia-time";
 import { uploadCardImageBatch, type CardImageStage } from "@/lib/card-image";
+import { mergeRecognitionFields, type ManualFieldMap, type RecognitionCandidate, type RecognizableField } from "@/lib/card-recognition-core";
+import { recognizePokemonCard, shutdownCardRecognition } from "@/lib/card-recognition-browser";
 import { createPublicSupabaseClient } from "@/lib/supabase";
 
 type Group = { id: string; name: string; is_default: boolean };
+type RecognitionStage = "idle" | "queued" | "analyzing" | "identified" | "review" | "not-found" | "error" | "unavailable";
 type Draft = {
   id: string; file: File | null; preview: string; imageUrl: string; imageStage: CardImageStage; imageMessage: string;
   name: string; collection: string; cardNumber: string; variant: string; condition: string; language: string;
   lotNumber: string; startingPrice: string; increment: string; buyout: string; durationMinutes: string; optionCount: string; expanded: boolean;
+  recognitionStage: RecognitionStage; recognitionConfidence: number | null; recognitionMessage: string; recognitionCandidates: RecognitionCandidate[]; manualFields: ManualFieldMap;
 };
 type QueueView = {
   queue: { id: string; status: string; interval_seconds: number; starts_at: string; total_items: number };
@@ -26,6 +30,7 @@ type QueueView = {
 };
 
 const variants = ["Normal", "Holo", "Reverse Holo", "Full Art", "Illustration Rare", "Secret Rare", "Promo"];
+const recognizableFields = new Set<RecognizableField>(["name", "collection", "cardNumber", "language", "variant"]);
 const money = (value: number | null) => value == null || !Number.isFinite(value) ? "—" : new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
 const baseName = (name: string) => name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim();
 const defaultSchedule = () => toBrasiliaInput(new Date(Date.now() + 5 * 60_000));
@@ -36,7 +41,18 @@ function draftFor(file: File | null, preview: string, lot: number, expanded: boo
     name: file ? baseName(file.name) : "", collection: "", cardNumber: "",
     variant: "Normal", condition: cardConditions[0], language: "pt-BR", lotNumber: String(lot), startingPrice: "5", increment: "1",
     buyout: "", durationMinutes: "2", optionCount: String(DEFAULT_POLL_OPTIONS), expanded,
+    recognitionStage: file ? "idle" : "unavailable", recognitionConfidence: null, recognitionMessage: file ? "Aguardando reconhecimento local" : "Adicione uma imagem para reconhecer", recognitionCandidates: [], manualFields: {},
   };
+}
+
+function recognitionLabel(card: Draft) {
+  if (card.recognitionStage === "identified") return `✅ Carta identificada ${card.recognitionConfidence ?? 0}%`;
+  if (card.recognitionStage === "review") return `🟡 Verifique os dados · ${card.recognitionConfidence ?? 0}%`;
+  if (card.recognitionStage === "not-found") return "🔴 Não consegui identificar com segurança";
+  if (card.recognitionStage === "error") return "⚠ Reconhecimento indisponível";
+  if (card.recognitionStage === "queued") return "🔍 Na fila de reconhecimento…";
+  if (card.recognitionStage === "analyzing") return `🔍 ${card.recognitionMessage || "Analisando localmente…"}`;
+  return card.recognitionMessage;
 }
 
 export default function BulkAuctionWizard() {
@@ -66,6 +82,7 @@ export default function BulkAuctionWizard() {
   const [bulkIncrement, setBulkIncrement] = useState("1");
   const [bulkDuration, setBulkDuration] = useState("2");
   const previewUrls = useRef(new Set<string>());
+  const recognitionInFlight = useRef(new Set<string>());
   const submission = useRef<{ fingerprint: string; eventId: string } | null>(null);
 
   async function authFetch(url: string, init?: RequestInit) {
@@ -100,7 +117,11 @@ export default function BulkAuctionWizard() {
     return () => { cancelled = true; };
   }, [db]);
 
-  useEffect(() => () => { for (const url of previewUrls.current) URL.revokeObjectURL(url); previewUrls.current.clear(); }, []);
+  useEffect(() => () => {
+    for (const url of previewUrls.current) URL.revokeObjectURL(url);
+    previewUrls.current.clear();
+    void shutdownCardRecognition();
+  }, []);
 
   useEffect(() => {
     if (!queueId) return;
@@ -123,8 +144,76 @@ export default function BulkAuctionWizard() {
   }, [intervalValue, intervalUnit]);
   const startInstant = useMemo(() => publication === "now" ? new Date() : (() => { const iso = brasiliaInputToIso(scheduledInput); return iso ? new Date(iso) : null; })(), [publication, scheduledInput]);
 
-  function mutateCard(id: string, patch: Partial<Draft>) { submission.current = null; setCards(current => current.map(card => card.id === id ? { ...card, ...patch } : card)); }
-  function applyAll<K extends keyof Draft>(key: K, value: Draft[K]) { submission.current = null; setCards(current => current.map(card => ({ ...card, [key]: value }))); }
+  function mutateCard(id: string, patch: Partial<Draft>, markManual = true) {
+    submission.current = null;
+    setCards(current => current.map(card => {
+      if (card.id !== id) return card;
+      const manualFields = { ...card.manualFields };
+      if (markManual) for (const key of Object.keys(patch)) if (recognizableFields.has(key as RecognizableField)) manualFields[key as RecognizableField] = true;
+      return { ...card, ...patch, manualFields };
+    }));
+  }
+  function applyAll<K extends keyof Draft>(key: K, value: Draft[K]) {
+    submission.current = null;
+    setCards(current => current.map(card => ({
+      ...card,
+      [key]: value,
+      manualFields: recognizableFields.has(key as RecognizableField) ? { ...card.manualFields, [key]: true } : card.manualFields,
+    })));
+  }
+
+  async function identifyCard(id: string, file: File, force = false) {
+    if (recognitionInFlight.current.has(id)) return;
+    recognitionInFlight.current.add(id);
+    setCards(current => current.map(card => card.id === id ? { ...card, recognitionStage: "queued", recognitionMessage: "Na fila de reconhecimento…" } : card));
+    const preferredLanguage = cards.find(card => card.id === id)?.language;
+    try {
+      const result = await recognizePokemonCard(file, preferredLanguage, message => {
+        setCards(current => current.map(card => card.id === id ? { ...card, recognitionStage: "analyzing", recognitionMessage: message } : card));
+      });
+      setCards(current => current.map(card => {
+        if (card.id !== id) return card;
+        const recognized = mergeRecognitionFields(card as unknown as Record<string, unknown>, card.manualFields, result, force) as Partial<Draft>;
+        const recognitionStage: RecognitionStage = result.level === "high" ? "identified" : result.level === "medium" ? "review" : "not-found";
+        return {
+          ...card,
+          ...recognized,
+          recognitionStage,
+          recognitionConfidence: result.confidence,
+          recognitionMessage: result.source === "cache" ? "Resultado reutilizado do cache local" : `${result.elapsedMs} ms · ${result.catalogRequests} consulta(s) ao catálogo`,
+          recognitionCandidates: result.candidates,
+          expanded: card.expanded || result.level !== "high",
+        };
+      }));
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "Falha no reconhecimento local.";
+      setCards(current => current.map(card => card.id === id ? { ...card, recognitionStage: "error", recognitionMessage: `${message} Preencha manualmente normalmente.` } : card));
+    } finally {
+      recognitionInFlight.current.delete(id);
+    }
+  }
+
+  function useCandidate(id: string, candidate: RecognitionCandidate) {
+    submission.current = null;
+    setCards(current => current.map(card => card.id !== id ? card : {
+      ...card,
+      name: candidate.name,
+      collection: candidate.collection,
+      cardNumber: candidate.cardNumber,
+      language: candidate.language,
+      variant: candidate.variant ?? card.variant,
+      manualFields: { ...card.manualFields, name: true, collection: true, cardNumber: true, language: true, ...(candidate.variant ? { variant: true } : {}) },
+      recognitionStage: "identified",
+      recognitionConfidence: Math.max(card.recognitionConfidence ?? 0, candidate.score),
+      recognitionMessage: "Candidato escolhido manualmente",
+    }));
+  }
+
+  useEffect(() => {
+    for (const card of cards) {
+      if (card.file && card.recognitionStage === "idle" && !recognitionInFlight.current.has(card.id)) void identifyCard(card.id, card.file);
+    }
+  }, [cards]);
 
   function addFiles(filesLike: FileList | File[]) {
     const files = Array.from(filesLike).filter(file => ["image/jpeg", "image/png", "image/webp"].includes(file.type));
@@ -289,9 +378,9 @@ export default function BulkAuctionWizard() {
     <nav className="batch-steps">{["Cartas", "Valores", "Publicação", "Revisar"].map((label, index) => <button key={label} className={step === index + 1 ? "active" : step > index + 1 ? "done" : ""} onClick={() => index + 1 < step && setStep(index + 1)}>{index + 1}. {label}</button>)}</nav>
     {error && <p className="alert" role="alert">{error}</p>}
 
-    {step === 1 && <><section className="panel drop-panel" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); addFiles(event.dataTransfer.files); }}><p className="eyebrow">ETAPA 1</p><h2>Adicionar cartas</h2><p className="muted">Arraste 1, 20, 50 ou mais imagens. Cada uma vira uma carta independente.</p><div className="actions"><label className="button-like">＋ Selecionar imagens<input hidden type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={event => { if (event.target.files) addFiles(event.target.files); event.currentTarget.value = ""; }} /></label><button className="secondary" type="button" onClick={addEmpty}>Adicionar sem imagem</button></div></section>
-      {!!cards.length && <section className="panel"><div className="panel-title"><div><h2>{cards.length} carta(s)</h2><p className="muted">A ordem é a ordem de publicação.</p></div></div><div className="bulk-bar"><label>Coleção para todas<input value={bulkCollection} onChange={e => setBulkCollection(e.target.value)} /></label><button onClick={() => applyAll("collection", bulkCollection)}>Aplicar</button><label>Idioma para todas<select value={bulkLanguage} onChange={e => setBulkLanguage(e.target.value)}>{cardLanguages.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label><button onClick={() => applyAll("language", bulkLanguage)}>Aplicar</button><label>Condição para todas<select value={bulkCondition} onChange={e => setBulkCondition(e.target.value)}>{cardConditions.map(item => <option key={item}>{item}</option>)}</select></label><button onClick={() => applyAll("condition", bulkCondition)}>Aplicar</button></div>
-        <div className="draft-list">{cards.map((card, index) => <article key={card.id} className="draft-card" draggable onDragStart={() => setDragging(index)} onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); if (dragging != null) moveCard(dragging, index); setDragging(null); }}><div className="draft-head"><span className="drag-handle">☰</span><div className="draft-thumb">{card.preview || card.imageUrl ? <img src={card.preview || card.imageUrl} alt="" /> : <span>🃏</span>}</div><div className="draft-title"><strong>{index + 1}. {card.name || "Carta sem nome"}</strong><span>{card.collection || "Sem coleção"} · {card.cardNumber || "Sem número"}</span>{card.imageMessage && <span className={card.imageStage === "error" ? "alert" : "muted"}>{card.imageMessage}</span>}</div><div className="draft-actions"><button className="secondary" onClick={() => moveCard(index, index - 1)} disabled={index === 0}>↑</button><button className="secondary" onClick={() => moveCard(index, index + 1)} disabled={index === cards.length - 1}>↓</button><button className="secondary" onClick={() => mutateCard(card.id, { expanded: !card.expanded })}>{card.expanded ? "Fechar" : "Editar"}</button><button className="danger-link" onClick={() => removeCard(index)}>Remover</button></div></div>{card.expanded && <div className="draft-fields"><label>Nome<input value={card.name} onChange={e => mutateCard(card.id, { name: e.target.value })} /></label><label>Coleção / Edição<input value={card.collection} onChange={e => mutateCard(card.id, { collection: e.target.value })} /></label><label>Número da carta<input placeholder="35/64" value={card.cardNumber} onChange={e => mutateCard(card.id, { cardNumber: e.target.value })} /></label><label>Variante<input list={`variants-${card.id}`} value={card.variant} onChange={e => mutateCard(card.id, { variant: e.target.value })} /><datalist id={`variants-${card.id}`}>{variants.map(item => <option key={item} value={item} />)}</datalist></label><label>Condição<select value={card.condition} onChange={e => mutateCard(card.id, { condition: e.target.value })}>{cardConditions.map(item => <option key={item}>{item}</option>)}</select></label><label>Idioma<select value={card.language} onChange={e => mutateCard(card.id, { language: e.target.value })}>{cardLanguages.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>{!card.file && <label className="wide">URL HTTPS da imagem<input value={card.imageUrl} onChange={e => mutateCard(card.id, { imageUrl: e.target.value })} /></label>}{index > 0 && <button className="secondary wide" onClick={() => copyPrevious(index)}>Copiar configurações da carta anterior</button>}</div>}</article>)}</div></section>}
+    {step === 1 && <><section className="panel drop-panel" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); addFiles(event.dataTransfer.files); }}><p className="eyebrow">ETAPA 1</p><h2>Adicionar cartas</h2><p className="muted">Arraste 1, 20, 50 ou mais imagens. O reconhecimento roda localmente antes do upload; você pode editar enquanto a fila continua.</p><div className="actions"><label className="button-like">＋ Selecionar imagens<input hidden type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={event => { if (event.target.files) addFiles(event.target.files); event.currentTarget.value = ""; }} /></label><button className="secondary" type="button" onClick={addEmpty}>Adicionar sem imagem</button></div></section>
+      {!!cards.length && <section className="panel"><div className="panel-title"><div><h2>{cards.length} carta(s)</h2><p className="muted">A ordem é a ordem de publicação. OCR e catálogo são auxiliares: suas correções manuais nunca são sobrescritas automaticamente.</p></div></div><div className="bulk-bar"><label>Coleção para todas<input value={bulkCollection} onChange={e => setBulkCollection(e.target.value)} /></label><button onClick={() => applyAll("collection", bulkCollection)}>Aplicar</button><label>Idioma para todas<select value={bulkLanguage} onChange={e => setBulkLanguage(e.target.value)}>{cardLanguages.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label><button onClick={() => applyAll("language", bulkLanguage)}>Aplicar</button><label>Condição para todas<select value={bulkCondition} onChange={e => setBulkCondition(e.target.value)}>{cardConditions.map(item => <option key={item}>{item}</option>)}</select></label><button onClick={() => applyAll("condition", bulkCondition)}>Aplicar</button></div>
+        <div className="draft-list">{cards.map((card, index) => <article key={card.id} className="draft-card" draggable onDragStart={() => setDragging(index)} onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); if (dragging != null) moveCard(dragging, index); setDragging(null); }}><div className="draft-head"><span className="drag-handle">☰</span><div className="draft-thumb">{card.preview || card.imageUrl ? <img src={card.preview || card.imageUrl} alt="" /> : <span>🃏</span>}</div><div className="draft-title"><strong>{index + 1}. {card.name || "Carta sem nome"}</strong><span>{card.collection || "Sem coleção"} · {card.cardNumber || "Sem número"}</span>{card.recognitionMessage && <span className={`recognition-inline ${card.recognitionStage}`}>{recognitionLabel(card)}</span>}{card.imageMessage && card.imageStage !== "idle" && <span className={card.imageStage === "error" ? "alert" : "muted"}>Imagem: {card.imageMessage}</span>}</div><div className="draft-actions"><button className="secondary" onClick={() => moveCard(index, index - 1)} disabled={index === 0}>↑</button><button className="secondary" onClick={() => moveCard(index, index + 1)} disabled={index === cards.length - 1}>↓</button><button className="secondary" onClick={() => mutateCard(card.id, { expanded: !card.expanded }, false)}>{card.expanded ? "Fechar" : "Editar"}</button><button className="danger-link" onClick={() => removeCard(index)}>Remover</button></div></div>{card.expanded && <div className="draft-fields">{card.file && <div className={`recognition-box wide ${card.recognitionStage}`}><div><strong>{recognitionLabel(card)}</strong><small>{card.recognitionMessage}</small></div><button className="secondary" type="button" disabled={card.recognitionStage === "queued" || card.recognitionStage === "analyzing"} onClick={() => void identifyCard(card.id, card.file!, false)}>✨ {card.recognitionStage === "idle" ? "Identificar carta" : "Reconhecer novamente"}</button>{card.recognitionCandidates.length > 1 && card.recognitionStage !== "identified" && <div className="recognition-candidates"><span>Possíveis resultados:</span>{card.recognitionCandidates.slice(0, 3).map(candidate => <button type="button" className="secondary" key={`${candidate.language}-${candidate.id}`} onClick={() => useCandidate(card.id, candidate)}><strong>{candidate.name}</strong><small>{candidate.collection} · {candidate.cardNumber} · {candidate.language} · {candidate.score}%</small></button>)}</div>}</div>}<label>Nome<input value={card.name} onChange={e => mutateCard(card.id, { name: e.target.value })} /></label><label>Coleção / Edição<input value={card.collection} onChange={e => mutateCard(card.id, { collection: e.target.value })} /></label><label>Número da carta<input placeholder="35/64" value={card.cardNumber} onChange={e => mutateCard(card.id, { cardNumber: e.target.value })} /></label><label>Variante<input list={`variants-${card.id}`} value={card.variant} onChange={e => mutateCard(card.id, { variant: e.target.value })} /><datalist id={`variants-${card.id}`}>{variants.map(item => <option key={item} value={item} />)}</datalist></label><label>Condição<select value={card.condition} onChange={e => mutateCard(card.id, { condition: e.target.value })}>{cardConditions.map(item => <option key={item}>{item}</option>)}</select></label><label>Idioma<select value={card.language} onChange={e => mutateCard(card.id, { language: e.target.value })}>{cardLanguages.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>{!card.file && <label className="wide">URL HTTPS da imagem<input value={card.imageUrl} onChange={e => mutateCard(card.id, { imageUrl: e.target.value })} /></label>}{index > 0 && <button className="secondary wide" onClick={() => copyPrevious(index)}>Copiar configurações da carta anterior</button>}</div>}</article>)}</div></section>}
       <div className="wizard-footer"><Link href="/">Cancelar</Link><button onClick={() => go(2)}>Continuar para valores →</button></div></>}
 
     {step === 2 && <><section className="panel"><p className="eyebrow">ETAPA 2</p><h2>Valores</h2><p className="muted">Cada enquete é gerada automaticamente pelo lance inicial, incremento e ARREMATE.</p><div className="bulk-bar values"><label>Primeiro lote<input type="number" min="1" value={firstLot} onChange={e => setFirstLot(e.target.value)} /></label><button onClick={sequentialLots}>Numerar lotes</button><label>Lance inicial para todas<input type="number" min="0" step="0.01" value={bulkStart} onChange={e => setBulkStart(e.target.value)} /></label><button onClick={() => applyAll("startingPrice", bulkStart)}>Aplicar</button><label>Incremento para todas<input type="number" min="0.01" step="0.01" value={bulkIncrement} onChange={e => setBulkIncrement(e.target.value)} /></label><button onClick={() => applyAll("increment", bulkIncrement)}>Aplicar</button><label>Duração para todas (min)<input type="number" min="0.1" step="0.1" value={bulkDuration} onChange={e => setBulkDuration(e.target.value)} /></label><button onClick={() => applyAll("durationMinutes", bulkDuration)}>Aplicar</button></div>

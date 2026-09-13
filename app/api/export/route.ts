@@ -1,5 +1,6 @@
 import ExcelJS from "exceljs";
 import { authorize, failure, snapshot, type Table } from "@/lib/backend";
+import { excelBrasiliaDate } from "@/lib/brasilia-time";
 
 export const runtime = "nodejs";
 
@@ -14,6 +15,12 @@ const sheets: [Table, string, [string, string][]][] = [
   ["warnings", "Advertências", [["ID","id"],["Participante","participant_name"],["Leilão","auction_id"],["Tipo","type"],["Motivo","reason"],["Ativa","active"],["Início","starts_at"],["Fim","ends_at"]]],
   ["auction_events", "Auditoria", [["ID","id"],["Leilão","auction_id"],["Participante","participant_name"],["WhatsApp","participant_whatsapp"],["Telefone","participant_phone"],["Administrador","admin_user_id"],["Evento","event_type"],["ID externo","external_event_id"],["Ocorrido em","occurred_at"],["Registrado em","created_at"],["Detalhes","payload"]]],
 ];
+
+const dateKeys = new Set([
+  "first_seen_at", "last_seen_at", "started_at", "scheduled_end_at", "ended_at",
+  "processed_at", "confirmed_at", "paid_at", "shipped_at", "delivered_at",
+  "starts_at", "ends_at", "occurred_at", "created_at", "updated_at", "suspension_until",
+]);
 
 function cleanPhone(phone: unknown, whatsapp: unknown) {
   const direct = String(phone ?? "").trim();
@@ -31,12 +38,6 @@ function winTypeLabel(value: unknown) {
   return type ? String(value) : "Venda";
 }
 
-function asDate(value: unknown) {
-  if (!value) return null;
-  const date = new Date(String(value));
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
 function styleSheet(sheet: ExcelJS.Worksheet) {
   sheet.views = [{ state: "frozen", ySplit: 1 }];
   sheet.getRow(1).height = 24;
@@ -46,9 +47,7 @@ function styleSheet(sheet: ExcelJS.Worksheet) {
   sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: Math.max(1, sheet.columnCount) } };
   for (let row = 2; row <= sheet.rowCount; row++) {
     sheet.getRow(row).alignment = { vertical: "middle" };
-    if (row % 2 === 0) {
-      sheet.getRow(row).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF6F8FB" } };
-    }
+    if (row % 2 === 0) sheet.getRow(row).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF6F8FB" } };
   }
 }
 
@@ -58,7 +57,7 @@ export async function GET(request: Request) {
     const data = await snapshot(db);
     const workbook = new ExcelJS.Workbook();
     workbook.creator = "Leilão Pokémon";
-    workbook.created = new Date();
+    workbook.created = excelBrasiliaDate(new Date()) ?? new Date();
 
     const confirmedPurchases = data.purchases
       .filter(p => p.status === "confirmed")
@@ -74,7 +73,7 @@ export async function GET(request: Request) {
       { header: "Telefone / WhatsApp", key: "phone", width: 24 },
       { header: "Valor", key: "amount", width: 16 },
       { header: "Tipo", key: "winType", width: 18 },
-      { header: "Data da venda", key: "confirmedAt", width: 22 },
+      { header: "Data da venda", key: "confirmedAt", width: 24 },
     ];
 
     for (const purchase of confirmedPurchases) {
@@ -90,11 +89,11 @@ export async function GET(request: Request) {
         phone: cleanPhone(person?.phone_e164, person?.whatsapp_id),
         amount: Number(purchase.amount ?? 0),
         winType: winTypeLabel(auction?.win_type),
-        confirmedAt: asDate(purchase.confirmed_at),
+        confirmedAt: excelBrasiliaDate(purchase.confirmed_at),
       });
     }
     sales.getColumn("amount").numFmt = '"R$" #,##0.00';
-    sales.getColumn("confirmedAt").numFmt = "dd/mm/yyyy hh:mm";
+    sales.getColumn("confirmedAt").numFmt = "dd/mm/yyyy hh:mm:ss";
     styleSheet(sales);
 
     const totalRevenue = confirmedPurchases.reduce((total, purchase) => total + Number(purchase.amount ?? 0), 0);
@@ -105,7 +104,7 @@ export async function GET(request: Request) {
       { header: "Valor", key: "value", width: 28 },
     ];
     summary.addRows([
-      { metric: "Exportado em", value: new Date() },
+      { metric: "Exportado em (Brasília)", value: excelBrasiliaDate(new Date()) },
       { metric: "Vendas confirmadas", value: confirmedPurchases.length },
       { metric: "Compradores únicos", value: uniqueBuyers },
       { metric: "Total vendido", value: totalRevenue },
@@ -113,7 +112,7 @@ export async function GET(request: Request) {
       { metric: "Leilões cadastrados", value: data.auctions.length },
       { metric: "Participantes identificados", value: data.participants.length },
     ]);
-    summary.getCell("B2").numFmt = "dd/mm/yyyy hh:mm";
+    summary.getCell("B2").numFmt = "dd/mm/yyyy hh:mm:ss";
     summary.getCell("B5").numFmt = '"R$" #,##0.00';
     summary.getCell("B6").numFmt = '"R$" #,##0.00';
     styleSheet(summary);
@@ -123,7 +122,7 @@ export async function GET(request: Request) {
       sheet.columns = columns.map(([header, key]) => ({
         header,
         key,
-        width: key === "payload" ? 70 : key === "id" || key.endsWith("_id") ? 38 : 24,
+        width: key === "payload" ? 70 : dateKeys.has(key) ? 24 : key === "id" || key.endsWith("_id") ? 38 : 24,
       }));
 
       for (const row of data[table]) {
@@ -136,16 +135,15 @@ export async function GET(request: Request) {
           participant_whatsapp: person?.whatsapp_id ?? "",
           participant_phone: cleanPhone(person?.phone_e164, person?.whatsapp_id),
         };
-        sheet.addRow(Object.fromEntries(Object.entries(enriched).map(([key, value]) => [
-          key,
-          value !== null && typeof value === "object" ? JSON.stringify(value) : value,
-        ])));
+        sheet.addRow(Object.fromEntries(Object.entries(enriched).map(([key, value]) => {
+          if (dateKeys.has(key)) return [key, excelBrasiliaDate(value as string | number | Date | null | undefined)];
+          return [key, value !== null && typeof value === "object" ? JSON.stringify(value) : value];
+        })));
       }
 
       for (const [, key] of columns) {
-        if (["amount", "starting_price", "buyout_price", "final_price"].includes(key)) {
-          sheet.getColumn(key).numFmt = '"R$" #,##0.00';
-        }
+        if (["amount", "starting_price", "buyout_price", "final_price"].includes(key)) sheet.getColumn(key).numFmt = '"R$" #,##0.00';
+        if (dateKeys.has(key)) sheet.getColumn(key).numFmt = "dd/mm/yyyy hh:mm:ss";
       }
       styleSheet(sheet);
     }

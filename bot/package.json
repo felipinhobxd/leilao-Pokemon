@@ -1,0 +1,19 @@
+{
+  "name": "leilao-pokemon-whatsapp-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node index.mjs",
+    "check": "node --check index.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.116.0",
+    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "pino": "9.9.4",
+    "qrcode-terminal": "0.12.0"
+  }
+}

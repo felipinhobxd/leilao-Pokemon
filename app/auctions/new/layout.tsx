@@ -1,4 +1,5 @@
 import "./wizard.css";
+import "./batch-wizard.css";
 
 export const dynamic = "force-dynamic";
 

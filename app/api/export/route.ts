@@ -38,6 +38,12 @@ function winTypeLabel(value: unknown) {
   return type ? String(value) : "Venda";
 }
 
+function excelDateValue(value: unknown) {
+  if (value == null || value === "") return null;
+  if (value instanceof Date || typeof value === "string" || typeof value === "number") return excelBrasiliaDate(value);
+  return null;
+}
+
 function styleSheet(sheet: ExcelJS.Worksheet) {
   sheet.views = [{ state: "frozen", ySplit: 1 }];
   sheet.getRow(1).height = 24;
@@ -89,7 +95,7 @@ export async function GET(request: Request) {
         phone: cleanPhone(person?.phone_e164, person?.whatsapp_id),
         amount: Number(purchase.amount ?? 0),
         winType: winTypeLabel(auction?.win_type),
-        confirmedAt: excelBrasiliaDate(purchase.confirmed_at),
+        confirmedAt: excelDateValue(purchase.confirmed_at),
       });
     }
     sales.getColumn("amount").numFmt = '"R$" #,##0.00';
@@ -136,7 +142,7 @@ export async function GET(request: Request) {
           participant_phone: cleanPhone(person?.phone_e164, person?.whatsapp_id),
         };
         sheet.addRow(Object.fromEntries(Object.entries(enriched).map(([key, value]) => {
-          if (dateKeys.has(key)) return [key, excelBrasiliaDate(value as string | number | Date | null | undefined)];
+          if (dateKeys.has(key)) return [key, excelDateValue(value)];
           return [key, value !== null && typeof value === "object" ? JSON.stringify(value) : value];
         })));
       }

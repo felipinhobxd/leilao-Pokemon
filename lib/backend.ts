@@ -24,9 +24,9 @@ export const tables = ["cards", "participants", "auctions", "bids", "auction_eve
 export type Table = typeof tables[number];
 export type Row = Record<string, string | number | boolean | null | Record<string, unknown>>;
 export type Snapshot = Record<Table, Row[]>;
-// A JSON RPC avoids PostgREST row caps and reads a consistent database snapshot.
+// Keep the dashboard on one database round trip while returning only fields it renders.
 export async function snapshot(db: ReturnType<typeof createServerSupabaseClient>): Promise<Snapshot> {
-  const { data, error } = await db.rpc("read_auction_snapshot");
+  const { data, error } = await db.rpc("read_dashboard_snapshot");
   if (error || !data) throw new Error("database_read_failed");
   return data as Snapshot;
 }

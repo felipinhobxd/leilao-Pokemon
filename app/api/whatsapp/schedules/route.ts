@@ -47,18 +47,21 @@ export async function POST(request: Request) {
     if (!request.headers.get("content-type")?.includes("application/json")) throw new HttpError(415, "Envie JSON.");
     const body = await request.json() as Record<string, unknown>;
     const auctionId = String(body.auctionId ?? "");
-    const groupId = String(body.groupId ?? "");
     const scheduledAt = String(body.scheduledAt ?? "");
     const title = String(body.pollTitle ?? "💰 Para dar o seu lance, selecione um dos valores:").trim();
     const includeBuyout = body.includeBuyout !== false;
-    if (!uuid.test(auctionId) || !uuid.test(groupId)) throw new HttpError(400, "Leilão ou grupo inválido.");
+    if (!uuid.test(auctionId)) throw new HttpError(400, "Leilão inválido.");
     if (!Number.isFinite(Date.parse(scheduledAt))) throw new HttpError(400, "Horário de envio inválido.");
     if (!title || title.length > 200) throw new HttpError(400, "Título da enquete inválido.");
     const values = parseValues(body.values);
 
-    const { data: auction, error: auctionError } = await db.from("auctions").select("id,status,starting_price,buyout_price").eq("id", auctionId).single();
+    const [{ data: auction, error: auctionError }, { data: group, error: groupError }] = await Promise.all([
+      db.from("auctions").select("id,status,starting_price,buyout_price").eq("id", auctionId).single(),
+      db.from("whatsapp_groups").select("id,name").eq("active", true).eq("is_default", true).maybeSingle(),
+    ]);
     if (auctionError || !auction) throw new HttpError(404, "Leilão não encontrado.");
     if (auction.status !== "draft") throw new HttpError(409, "Somente leilões em rascunho podem ser programados.");
+    if (groupError || !group) throw new HttpError(409, "Escolha um grupo padrão do WhatsApp antes de programar a enquete.");
     if (values.some(v => v < Number(auction.starting_price))) throw new HttpError(400, "Nenhum lance pode ficar abaixo do valor inicial.");
 
     const options: Array<{ label: string; amount: number; isBuyout: boolean }> = values.map(amount => ({
@@ -78,12 +81,9 @@ export async function POST(request: Request) {
     }
     if (options.length > 12) throw new HttpError(400, "A enquete aceita no máximo 12 opções.");
 
-    const { data: group, error: groupError } = await db.from("whatsapp_groups").select("id").eq("id", groupId).eq("active", true).single();
-    if (groupError || !group) throw new HttpError(404, "Grupo do WhatsApp não encontrado.");
-
     const payload = {
       auction_id: auctionId,
-      group_id: groupId,
+      group_id: group.id,
       scheduled_at: new Date(scheduledAt).toISOString(),
       poll_title: title,
       poll_options: options,
@@ -97,7 +97,7 @@ export async function POST(request: Request) {
     };
     const { data, error } = await db.from("whatsapp_dispatches").upsert(payload, { onConflict: "auction_id" }).select().single();
     if (error || !data) throw new Error("whatsapp_schedule_write_failed");
-    return Response.json({ dispatch: data });
+    return Response.json({ dispatch: data, group: { id: group.id, name: group.name } });
   } catch (error) {
     return failure(error);
   }

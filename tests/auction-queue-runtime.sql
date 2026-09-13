@@ -17,7 +17,7 @@ declare
   qid uuid;
   did uuid;
   aid uuid;
-  sent_at timestamptz:=clock_timestamp()+interval '5 minutes';
+  poll_time timestamptz:=clock_timestamp()+interval '5 minutes';
 begin
   result:=public.create_auction_publish_queue(
     jsonb_build_object(
@@ -40,9 +40,9 @@ begin
   did:=(result->'items'->0->'dispatch'->>'id')::uuid;
   aid:=(result->'items'->0->'auction'->>'id')::uuid;
 
-  update public.whatsapp_dispatches set poll_sent_at=sent_at where id=did;
+  update public.whatsapp_dispatches set poll_sent_at=poll_time where id=did;
   perform pg_temp.check_that(
-    (select abs(extract(epoch from (scheduled_end_at-sent_at))-120)<0.01 from public.auctions where id=aid),
+    (select abs(extract(epoch from (scheduled_end_at-poll_time))-120)<0.01 from public.auctions where id=aid),
     'auction deadline must be publication time plus duration'
   );
 

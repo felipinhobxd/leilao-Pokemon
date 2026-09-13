@@ -4,26 +4,166 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const baileysEntry = require.resolve("@whiskeysockets/baileys");
-const target = path.join(path.dirname(baileysEntry), "Socket", "messages-recv.js");
-const source = await readFile(target, "utf8");
-
-const vulnerable = "buildAckStanza(node, errorCode, authState.creds.me.id)";
-const patched = "buildAckStanza(node, errorCode, authState.creds.me?.id)";
+const libDir = path.dirname(baileysEntry);
+const recvTarget = path.join(libDir, "Socket", "messages-recv.js");
+const socketTarget = path.join(libDir, "Socket", "socket.js");
+const companionTarget = path.join(libDir, "Utils", "companion-reg-client-utils.js");
 const checkOnly = process.argv.includes("--check");
 
-if (source.includes(patched)) {
-  console.log("Baileys pre-login ACK patch already applied.");
-  process.exit(0);
+function occurrences(source, needle) {
+  return source.split(needle).length - 1;
 }
+
+async function patchPreLoginAck() {
+  let source = await readFile(recvTarget, "utf8");
+  const vulnerable = "buildAckStanza(node, errorCode, authState.creds.me.id)";
+  const patched = "buildAckStanza(node, errorCode, authState.creds.me?.id)";
+
+  if (source.includes(patched)) return "already";
+  if (checkOnly) throw new Error("Baileys pre-login ACK patch is missing.");
+
+  const matches = occurrences(source, vulnerable);
+  if (matches !== 1) {
+    throw new Error(`Expected exactly one vulnerable Baileys ACK call, found ${matches}. Refusing to patch an unknown build.`);
+  }
+
+  source = source.replace(vulnerable, patched);
+  await writeFile(recvTarget, source, "utf8");
+  return "applied";
+}
+
+const companionHelpers = `
+export const makePairingQRRenderer = (refs, render) => {
+  let index = 0;
+  let current;
+  return {
+    next() {
+      const ref = refs[index];
+      if (ref === undefined) return false;
+      index += 1;
+      current = ref;
+      render(ref);
+      return true;
+    },
+    refresh() {
+      if (current === undefined) return false;
+      render(current);
+      return true;
+    }
+  };
+};
+const COMPANION_REG_REFRESH_CHILDREN = ['companion_reg_refresh', 'pair-device-rotate-qr'];
+export const handleCompanionRegRefresh = (node, { creds, emitCredsUpdate, refreshQR, logger }) => {
+  if (!COMPANION_REG_REFRESH_CHILDREN.some(tag => getBinaryNodeChild(node, tag))) {
+    logger.warn({ node }, 'companion_reg_refresh carries neither expected child; ignoring');
+    return 'ignored_malformed';
+  }
+  if (creds.me) {
+    logger.debug({ id: node.attrs.id }, 'companion_reg_refresh on a registered session; keeping the adv secret');
+    return 'ignored_registered';
+  }
+  creds.advSecretKey = randomBytes(32).toString('base64');
+  emitCredsUpdate({ advSecretKey: creds.advSecretKey });
+  logger.info({ id: node.attrs.id }, 'rotated the adv secret the server asked to retire; re-rendering the pairing QR');
+  refreshQR();
+  return 'rotated';
+};
+`;
+
+const replacementQrSection = `// Re-render the QR currently on screen while pairing.
+  let refreshPairingQR;
+  // QR gen
+  ws.on('CB:iq,type:set,pair-device', async (stanza) => {
+    const iq = {
+      tag: 'iq',
+      attrs: { to: S_WHATSAPP_NET, type: 'result', id: stanza.attrs.id }
+    };
+    await sendNode(iq);
+    const pairDeviceNode = getBinaryNodeChild(stanza, 'pair-device');
+    const refNodes = getBinaryNodeChildren(pairDeviceNode, 'ref');
+    const noiseKeyB64 = Buffer.from(creds.noiseKey.public).toString('base64');
+    const identityKeyB64 = Buffer.from(creds.signedIdentityKey.public).toString('base64');
+    const renderer = makePairingQRRenderer(
+      refNodes.map(refNode => refNode.content.toString('utf-8')),
+      ref => ev.emit('connection.update', {
+        qr: buildPairingQRData(ref, noiseKeyB64, identityKeyB64, creds.advSecretKey, browser)
+      })
+    );
+    refreshPairingQR = () => void renderer.refresh();
+    let qrMs = qrTimeout || 60000;
+    const genPairQR = () => {
+      if (!ws.isOpen) return;
+      if (!renderer.next()) {
+        void end(new Boom('QR refs attempts ended', { statusCode: DisconnectReason.timedOut }));
+        return;
+      }
+      qrTimer = setTimeout(genPairQR, qrMs);
+      qrMs = qrTimeout || 20000;
+    };
+    genPairQR();
+  });
+  // WhatsApp retires the advertised registration secret after a successful scan.
+  ws.on('CB:notification,type:companion_reg_refresh', (node) => {
+    handleCompanionRegRefresh(node, {
+      creds,
+      emitCredsUpdate: update => ev.emit('creds.update', update),
+      refreshQR: () => refreshPairingQR?.(),
+      logger
+    });
+  });
+  // device paired for the first time`;
+
+async function patchCompanionRegistrationRefresh() {
+  let companion = await readFile(companionTarget, "utf8");
+  let socket = await readFile(socketTarget, "utf8");
+
+  const helperPatched = companion.includes("export const handleCompanionRegRefresh") && companion.includes("export const makePairingQRRenderer");
+  const socketPatched = socket.includes("CB:notification,type:companion_reg_refresh") && socket.includes("makePairingQRRenderer");
+
+  if (helperPatched && socketPatched) return "already";
+  if (checkOnly) throw new Error("Baileys companion_reg_refresh patch is missing.");
+
+  if (!helperPatched) {
+    const sourceMapMarker = "//# sourceMappingURL=companion-reg-client-utils.js.map";
+    if (!companion.includes(sourceMapMarker)) {
+      throw new Error("Unknown Baileys companion utility build; source-map marker not found.");
+    }
+    if (!companion.includes("import { randomBytes } from 'crypto';")) {
+      companion = `import { randomBytes } from 'crypto';\nimport { getBinaryNodeChild } from '../WABinary/index.js';\n${companion}`;
+    }
+    companion = companion.replace(sourceMapMarker, `${companionHelpers}\n${sourceMapMarker}`);
+    await writeFile(companionTarget, companion, "utf8");
+  }
+
+  if (!socketPatched) {
+    const oldImport = "getNextPreKeysNode, makeEventBuffer, makeNoiseHandler,";
+    const newImport = "getNextPreKeysNode, handleCompanionRegRefresh, makeEventBuffer, makeNoiseHandler, makePairingQRRenderer,";
+    if (!socket.includes(newImport)) {
+      const matches = occurrences(socket, oldImport);
+      if (matches !== 1) {
+        throw new Error(`Expected exactly one Baileys utility import anchor, found ${matches}. Refusing to patch an unknown build.`);
+      }
+      socket = socket.replace(oldImport, newImport);
+    }
+
+    const qrSection = /\/\/ QR gen\s*ws\.on\('CB:iq,type:set,pair-device',[\s\S]*?\/\/ device paired for the first time/;
+    const matches = socket.match(qrSection);
+    if (!matches || matches.length !== 1) {
+      throw new Error("Could not locate the rc14 QR generation section. Refusing to patch an unknown build.");
+    }
+    socket = socket.replace(qrSection, replacementQrSection);
+    await writeFile(socketTarget, socket, "utf8");
+  }
+
+  return "applied";
+}
+
+const ackResult = await patchPreLoginAck();
+const refreshResult = await patchCompanionRegistrationRefresh();
 
 if (checkOnly) {
-  throw new Error("Baileys pre-login ACK patch is missing.");
+  console.log("Baileys QR pairing patches verified.");
+} else {
+  console.log(`Baileys pre-login ACK patch: ${ackResult}.`);
+  console.log(`Baileys companion_reg_refresh patch: ${refreshResult}.`);
 }
-
-const matches = source.split(vulnerable).length - 1;
-if (matches !== 1) {
-  throw new Error(`Expected exactly one vulnerable Baileys ACK call, found ${matches}. Refusing to patch an unknown build.`);
-}
-
-await writeFile(target, source.replace(vulnerable, patched), "utf8");
-console.log("Applied Baileys pre-login ACK patch for QR pairing.");

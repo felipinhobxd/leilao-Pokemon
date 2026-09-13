@@ -20,27 +20,16 @@ export async function GET(request: Request) {
   try {
     const { db } = await authorize(request);
     const [{ data: groups, error: groupError }, { data: dispatches, error: dispatchError }] = await Promise.all([
-      db.from("whatsapp_groups")
-        .select("id,group_jid,name,active,is_default,last_synced_at,updated_at")
-        .eq("active", true)
-        .order("name"),
-      db.from("whatsapp_dispatches")
-        .select("id,auction_id,group_id,scheduled_at,poll_title,poll_options,status,poll_message_id,sent_at,attempts,last_error,updated_at")
-        .order("scheduled_at", { ascending: false })
-        .limit(100),
+      db.from("whatsapp_groups").select("id,group_jid,name,active,is_default,last_synced_at,updated_at").eq("active", true).order("name"),
+      db.from("whatsapp_dispatches").select("id,auction_id,group_id,scheduled_at,poll_title,poll_options,status,announcement_message_id,poll_message_id,announcement_sent_at,poll_sent_at,sent_at,attempts,last_error,updated_at").order("scheduled_at", { ascending: false }).limit(100),
     ]);
     if (groupError || dispatchError) throw new Error("whatsapp_schedule_read_failed");
     const activeGroups = groups ?? [];
-    return Response.json({
-      groups: activeGroups,
-      defaultGroupId: activeGroups.find(group => group.is_default)?.id ?? null,
-      dispatches: dispatches ?? [],
-    }, { headers: { "Cache-Control": "no-store" } });
-  } catch (error) {
-    return failure(error);
-  }
+    return Response.json({ groups: activeGroups, defaultGroupId: activeGroups.find(group => group.is_default)?.id ?? null, dispatches: dispatches ?? [] }, { headers: { "Cache-Control": "no-store" } });
+  } catch (error) { return failure(error); }
 }
 
+// Kept for backwards-compatible administrative recovery. Normal publication now happens only through /auctions/new.
 export async function POST(request: Request) {
   try {
     const { db, user } = await authorize(request, true);
@@ -48,13 +37,12 @@ export async function POST(request: Request) {
     const body = await request.json() as Record<string, unknown>;
     const auctionId = String(body.auctionId ?? "");
     const scheduledAt = String(body.scheduledAt ?? "");
-    const title = String(body.pollTitle ?? "💰 Para dar o seu lance, selecione um dos valores:").trim();
+    const title = String(body.pollTitle ?? "Lances").trim();
     const includeBuyout = body.includeBuyout !== false;
     if (!uuid.test(auctionId)) throw new HttpError(400, "Leilão inválido.");
     if (!Number.isFinite(Date.parse(scheduledAt))) throw new HttpError(400, "Horário de envio inválido.");
     if (!title || title.length > 200) throw new HttpError(400, "Título da enquete inválido.");
     const values = parseValues(body.values);
-
     const [{ data: auction, error: auctionError }, { data: group, error: groupError }] = await Promise.all([
       db.from("auctions").select("id,status,starting_price,buyout_price").eq("id", auctionId).single(),
       db.from("whatsapp_groups").select("id,name").eq("active", true).eq("is_default", true).maybeSingle(),
@@ -63,44 +51,18 @@ export async function POST(request: Request) {
     if (auction.status !== "draft") throw new HttpError(409, "Somente leilões em rascunho podem ser programados.");
     if (groupError || !group) throw new HttpError(409, "Escolha um grupo padrão do WhatsApp antes de programar a enquete.");
     if (values.some(v => v < Number(auction.starting_price))) throw new HttpError(400, "Nenhum lance pode ficar abaixo do valor inicial.");
-
-    const options: Array<{ label: string; amount: number; isBuyout: boolean }> = values.map(amount => ({
-      label: money(amount), amount, isBuyout: false,
-    }));
+    const options: Array<{ label: string; amount: number; isBuyout: boolean }> = values.map(amount => ({ label: money(amount), amount, isBuyout: false }));
     const buyout = auction.buyout_price == null ? null : Number(auction.buyout_price);
     if (includeBuyout && buyout != null) {
-      const buyoutLabel = `${money(buyout)} 🦭`;
       const existing = options.find(o => o.amount === buyout);
-      if (existing) {
-        existing.isBuyout = true;
-        existing.label = buyoutLabel;
-      } else {
-        if (options.length >= 12) throw new HttpError(400, "Não há espaço para o ARREMATE: a enquete aceita no máximo 12 opções.");
-        options.push({ label: buyoutLabel, amount: buyout, isBuyout: true });
-      }
+      if (existing) { existing.isBuyout = true; existing.label = `${money(buyout)} 🦭`; }
+      else { if (options.length >= 12) throw new HttpError(400, "Não há espaço para o ARREMATE."); options.push({ label: `${money(buyout)} 🦭`, amount: buyout, isBuyout: true }); }
     }
-    if (options.length > 12) throw new HttpError(400, "A enquete aceita no máximo 12 opções.");
-
-    const payload = {
-      auction_id: auctionId,
-      group_id: group.id,
-      scheduled_at: new Date(scheduledAt).toISOString(),
-      poll_title: title,
-      poll_options: options,
-      status: "scheduled",
-      locked_at: null,
-      locked_by: null,
-      attempts: 0,
-      last_error: null,
-      created_by: user.id,
-      updated_at: new Date().toISOString(),
-    };
+    const payload = { auction_id: auctionId, group_id: group.id, scheduled_at: new Date(scheduledAt).toISOString(), poll_title: title, poll_options: options, status: "scheduled", locked_at: null, locked_by: null, attempts: 0, last_error: null, created_by: user.id, updated_at: new Date().toISOString() };
     const { data, error } = await db.from("whatsapp_dispatches").upsert(payload, { onConflict: "auction_id" }).select().single();
     if (error || !data) throw new Error("whatsapp_schedule_write_failed");
     return Response.json({ dispatch: data, group: { id: group.id, name: group.name } });
-  } catch (error) {
-    return failure(error);
-  }
+  } catch (error) { return failure(error); }
 }
 
 export async function DELETE(request: Request) {
@@ -115,7 +77,5 @@ export async function DELETE(request: Request) {
     const { error } = await db.from("whatsapp_dispatches").update({ status: "cancelled", updated_at: new Date().toISOString() }).eq("auction_id", auctionId);
     if (error) throw new Error("whatsapp_schedule_cancel_failed");
     return Response.json({ ok: true });
-  } catch (error) {
-    return failure(error);
-  }
+  } catch (error) { return failure(error); }
 }

@@ -11,6 +11,26 @@ type ScheduleData = {
   dispatches: Row[];
 };
 
+type BotWorker = {
+  workerId: string;
+  status: string;
+  heartbeatAt: string | null;
+  connectedAt: string | null;
+  accountJid: string | null;
+  lastError: string | null;
+  qrText: string | null;
+  qrExpiresAt: string | null;
+  groupsSyncedAt: string | null;
+  version: string | null;
+  sessionActive: boolean;
+};
+
+type BotData = {
+  worker: BotWorker | null;
+  online: boolean;
+  canControl: boolean;
+};
+
 function localDateTime(value: Date) {
   const offset = value.getTimezoneOffset() * 60000;
   return new Date(value.getTime() - offset).toISOString().slice(0, 16);
@@ -20,6 +40,24 @@ function statusLabel(status: string) {
   return ({ scheduled: "Programado", sending: "Enviando", sent: "Enviado", failed: "Falhou", cancelled: "Cancelado" } as Record<string, string>)[status] ?? status;
 }
 
+function botStatusLabel(status: string) {
+  return ({
+    starting: "Iniciando",
+    waiting_qr: "Aguardando QR",
+    connecting: "Conectando",
+    connected: "Conectado",
+    reconnecting: "Reconectando",
+    disconnected: "Desconectado",
+    error: "Erro",
+  } as Record<string, string>)[status] ?? status;
+}
+
+function when(value: string | null | undefined) {
+  if (!value) return "—";
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? new Date(time).toLocaleString("pt-BR") : "—";
+}
+
 export default function WhatsAppPage() {
   const [db] = useState(createPublicSupabaseClient);
   const [ready, setReady] = useState(false);
@@ -27,6 +65,7 @@ export default function WhatsAppPage() {
   const [auctions, setAuctions] = useState<Row[]>([]);
   const [cards, setCards] = useState<Row[]>([]);
   const [scheduleData, setScheduleData] = useState<ScheduleData>({ groups: [], dispatches: [] });
+  const [botData, setBotData] = useState<BotData>({ worker: null, online: false, canControl: false });
   const [selectedAuction, setSelectedAuction] = useState("");
   const [scheduledAt, setScheduledAt] = useState(localDateTime(new Date(Date.now() + 60_000)));
   const [values, setValues] = useState("5, 7, 10");
@@ -46,22 +85,33 @@ export default function WhatsAppPage() {
     });
   }
 
+  async function loadBot() {
+    const response = await authFetch("/api/whatsapp/bot");
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error ?? "Falha ao carregar status do bot.");
+    setBotData(body);
+  }
+
   async function load() {
     const { data: auth } = await db.auth.getSession();
     setSession(auth.session);
     setReady(true);
     if (!auth.session) return;
-    const [dashboard, schedules] = await Promise.all([
+    const [dashboard, schedules, bot] = await Promise.all([
       authFetch("/api/dashboard"),
       authFetch("/api/whatsapp/schedules"),
+      authFetch("/api/whatsapp/bot"),
     ]);
     const dashboardBody = await dashboard.json();
     const scheduleBody = await schedules.json();
+    const botBody = await bot.json();
     if (!dashboard.ok) throw new Error(dashboardBody.error ?? "Falha ao carregar leilões.");
     if (!schedules.ok) throw new Error(scheduleBody.error ?? "Falha ao carregar WhatsApp.");
+    if (!bot.ok) throw new Error(botBody.error ?? "Falha ao carregar status do bot.");
     setAuctions((dashboardBody.data?.auctions ?? []).filter((a: Row) => a.status === "draft"));
     setCards(dashboardBody.data?.cards ?? []);
     setScheduleData(scheduleBody);
+    setBotData(botBody);
     const first = (dashboardBody.data?.auctions ?? []).find((a: Row) => a.status === "draft");
     setSelectedAuction((current: string) => current || first?.id || "");
   }
@@ -72,9 +122,39 @@ export default function WhatsAppPage() {
     return () => listener.subscription.unsubscribe();
   }, [db]);
 
+  useEffect(() => {
+    if (!session) return;
+    const timer = setInterval(() => {
+      void loadBot().catch(() => undefined);
+    }, 5_000);
+    return () => clearInterval(timer);
+  }, [session]);
+
   const auction = useMemo(() => auctions.find(a => a.id === selectedAuction), [auctions, selectedAuction]);
   const card = cards.find(c => c.id === auction?.card_id);
   const dispatch = scheduleData.dispatches.find(d => d.auction_id === selectedAuction);
+  const worker = botData.worker;
+  const botDot = botData.online && worker?.status === "connected" ? "🟢" : botData.online ? "🟡" : "🔴";
+
+  async function sendBotCommand(action: "reconnect" | "disconnect" | "sync_groups") {
+    if (!worker) return;
+    setBusy(true); setError(""); setNotice("");
+    try {
+      const response = await authFetch("/api/whatsapp/bot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, workerId: worker.workerId }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? "Não foi possível enviar o comando ao bot.");
+      setNotice(action === "sync_groups" ? "Sincronização solicitada ao worker." : "Comando enviado ao worker.");
+      setTimeout(() => void load().catch(() => undefined), action === "sync_groups" ? 4_000 : 1_500);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Falha ao controlar o bot.");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -138,6 +218,41 @@ export default function WhatsAppPage() {
 
     {error && <p role="alert" className="alert">{error}</p>}
     {notice && <p role="status" className="notice">{notice}</p>}
+
+    <section className="panel" style={{ marginBottom: 14 }}>
+      <div className="panel-title">
+        <div>
+          <p className="eyebrow">WHATSAPP BOT</p>
+          <h2>{botDot} {worker ? botStatusLabel(worker.status) : "Worker não instalado"}</h2>
+          {!botData.online && <p className="muted">O worker está offline. O painel não consegue iniciar um PC desligado.</p>}
+        </div>
+        <span className="status-pill">{worker?.version ? `v${worker.version}` : "sem versão"}</span>
+      </div>
+
+      {worker ? <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(210px,1fr))", gap: 12 }}>
+        <div className="stat-card"><span>Conta</span><strong style={{ fontSize: "1rem" }}>{worker.accountJid ?? "Aguardando conexão"}</strong></div>
+        <div className="stat-card"><span>Worker</span><strong style={{ fontSize: "1rem" }}>{worker.workerId}</strong></div>
+        <div className="stat-card"><span>Última atividade</span><strong style={{ fontSize: "1rem" }}>{when(worker.heartbeatAt)}</strong></div>
+        <div className="stat-card"><span>Sessão</span><strong style={{ fontSize: "1rem" }}>{worker.sessionActive ? "Ativa" : "Não autenticada"}</strong></div>
+      </div> : <p className="muted">Instale o serviço local para que o worker apareça aqui.</p>}
+
+      {worker?.groupsSyncedAt && <p className="muted">Grupos sincronizados em: {when(worker.groupsSyncedAt)}</p>}
+      {worker?.lastError && <p className="alert" style={{ marginTop: 14 }}>{worker.lastError}</p>}
+
+      {botData.canControl && worker && <div className="actions" style={{ marginTop: 16 }}>
+        <button disabled={busy || !botData.online} onClick={() => void sendBotCommand("reconnect")}>Reconectar</button>
+        <button disabled={busy || !botData.online} onClick={() => void sendBotCommand("disconnect")}>Desconectar</button>
+        <button disabled={busy || !botData.online} onClick={() => void sendBotCommand("sync_groups")}>Sincronizar grupos</button>
+      </div>}
+
+      {worker?.qrText && botData.canControl && <div style={{ marginTop: 18 }}>
+        <h2>QR CODE</h2>
+        <p className="muted">Expira em {when(worker.qrExpiresAt)}. Escaneie em WhatsApp → Aparelhos conectados.</p>
+        <div style={{ overflowX: "auto", marginTop: 12, borderRadius: 14, background: "#000", padding: 18, width: "fit-content", maxWidth: "100%" }}>
+          <pre aria-label="QR Code do WhatsApp" style={{ margin: 0, color: "#fff", background: "#000", fontFamily: "Consolas, monospace", fontSize: 11, lineHeight: 0.9, letterSpacing: 0, whiteSpace: "pre" }}>{worker.qrText}</pre>
+        </div>
+      </div>}
+    </section>
 
     <section className="main-grid">
       <form className="panel form-grid" onSubmit={save}>

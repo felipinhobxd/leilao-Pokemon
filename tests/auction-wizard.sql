@@ -6,7 +6,7 @@ values('11111111-1111-1111-1111-111111111111','120000000000000000@g.us','Grupo t
 create function pg_temp.check_that(ok boolean,message text) returns void language plpgsql as $$ begin if ok is distinct from true then raise exception 'ASSERT: %',message; end if; end $$;
 set local role service_role;
 do $$
-declare payload jsonb; result jsonb; replay jsonb; aid uuid; cards_before bigint; auctions_before bigint; dispatches_before bigint; begin
+declare payload jsonb; bad_payload jsonb; result jsonb; replay jsonb; aid uuid; cards_before bigint; auctions_before bigint; dispatches_before bigint; begin
  payload:=jsonb_build_object(
   'eventId','wizard-1',
   'card',jsonb_build_object('name','Kubfu','collection','Coleção X','card_number','093/198','variant','Normal','condition','NM — Near Mint','language','pt-BR','image_url','https://example.com/kubfu.jpg'),
@@ -28,13 +28,12 @@ declare payload jsonb; result jsonb; replay jsonb; aid uuid; cards_before bigint
  select count(*) into cards_before from public.cards;
  select count(*) into auctions_before from public.auctions;
  select count(*) into dispatches_before from public.whatsapp_dispatches;
+ bad_payload:=payload||jsonb_build_object(
+  'eventId','wizard-invalid-group',
+  'auction',(payload->'auction')||jsonb_build_object('lot_number',17,'group_id','22222222-2222-2222-2222-222222222222')
+ );
  begin
-  perform public.create_auction_wizard(
-    jsonb_set(jsonb_set(payload,'{eventId}','"wizard-invalid-group"'::jsonb),'{auction,lot_number}','17'::jsonb),
-    '00000000-0000-0000-0000-000000000011'
-  ) #- '{auction,group_id}' || jsonb_build_object('auction',(payload->'auction')||jsonb_build_object('lot_number',17,'group_id','22222222-2222-2222-2222-222222222222')),
-    '00000000-0000-0000-0000-000000000011'
-  );
+  perform public.create_auction_wizard(bad_payload,'00000000-0000-0000-0000-000000000011');
   raise exception 'EXPECTED_ERROR_NOT_RAISED';
  exception when others then
   if sqlerrm<>'whatsapp_group_unavailable' then raise; end if;

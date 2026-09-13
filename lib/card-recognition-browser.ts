@@ -64,9 +64,11 @@ function uniqueLanguages(hints: OcrHints, preferred?: string): RecognitionLangua
   const add = (value: string | null | undefined) => {
     if (value && supported.has(value as RecognitionLanguage) && !values.includes(value as RecognitionLanguage)) values.push(value as RecognitionLanguage);
   };
-  if (hints.languageConfidence >= 45) add(hints.language);
-  add(preferred);
-  add(hints.language);
+  const trustedOcrLanguage = hints.languageConfidence >= 45;
+  if (trustedOcrLanguage) {
+    add(hints.language);
+    add(preferred);
+  }
   for (const fallback of ["pt-BR", "en", "es", "ja"] as const) add(fallback);
   return values;
 }
@@ -320,11 +322,12 @@ async function candidatesForLanguage(hints: OcrHints, language: RecognitionLangu
 
 async function resolveCatalog(hints: OcrHints, preferredLanguage: string | undefined, stats: CatalogStats) {
   const candidates: Array<Omit<RecognitionCandidate, "score">> = [];
+  const trustedOcrLanguage = hints.languageConfidence >= 45 && hints.language != null;
   for (const language of uniqueLanguages(hints, preferredLanguage)) {
     try { candidates.push(...await candidatesForLanguage(hints, language, stats)); }
     catch { /* catalog failure for one language must not block manual flow */ }
     const ranked = rankRecognitionCandidates(candidates, hints);
-    if ((ranked[0]?.score ?? 0) >= 84 && (ranked[0]?.score ?? 0) - (ranked[1]?.score ?? 0) >= 8) return ranked;
+    if (trustedOcrLanguage && (ranked[0]?.score ?? 0) >= 84 && (ranked[0]?.score ?? 0) - (ranked[1]?.score ?? 0) >= 8) return ranked;
   }
   return rankRecognitionCandidates(candidates, hints);
 }
@@ -347,7 +350,7 @@ async function performRecognition(file: File, preferredLanguage?: string, onProg
   let hints = latin.hints;
 
   const bestScore = ranked[0]?.score ?? 0;
-  const shouldTryJapanese = (hints.language == null || hints.languageConfidence < 45) && (bestScore < 72 || !hints.name) && latin.confidence < 68;
+  const shouldTryJapanese = (hints.language == null || hints.languageConfidence < 45) && (bestScore < 72 || !hints.name);
   if (shouldTryJapanese) {
     try {
       onProgress?.("Tentando leitura japonesa local…");

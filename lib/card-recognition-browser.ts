@@ -17,6 +17,7 @@ const TCGDEX_BASE = "https://api.tcgdex.net/v2";
 const OCR_MAX_DIMENSION = 1500;
 const SESSION_CACHE_PREFIX = "leilao:card-recognition:v1:";
 const CATALOG_TTL_MS = 30 * 60_000;
+const MAX_CATALOG_DETAILS = 12;
 
 type TesseractData = { text: string; confidence?: number };
 type TesseractWorker = {
@@ -42,7 +43,7 @@ type TcgCard = {
   set?: TcgSet;
   variants?: Record<string, unknown>;
 };
-
+type TcgCardBrief = { id: string; localId?: string | number; name?: string };
 type CatalogStats = { requests: number };
 type CacheEntry = { expires: number; value: unknown };
 
@@ -274,45 +275,47 @@ function candidateFromCard(card: TcgCard, language: RecognitionLanguage): Omit<R
   };
 }
 
+async function fetchCardDetails(briefs: TcgCardBrief[], code: string, language: RecognitionLanguage, stats: CatalogStats) {
+  const result: Array<Omit<RecognitionCandidate, "score">> = [];
+  await Promise.all(briefs.slice(0, MAX_CATALOG_DETAILS).map(async brief => {
+    try {
+      const card = await fetchCatalog<TcgCard>(`${TCGDEX_BASE}/${code}/cards/${encodeURIComponent(brief.id)}`, stats);
+      const candidate = candidateFromCard(card, language);
+      if (candidate) result.push(candidate);
+    } catch { /* malformed/removed catalog entry: skip */ }
+  }));
+  return result;
+}
+
 async function candidatesForLanguage(hints: OcrHints, language: RecognitionLanguage, stats: CatalogStats) {
   const code = tcgLanguage(language);
-  const cards = new Map<string, Omit<RecognitionCandidate, "score">>();
-  if (hints.localId && hints.denominator) {
-    const sets = await fetchCatalog<TcgSet[]>(`${TCGDEX_BASE}/${code}/sets`, stats);
-    const matchingSets = sets.filter(set => Number(set.cardCount?.official) === hints.denominator || Number(set.cardCount?.total) === hints.denominator).slice(0, 24);
-    await Promise.all(matchingSets.map(async set => {
-      try {
-        const card = await fetchCatalog<TcgCard>(`${TCGDEX_BASE}/${code}/sets/${encodeURIComponent(set.id)}/${encodeURIComponent(hints.localId)}`, stats);
-        const candidate = candidateFromCard(card, language);
-        if (candidate) cards.set(candidate.id, candidate);
-      } catch (reason) {
-        if (!(reason instanceof Error && "status" in reason && (reason as Error & { status?: number }).status === 404)) throw reason;
-      }
-    }));
+  const params = new URLSearchParams({ "pagination:page": "1", "pagination:itemsPerPage": String(MAX_CATALOG_DETAILS) });
+  if (hints.localId) params.set("localId", `eq:${hints.localId}`);
+  if (hints.name) params.set("name", hints.name);
+
+  if (hints.localId || hints.name) {
+    const filtered = await fetchCatalog<TcgCardBrief[]>(`${TCGDEX_BASE}/${code}/cards?${params.toString()}`, stats);
+    const details = await fetchCardDetails(filtered, code, language, stats);
+    if (details.length) return details;
   }
 
-  if (!cards.size && hints.localId) {
-    const list = await fetchCatalog<Array<{ id: string }>>(`${TCGDEX_BASE}/${code}/cards?localId=eq:${encodeURIComponent(hints.localId)}&pagination:itemsPerPage=24`, stats);
-    await Promise.all(list.slice(0, 18).map(async brief => {
-      try {
-        const card = await fetchCatalog<TcgCard>(`${TCGDEX_BASE}/${code}/cards/${encodeURIComponent(brief.id)}`, stats);
-        const candidate = candidateFromCard(card, language);
-        if (candidate) cards.set(candidate.id, candidate);
-      } catch { /* malformed/removed catalog entry: skip */ }
-    }));
+  if (hints.localId && hints.name) {
+    const localParams = new URLSearchParams({
+      localId: `eq:${hints.localId}`,
+      "pagination:page": "1",
+      "pagination:itemsPerPage": String(MAX_CATALOG_DETAILS),
+    });
+    const byNumber = await fetchCatalog<TcgCardBrief[]>(`${TCGDEX_BASE}/${code}/cards?${localParams.toString()}`, stats);
+    const details = await fetchCardDetails(byNumber, code, language, stats);
+    if (details.length) return details;
   }
 
-  if (!cards.size && hints.name) {
-    const list = await fetchCatalog<Array<{ id: string }>>(`${TCGDEX_BASE}/${code}/cards?name=${encodeURIComponent(hints.name)}&pagination:itemsPerPage=16`, stats);
-    await Promise.all(list.slice(0, 12).map(async brief => {
-      try {
-        const card = await fetchCatalog<TcgCard>(`${TCGDEX_BASE}/${code}/cards/${encodeURIComponent(brief.id)}`, stats);
-        const candidate = candidateFromCard(card, language);
-        if (candidate) cards.set(candidate.id, candidate);
-      } catch { /* skip */ }
-    }));
+  if (hints.name) {
+    const nameParams = new URLSearchParams({ name: hints.name, "pagination:page": "1", "pagination:itemsPerPage": "8" });
+    const byName = await fetchCatalog<TcgCardBrief[]>(`${TCGDEX_BASE}/${code}/cards?${nameParams.toString()}`, stats);
+    return fetchCardDetails(byName, code, language, stats);
   }
-  return [...cards.values()];
+  return [];
 }
 
 async function resolveCatalog(hints: OcrHints, preferredLanguage: string | undefined, stats: CatalogStats) {
@@ -381,4 +384,5 @@ export const cardRecognitionRuntime = {
   catalog: "TCGdex REST v2",
   concurrency: 1,
   maxOcrDimension: OCR_MAX_DIMENSION,
+  maxCatalogDetailsPerLanguage: MAX_CATALOG_DETAILS,
 };

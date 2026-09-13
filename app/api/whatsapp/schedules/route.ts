@@ -55,13 +55,14 @@ export async function POST(request: Request) {
     }));
     const buyout = auction.buyout_price == null ? null : Number(auction.buyout_price);
     if (includeBuyout && buyout != null) {
+      const buyoutLabel = `${money(buyout)} 🦭`;
       const existing = options.find(o => o.amount === buyout);
       if (existing) {
         existing.isBuyout = true;
-        existing.label = `🔥 ARREMATE — ${money(buyout)}`;
+        existing.label = buyoutLabel;
       } else {
         if (options.length >= 12) throw new HttpError(400, "Não há espaço para o ARREMATE: a enquete aceita no máximo 12 opções.");
-        options.push({ label: `🔥 ARREMATE — ${money(buyout)}`, amount: buyout, isBuyout: true });
+        options.push({ label: buyoutLabel, amount: buyout, isBuyout: true });
       }
     }
     if (options.length > 12) throw new HttpError(400, "A enquete aceita no máximo 12 opções.");

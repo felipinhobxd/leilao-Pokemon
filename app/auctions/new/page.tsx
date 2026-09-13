@@ -1,5 +1,5 @@
-import BatchAuctionWizard from "./batch-wizard";
+import BulkAuctionWizard from "./bulk-wizard";
 
 export default function NewAuctionPage() {
-  return <BatchAuctionWizard />;
+  return <BulkAuctionWizard />;
 }

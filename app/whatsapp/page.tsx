@@ -1,26 +1,126 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPublicSupabaseClient } from "@/lib/supabase";
 
 type Group = { id:string; name:string; group_jid:string; is_default:boolean; last_synced_at:string|null };
 type Dispatch = { id:string; auction_id:string; group_id:string; scheduled_at:string; status:string; announcement_sent_at?:string|null; poll_sent_at?:string|null; sent_at:string|null; attempts:number; last_error:string|null };
 type BotWorker = { workerId:string; status:string; heartbeatAt:string|null; connectedAt:string|null; accountJid:string|null; lastError:string|null; qrText:string|null; qrExpiresAt:string|null; groupsSyncedAt:string|null; version:string|null; sessionActive:boolean };
 type BotData = { worker:BotWorker|null; online:boolean; canControl:boolean };
+type Bootstrap = { botStatus:BotData; groups:Group[]; defaultGroupId:string|null; dispatches:Dispatch[] };
 
 function when(value:string|null|undefined){if(!value)return "—";const time=Date.parse(value);return Number.isFinite(time)?new Date(time).toLocaleString("pt-BR"):"—"}
 function botStatusLabel(status:string){return ({starting:"Iniciando",waiting_qr:"Aguardando QR",connecting:"Conectando",connected:"Conectado",reconnecting:"Reconectando",disconnected:"Desconectado",error:"Erro"} as Record<string,string>)[status]??status}
 function dispatchLabel(status:string){return ({scheduled:"Pendente",sending:"Enviando",sent:"Enviado",failed:"Falhou",cancelled:"Cancelado"} as Record<string,string>)[status]??status}
+function heartbeatFresh(value:unknown){return typeof value==="string"&&Number.isFinite(Date.parse(value))&&Date.now()-Date.parse(value)<=35_000}
 
 export default function WhatsAppPage(){
-  const [db]=useState(createPublicSupabaseClient); const [ready,setReady]=useState(false); const [session,setSession]=useState<any>(null); const [bot,setBot]=useState<BotData>({worker:null,online:false,canControl:false}); const [groups,setGroups]=useState<Group[]>([]); const [defaultGroupId,setDefaultGroupId]=useState(""); const [dispatches,setDispatches]=useState<Dispatch[]>([]); const [advanced,setAdvanced]=useState(false); const [busy,setBusy]=useState(false); const [error,setError]=useState(""); const [notice,setNotice]=useState("");
-  async function authFetch(url:string,init?:RequestInit){const {data}=await db.auth.getSession();if(!data.session)throw new Error("Entre primeiro no painel.");return fetch(url,{...init,cache:"no-store",headers:{...init?.headers,Authorization:`Bearer ${data.session.access_token}`}})}
-  async function load(){const {data:auth}=await db.auth.getSession();setSession(auth.session);setReady(true);if(!auth.session)return;const [botR,groupR,scheduleR]=await Promise.all([authFetch("/api/whatsapp/bot"),authFetch("/api/whatsapp/groups"),authFetch("/api/whatsapp/schedules")]);const [botB,groupB,scheduleB]=await Promise.all([botR.json(),groupR.json(),scheduleR.json()]);if(!botR.ok)throw new Error(botB.error??"Falha ao carregar bot.");if(!groupR.ok)throw new Error(groupB.error??"Falha ao carregar grupos.");if(!scheduleR.ok)throw new Error(scheduleB.error??"Falha ao carregar fila.");setBot(botB);setGroups(groupB.groups??[]);setDefaultGroupId(groupB.defaultGroupId??"");setDispatches(scheduleB.dispatches??[])}
-  useEffect(()=>{void load().catch(e=>setError(e instanceof Error?e.message:"Falha ao carregar."));const {data:listener}=db.auth.onAuthStateChange((_e,next)=>setSession(next));return()=>listener.subscription.unsubscribe()},[db]);
-  useEffect(()=>{if(!session)return;const timer=setInterval(()=>void load().catch(()=>undefined),5000);return()=>clearInterval(timer)},[session]);
-  async function command(action:"reconnect"|"disconnect"|"sync_groups"){const worker=bot.worker;if(!worker)return;setBusy(true);setError("");setNotice("");try{const r=await authFetch("/api/whatsapp/bot",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action,workerId:worker.workerId})});const b=await r.json();if(!r.ok)throw new Error(b.error??"Falha no comando.");setNotice(action==="sync_groups"?"Atualização de grupos solicitada.":"Comando enviado ao bot.");setTimeout(()=>void load().catch(()=>undefined),1500)}catch(e){setError(e instanceof Error?e.message:"Falha no comando.")}finally{setBusy(false)}}
-  async function setDefault(groupId:string){setBusy(true);setError("");try{const r=await authFetch("/api/whatsapp/groups",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({groupId})});const b=await r.json();if(!r.ok)throw new Error(b.error??"Não foi possível alterar o grupo.");setDefaultGroupId(groupId);setNotice("Grupo padrão atualizado.");await load()}catch(e){setError(e instanceof Error?e.message:"Falha ao alterar o grupo.")}finally{setBusy(false)}}
+  const [db]=useState(createPublicSupabaseClient);
+  const [ready,setReady]=useState(false);
+  const [session,setSession]=useState<any>(null);
+  const [bot,setBot]=useState<BotData>({worker:null,online:false,canControl:false});
+  const [groups,setGroups]=useState<Group[]>([]);
+  const [defaultGroupId,setDefaultGroupId]=useState("");
+  const [dispatches,setDispatches]=useState<Dispatch[]>([]);
+  const [advanced,setAdvanced]=useState(false);
+  const [busy,setBusy]=useState(false);
+  const [refreshing,setRefreshing]=useState(false);
+  const [error,setError]=useState("");
+  const [notice,setNotice]=useState("");
+  const sessionRef=useRef<any>(null);
+  const loadingRef=useRef(false);
+
+  const tokenFetch=useCallback(async(url:string,init?:RequestInit)=>{
+    let current=sessionRef.current;
+    if(!current){const {data}=await db.auth.getSession();current=data.session;sessionRef.current=current;setSession(current)}
+    if(!current)throw new Error("Entre primeiro no painel.");
+    return fetch(url,{...init,cache:"no-store",headers:{...init?.headers,Authorization:`Bearer ${current.access_token}`}});
+  },[db]);
+
+  const load=useCallback(async(currentSession?:any)=>{
+    if(loadingRef.current)return;
+    loadingRef.current=true;setRefreshing(true);
+    try{
+      let current=currentSession??sessionRef.current;
+      if(!current){const {data}=await db.auth.getSession();current=data.session;sessionRef.current=current;setSession(current)}
+      setReady(true);
+      if(!current)return;
+      const response=await fetch("/api/whatsapp/bootstrap",{cache:"no-store",headers:{Authorization:`Bearer ${current.access_token}`}});
+      const body=await response.json() as Bootstrap&{error?:string};
+      if(!response.ok)throw new Error(body.error??"Falha ao carregar Central WhatsApp.");
+      setBot(body.botStatus);
+      setGroups(body.groups??[]);
+      setDefaultGroupId(body.defaultGroupId??"");
+      setDispatches(body.dispatches??[]);
+      setError("");
+    }finally{loadingRef.current=false;setRefreshing(false)}
+  },[db]);
+
+  useEffect(()=>{
+    let alive=true;
+    void db.auth.getSession().then(({data})=>{
+      if(!alive)return;
+      sessionRef.current=data.session;setSession(data.session);setReady(true);
+      if(data.session)void load(data.session).catch(e=>setError(e instanceof Error?e.message:"Falha ao carregar."));
+    });
+    const {data:listener}=db.auth.onAuthStateChange((_e,next)=>{
+      sessionRef.current=next;setSession(next);setReady(true);
+      if(next)void load(next).catch(e=>setError(e instanceof Error?e.message:"Falha ao carregar."));
+    });
+    return()=>{alive=false;listener.subscription.unsubscribe()};
+  },[db,load]);
+
+  useEffect(()=>{
+    if(!session)return;
+    let debounce:ReturnType<typeof setTimeout>|undefined;
+    const reload=()=>{if(debounce)clearTimeout(debounce);debounce=setTimeout(()=>void load().catch(()=>undefined),250)};
+    const interval=setInterval(reload,60_000);
+    const freshness=setInterval(()=>{
+      setBot(previous=>{
+        if(!previous.worker)return previous;
+        const online=heartbeatFresh(previous.worker.heartbeatAt);
+        return online===previous.online?previous:{...previous,online};
+      });
+    },5_000);
+    const channel=db.channel("whatsapp-central")
+      .on("postgres_changes",{event:"*",schema:"public",table:"whatsapp_bot_workers"},payload=>{
+        const row=payload.new as Record<string,unknown>;
+        if(!row.worker_id)return;
+        setBot(previous=>{
+          const heartbeatAt=typeof row.heartbeat_at==="string"?row.heartbeat_at:null;
+          const qrExpiresAt=typeof row.qr_expires_at==="string"?row.qr_expires_at:null;
+          const qrValid=previous.canControl&&Boolean(qrExpiresAt&&Date.parse(qrExpiresAt)>Date.now());
+          return {
+            canControl:previous.canControl,
+            online:heartbeatFresh(heartbeatAt),
+            worker:{
+              workerId:String(row.worker_id),status:String(row.status??"disconnected"),heartbeatAt,
+              connectedAt:typeof row.connected_at==="string"?row.connected_at:null,
+              accountJid:typeof row.account_jid==="string"?row.account_jid:null,
+              lastError:typeof row.last_error==="string"?row.last_error:null,
+              qrText:qrValid&&typeof row.qr_render==="string"?row.qr_render:null,
+              qrExpiresAt:qrValid?qrExpiresAt:null,
+              groupsSyncedAt:typeof row.groups_synced_at==="string"?row.groups_synced_at:null,
+              version:typeof row.version==="string"?row.version:null,
+              sessionActive:row.session_active===true,
+            },
+          };
+        });
+      })
+      .on("postgres_changes",{event:"*",schema:"public",table:"whatsapp_dispatches"},reload)
+      .on("postgres_changes",{event:"*",schema:"public",table:"whatsapp_groups"},reload)
+      .subscribe();
+    window.addEventListener("focus",reload);
+    return()=>{if(debounce)clearTimeout(debounce);clearInterval(interval);clearInterval(freshness);window.removeEventListener("focus",reload);void db.removeChannel(channel)};
+  },[db,session,load]);
+
+  async function command(action:"reconnect"|"disconnect"|"sync_groups"){
+    const worker=bot.worker;if(!worker)return;setBusy(true);setError("");setNotice("");
+    try{const r=await tokenFetch("/api/whatsapp/bot",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action,workerId:worker.workerId})});const b=await r.json();if(!r.ok)throw new Error(b.error??"Falha no comando.");setNotice(action==="sync_groups"?"Atualização de grupos solicitada.":"Comando enviado ao bot.");setTimeout(()=>void load().catch(()=>undefined),1500)}catch(e){setError(e instanceof Error?e.message:"Falha no comando.")}finally{setBusy(false)}
+  }
+  async function setDefault(groupId:string){setBusy(true);setError("");try{const r=await tokenFetch("/api/whatsapp/groups",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({groupId})});const b=await r.json();if(!r.ok)throw new Error(b.error??"Não foi possível alterar o grupo.");setDefaultGroupId(groupId);setNotice("Grupo padrão atualizado.");await load()}catch(e){setError(e instanceof Error?e.message:"Falha ao alterar o grupo.")}finally{setBusy(false)}}
+
   if(!ready)return <main className="shell"><p>Carregando…</p></main>;
   if(!session)return <main className="shell"><section className="panel"><h1>Central WhatsApp</h1><p className="muted">Entre primeiro no painel administrativo.</p><Link href="/">Voltar</Link></section></main>;
   const worker=bot.worker; const connected=Boolean(bot.online&&worker?.status==="connected"); const dot=connected?"🟢":bot.online?"🟡":"🔴"; const selected=groups.find(g=>g.id===defaultGroupId);
@@ -38,8 +138,8 @@ export default function WhatsAppPage(){
       <button type="button" style={{marginTop:12}} onClick={()=>setAdvanced(v=>!v)}>{advanced?"Ocultar detalhes avançados":"Detalhes avançados"}</button>
       {advanced&&selected&&<div className="stat-card" style={{marginTop:12}}><span>JID do grupo</span><strong style={{fontSize:"1rem"}}>{selected.group_jid}</strong><small>Última sincronização: {when(selected.last_synced_at)}</small></div>}
     </section>
-    <section className="panel"><div className="panel-title"><div><p className="eyebrow">FILA</p><h2>Publicações recentes</h2></div><button disabled={busy} onClick={()=>void load()}>Atualizar</button></div>
-      {!dispatches.length?<p className="muted">Nenhuma publicação ainda.</p>:<div className="table-wrap"><table><thead><tr><th>Horário</th><th>Status</th><th>Imagem/anúncio</th><th>Enquete</th><th>Tentativas</th></tr></thead><tbody>{dispatches.slice(0,25).map(d=><tr key={d.id}><td>{when(d.scheduled_at)}</td><td>{dispatchLabel(d.status)}</td><td>{d.announcement_sent_at?"✅ Enviado":d.status==="sending"?"⏳ Enviando":"—"}</td><td>{d.poll_sent_at?"✅ Enviada":d.status==="sending"?"⏳ Enviando":"—"}</td><td>{d.attempts}{d.last_error?<small className="muted"> · {d.last_error}</small>:null}</td></tr>)}</tbody></table></div>}
+    <section className="panel"><div className="panel-title"><div><p className="eyebrow">FILA</p><h2>Publicações recentes</h2></div><button disabled={busy||refreshing} onClick={()=>void load().catch(e=>setError(e instanceof Error?e.message:"Falha ao atualizar."))}>{refreshing?"Atualizando…":"Atualizar"}</button></div>
+      {!dispatches.length?<p className="muted">Nenhuma publicação ainda.</p>:<div className="table-wrap"><table><thead><tr><th>Horário</th><th>Status</th><th>Imagem/anúncio</th><th>Enquete</th><th>Tentativas</th></tr></thead><tbody>{dispatches.map(d=><tr key={d.id}><td>{when(d.scheduled_at)}</td><td>{dispatchLabel(d.status)}</td><td>{d.announcement_sent_at?"✅ Enviado":d.status==="sending"?"⏳ Enviando":"—"}</td><td>{d.poll_sent_at?"✅ Enviada":d.status==="sending"?"⏳ Enviando":"—"}</td><td>{d.attempts}{d.last_error?<small className="muted"> · {d.last_error}</small>:null}</td></tr>)}</tbody></table></div>}
     </section>
   </main>;
 }

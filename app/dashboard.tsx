@@ -8,10 +8,11 @@ import type { Row, Snapshot } from "@/lib/backend";
 import { money } from "@/lib/domain";
 
 type Editor = { kind: "CARD" | "PARTICIPANT" | "AUCTION"; row?: Row };
-type Operations = { bot: { workerId:string; status:string; online:boolean; connected:boolean; version:string|null } | null; group: { id:string; name:string } | null };
+type Operations = { bot: { workerId:string; status:string; heartbeatAt:string|null; online:boolean; connected:boolean; version:string|null } | null; group: { id:string; name:string } | null };
 const labelStatus: Record<string, string> = { active: "Ativo", suspended: "Suspenso", banned: "Bloqueado", available: "Disponível", archived: "Arquivada", in_auction: "Em leilão", draft: "Rascunho", open: "Aberto", sold: "Vendido", closed: "Sem vencedor", cancelled: "Cancelado" };
 const str = (row: Row | undefined, key: string) => String(row?.[key] ?? "");
 const price = (value: unknown) => money(value == null ? null : Number(value));
+const heartbeatFresh = (value: unknown) => typeof value === "string" && Number.isFinite(Date.parse(value)) && Date.now() - Date.parse(value) <= 35_000;
 
 export default function Dashboard() {
   const [db] = useState(createPublicSupabaseClient);
@@ -29,43 +30,92 @@ export default function Dashboard() {
   const [retry, setRetry] = useState<Command | null>(null);
   const revision = useRef(0);
   const accessToken = useRef<string | null>(null);
+  const lastRefreshAt = useRef(0);
   const mutationLock = useRef(false);
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (editor && dialog.current && !dialog.current.open) dialog.current.showModal(); }, [editor]);
   useEffect(() => {
     const { data: subscription } = db.auth.onAuthStateChange((_event, next) => {
       accessToken.current = next?.access_token ?? null;
+      lastRefreshAt.current = 0;
       setSession(next); setReady(true);
       if (!next) { revision.current++; setData(null); setOperations({bot:null,group:null}); setRetry(null); setEditor(null); }
     });
     return () => subscription.subscription.unsubscribe();
   }, [db]);
   const request = useCallback(async (url: string, init?: RequestInit) => {
-    const { data: auth } = await db.auth.getSession();
-    if (!auth.session) throw new Error("Entre novamente para continuar.");
-    return fetch(url, { ...init, headers: { ...init?.headers, Authorization: `Bearer ${auth.session.access_token}` }, cache: "no-store" });
+    let token = accessToken.current;
+    if (!token) {
+      const { data: auth } = await db.auth.getSession();
+      token = auth.session?.access_token ?? null;
+      accessToken.current = token;
+    }
+    if (!token) throw new Error("Entre novamente para continuar.");
+    return fetch(url, { ...init, headers: { ...init?.headers, Authorization: `Bearer ${token}` }, cache: "no-store" });
   }, [db]);
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (force = false) => {
+    const now = Date.now();
+    if (!force && now - lastRefreshAt.current < 3_000) return;
+    lastRefreshAt.current = now;
     const version = ++revision.current;
     try {
       const response = await request("/api/dashboard"); const body = await response.json();
       if (version !== revision.current || !accessToken.current) return;
       if (!response.ok) { if ([401, 403].includes(response.status)) setData(null); throw new Error(body.error); }
-      setData(body.data); setRole(body.role); setOperations(body.operations ?? {bot:null,group:null});
+      setData(body.data); setRole(body.role); setOperations(body.operations ?? {bot:null,group:null}); setError("");
     } catch (e) { if (version === revision.current) setError(e instanceof Error ? e.message : "Falha ao atualizar."); }
   }, [request]);
   useEffect(() => {
     if (!session) return;
     let timer: ReturnType<typeof setTimeout>;
     const reload = () => { clearTimeout(timer); timer = setTimeout(() => void refresh(), 250); };
-    void refresh();
-    const channel = db.channel("admin-auctions").on("postgres_changes", { event: "*", schema: "public", table: "auction_events" }, reload).subscribe(status => {
-      setRealtime(status === "SUBSCRIBED" ? "Ao vivo" : "Reconectando…");
-      if (status === "SUBSCRIBED") reload();
-    });
+    void refresh(true);
+    const channel = db.channel("admin-auctions")
+      .on("postgres_changes", { event: "*", schema: "public", table: "auction_events" }, reload)
+      .on("postgres_changes", { event: "*", schema: "public", table: "whatsapp_bot_workers" }, payload => {
+        const row = payload.new as Record<string, unknown>;
+        if (!row.worker_id) return;
+        const heartbeatAt = typeof row.heartbeat_at === "string" ? row.heartbeat_at : null;
+        const status = String(row.status ?? "disconnected");
+        const online = heartbeatFresh(heartbeatAt);
+        setOperations(previous => ({
+          ...previous,
+          bot: {
+            workerId: String(row.worker_id),
+            status,
+            heartbeatAt,
+            online,
+            connected: online && status === "connected",
+            version: typeof row.version === "string" ? row.version : null,
+          },
+        }));
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "whatsapp_groups" }, payload => {
+        const row = payload.new as Record<string, unknown>;
+        if (!row.id) return;
+        const isDefault = row.is_default === true && row.active !== false;
+        setOperations(previous => {
+          if (isDefault) return { ...previous, group: { id: String(row.id), name: String(row.name ?? "Grupo") } };
+          if (previous.group?.id === String(row.id)) return { ...previous, group: null };
+          return previous;
+        });
+      })
+      .subscribe(status => {
+        setRealtime(status === "SUBSCRIBED" ? "Ao vivo" : "Reconectando…");
+        if (status === "SUBSCRIBED") reload();
+      });
     window.addEventListener("focus", reload);
-    const fallback = setInterval(reload, 15000);
-    return () => { clearTimeout(timer); clearInterval(fallback); window.removeEventListener("focus", reload); void db.removeChannel(channel); };
+    const freshness = setInterval(() => {
+      setOperations(previous => {
+        if (!previous.bot) return previous;
+        const online = heartbeatFresh(previous.bot.heartbeatAt);
+        const connected = online && previous.bot.status === "connected";
+        if (online === previous.bot.online && connected === previous.bot.connected) return previous;
+        return { ...previous, bot: { ...previous.bot, online, connected } };
+      });
+    }, 5_000);
+    const fallback = setInterval(reload, 60_000);
+    return () => { clearTimeout(timer); clearInterval(freshness); clearInterval(fallback); window.removeEventListener("focus", reload); void db.removeChannel(channel); };
   }, [db, session, refresh]);
   async function execute(command: Command) {
     if (mutationLock.current) return;
@@ -75,9 +125,9 @@ export default function Dashboard() {
       const body = await response.json();
       if (!response.ok) {
         if (response.status >= 500) throw new Error(body.error);
-        setRetry(null); setError(body.error); await refresh(); return;
+        setRetry(null); setError(body.error); await refresh(true); return;
       }
-      setRetry(null); setEditor(null); setNotice("Operação confirmada pelo banco."); await refresh();
+      setRetry(null); setEditor(null); setNotice("Operação confirmada pelo banco."); await refresh(true);
     } catch (e) { setRetry(command); setError(`${e instanceof Error ? e.message : "Falha de rede."} Reenvie a mesma operação para confirmar o resultado com segurança.`); }
     finally { mutationLock.current = false; setBusy(false); }
   }
@@ -123,7 +173,7 @@ export default function Dashboard() {
     <header className="topbar"><div><p className="eyebrow">CENTRAL DE LEILÕES</p><h1>Leilão Pokémon</h1><p className="muted">Cartas, participantes e disputas em um só lugar.</p></div>{session && <div className="actions"><span className="status-pill">{realtime}</span><button disabled={busy} onClick={exportExcel}>Exportar Excel</button><button disabled={busy} onClick={() => void db.auth.signOut()}>Sair</button></div>}</header>
     {error && <p role="alert" className="alert">{error}</p>}{notice && <p role="status" className="notice">{notice}</p>}
     {retry && <button disabled={busy} onClick={() => void execute(retry)}>Reenviar a mesma operação</button>}
-    {!ready ? <p>Carregando sessão…</p> : !session ? <form className="panel login form-grid" onSubmit={login}><h2>Acesso administrativo</h2><label>E-mail<input name="email" type="email" autoComplete="username" required /></label><label>Senha<input name="password" type="password" autoComplete="current-password" required /></label><button disabled={busy}>Entrar</button></form> : !data ? <section className="panel"><p>Carregando dados do banco…</p><button onClick={() => void refresh()}>Tentar novamente</button></section> : <>
+    {!ready ? <p>Carregando sessão…</p> : !session ? <form className="panel login form-grid" onSubmit={login}><h2>Acesso administrativo</h2><label>E-mail<input name="email" type="email" autoComplete="username" required /></label><label>Senha<input name="password" type="password" autoComplete="current-password" required /></label><button disabled={busy}>Entrar</button></form> : !data ? <section className="panel"><p>Carregando dados do banco…</p><button onClick={() => void refresh(true)}>Tentar novamente</button></section> : <>
       <section className="panel" style={{marginBottom:14}}><div className="panel-title"><div><p className="eyebrow">OPERAÇÃO AO VIVO</p><h2>{botLabel}</h2></div><span className="status-pill">Próximo lote #{nextLot}</span></div><div className="stats-grid"><div className="stat-card"><span>Bot</span><strong>{botLabel}</strong></div><div className="stat-card"><span>Grupo</span><strong>{operations.group?.name??"Não selecionado"}</strong></div><div className="stat-card"><span>Leilão atual</span><strong>{auction?`#${Number(auction.lot_number)||"—"} ${str(card,"name")}`:"Nenhum"}</strong></div><div className="stat-card"><span>Maior lance</span><strong>{price(amount)}</strong></div><div className="stat-card"><span>Participantes</span><strong>{participantCount}</strong></div><div className="stat-card"><span>Próximo lote</span><strong>#{nextLot}</strong></div></div><div className="actions" style={{marginTop:14}}><Link className="button-link" href="/auctions/new">＋ Novo leilão</Link><a className="button-link" href="#current-auction">Ver leilão atual</a><Link className="button-link" href="/whatsapp">Central WhatsApp</Link></div></section>
       <section className="stats-grid">{[["Cartas",data.cards.filter(c=>c.status!=="archived").length],["Participantes",data.participants.filter(p=>p.status==="active").length],["Leilões abertos",auctions.filter(a=>a.status==="open").length],["Compras confirmadas",data.purchases.filter(p=>p.status==="confirmed").length]].map(([label,value])=><div className="stat-card" key={label}><span>{label}</span><strong>{value}</strong></div>)}</section>
       <section className="main-grid"><article className="panel" id="current-auction"><div className="panel-title"><h2>Disputa</h2><select aria-label="Selecionar leilão" value={str(auction,"id")} onChange={e=>setSelected(e.target.value)}>{auctions.map(a=><option key={str(a,"id")} value={str(a,"id")}>#{Number(a.lot_number)||"—"} {str(data.cards.find(c=>c.id===a.card_id),"name")} · {labelStatus[str(a,"status")] ?? str(a,"status")}</option>)}</select></div>

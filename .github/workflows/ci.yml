@@ -1,53 +1,46 @@
 name: CI
-
 on:
   push:
     branches: [main]
   pull_request:
-
 permissions:
-  contents: write
-
+  contents: read
 jobs:
   validate:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: leilao_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/leilao_test
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Setup Node
-        uses: actions/setup-node@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: package.json
-
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
-
-      - name: Typecheck
-        run: npm run typecheck
-
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck and event validation
+        run: npm run typecheck && npm test
+      - name: Schema and functional database tests
+        run: |
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/bootstrap.sql
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/schema.sql
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/auction.sql
+      - name: Concurrent buyouts and duplicate events
+        run: python3 tests/concurrency.py
       - name: Build
         run: npm run build
-
-      - name: Commit generated lockfile
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          git add package-lock.json
-          if git diff --cached --quiet; then
-            echo "Lockfile already up to date."
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -m "chore: add generated package lockfile"
-            git push
-          fi
-
-      - name: Upload generated lockfile
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: package-lock
-          path: package-lock.json
-          if-no-files-found: ignore
+      - name: Authenticated route guards
+        run: node tests/smoke.mjs

@@ -27,29 +27,6 @@ export type AuctionEvent = {
   tone: "neutral" | "positive" | "warning";
 };
 
-export const demoAuction: AuctionSummary = {
-  id: "DEMO-001",
-  cardName: "Charizard ex",
-  collection: "151",
-  cardNumber: "199/165",
-  imageUrl: "https://images.pokemontcg.io/sv3pt5/199_hires.png",
-  status: "open",
-  startingPrice: 50,
-  buyoutPrice: 120,
-  highestBid: 80,
-  leader: "Maria",
-  participants: 7,
-  bids: 14,
-  endsAt: "21:30",
-};
-
-export const demoEvents: AuctionEvent[] = [
-  { id: "1", time: "21:08:14", actor: "Maria", label: "Novo maior lance", amount: 80, tone: "positive" },
-  { id: "2", time: "21:07:51", actor: "João", label: "Alterou o lance", amount: 70, tone: "neutral" },
-  { id: "3", time: "21:06:32", actor: "Lucas", label: "Retirou o lance de R$ 65", tone: "warning" },
-  { id: "4", time: "21:05:11", actor: "Maria", label: "Novo lance", amount: 60, tone: "neutral" },
-];
-
 export function money(value: number | null) {
   if (value === null) return "—";
   return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);

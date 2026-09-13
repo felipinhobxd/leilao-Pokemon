@@ -50,7 +50,7 @@ const HP_RE = /\bHP\s*([0-9]{2,3})\b/i;
 const stopNameLines = [
   "basic", "stage", "trainer", "energy", "pokémon", "pokemon", "item", "supporter", "stadium",
   "básico", "basico", "fase", "treinador", "energia", "objeto", "apoiador",
-  "básico", "etapa", "entrenador", "energía", "energia", "objeto",
+  "etapa", "entrenador", "energía",
 ];
 
 const languageWords: Record<Exclude<RecognitionLanguage, "ja">, string[]> = {
@@ -58,6 +58,8 @@ const languageWords: Record<Exclude<RecognitionLanguage, "ja">, string[]> = {
   en: ["weakness", "resistance", "retreat", "basic", "during", "next", "damage", "your", "attack", "discard", "deck", "opponent"],
   es: ["debilidad", "resistencia", "retirada", "básico", "durante", "turno", "daño", "ataque", "baraja", "descarta", "rival", "energía"],
 };
+
+const rulesVocabulary = new Set(Object.values(languageWords).flat().map(word => normalizeForCompare(word)));
 
 export function normalizeRecognitionText(value: string) {
   return String(value ?? "")
@@ -107,15 +109,21 @@ export function extractLikelyName(topText: string) {
     .map(line => normalizeRecognitionText(line).replace(/\bHP\s*\d{2,3}\b/gi, "").trim())
     .filter(Boolean);
 
-  const scored = lines.map(line => {
+  const scored = lines.map((line, index) => {
     const normalized = normalizeForCompare(line);
     if (!normalized || line.length > 44 || line.length < 2) return { line, score: -100 };
     const words = normalized.split(/\s+/);
+    const ruleWordCount = words.filter(word => rulesVocabulary.has(word)).length;
     let score = /[A-Za-zÀ-ÿぁ-んァ-ン一-龯]/.test(line) ? 20 : 0;
+    if (index === 0) score += 10;
+    else if (index === 1) score += 4;
+    else score -= Math.min(10, index * 2);
     if (words.length <= 5) score += 8;
     if (/^[\p{L}\p{N} .:'’\-♀♂]+$/u.test(line)) score += 6;
     if (/\d{2,}/.test(line)) score -= 12;
     if (stopNameLines.some(stop => normalized.includes(normalizeForCompare(stop)))) score -= 18;
+    if (ruleWordCount >= 2) score -= 42;
+    else if (ruleWordCount === 1) score -= 8;
     if (/weakness|resistance|retreat|fraqueza|resistencia|debilidad|energia|energy/i.test(normalized)) score -= 30;
     return { line: line.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}♀♂]+$/gu, "").trim(), score };
   }).sort((a, b) => b.score - a.score);

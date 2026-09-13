@@ -45,10 +45,13 @@ async function expandAliases(sock, values) {
   return aliases;
 }
 
-function memberName(member, aliases, contactNames, phoneE164) {
+async function memberName(sock, member, aliases, contactNames, phoneE164) {
   const cached = aliases.map(jid => contactNames?.get?.(jid)).find(Boolean);
   const metadata = member?.notify || member?.name || member?.verifiedName || member?.pushName || member?.username;
-  return String(cached || metadata || phoneE164 || "Participante WhatsApp").trim();
+  const ownAliases = await expandAliases(sock, [sock?.user?.id, sock?.user?.lid]);
+  const isOwnAccount = aliases.some(alias => ownAliases.includes(alias));
+  const ownName = isOwnAccount ? (sock?.user?.name || sock?.user?.notify || sock?.user?.verifiedName) : null;
+  return String(cached || metadata || ownName || phoneE164 || "Participante WhatsApp").trim();
 }
 
 export async function identityFromGroupMember({ sock, member, contactNames = new Map() }) {
@@ -58,8 +61,8 @@ export async function identityFromGroupMember({ sock, member, contactNames = new
   const phoneJid = aliases.find(isPhoneJid) || null;
   const lidJid = aliases.find(isLidJid) || null;
   const phoneE164 = phoneFromWhatsAppJid(phoneJid);
-  const voterJid = lidJid || phoneJid || aliases[0];
-  const displayName = memberName(member, aliases, contactNames, phoneE164);
+  const voterJid = phoneJid || lidJid || aliases[0];
+  const displayName = await memberName(sock, member, aliases, contactNames, phoneE164);
 
   if (displayName && displayName !== "Participante WhatsApp") {
     for (const jid of aliases) contactNames?.set?.(jid, displayName);
@@ -67,7 +70,7 @@ export async function identityFromGroupMember({ sock, member, contactNames = new
 
   return {
     voterJid,
-    rawJid: voterJid,
+    rawJid: member?.id || voterJid,
     aliases,
     phoneE164,
     displayName,
@@ -80,8 +83,6 @@ export async function syncGroupParticipants({ sock, groupJid, contactNames = new
 
   const metadata = await sock.groupMetadata(groupJid);
   const members = Array.isArray(metadata?.participants) ? metadata.participants : [];
-  const ownAliases = await expandAliases(sock, [sock?.user?.id, sock?.user?.lid]);
-  const ownPhones = new Set(ownAliases.map(phoneFromWhatsAppJid).filter(Boolean));
   let synced = 0;
   let skipped = 0;
 
@@ -93,13 +94,7 @@ export async function syncGroupParticipants({ sock, groupJid, contactNames = new
         continue;
       }
 
-      const sameAlias = identity.aliases.some(alias => ownAliases.includes(alias));
-      const samePhone = identity.phoneE164 && ownPhones.has(identity.phoneE164);
-      if (sameAlias || samePhone) {
-        skipped += 1;
-        continue;
-      }
-
+      // The connected WhatsApp account may be a real bidder. Do not exclude it.
       await ensureParticipant(identity);
       synced += 1;
     } catch {

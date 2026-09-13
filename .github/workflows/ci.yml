@@ -49,7 +49,15 @@ jobs:
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913042848_whatsapp_bot_runtime.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913043449_whatsapp_bot_command_requester_index.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913044443_whatsapp_group_sync_selection.sql
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913045744_auction_lot_increment_fields.sql
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913045753_auction_lot_number_sequence.sql
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913045801_auction_lot_number_constraints.sql
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913045807_auction_increment_constraint.sql
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913045819_auction_lot_edit_guard.sql
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913045826_card_images_bucket.sql
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913045842_create_auction_wizard_rpc.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/auction.sql
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/auction-wizard.sql
       - name: Concurrent buyouts and duplicate events
         run: python3 tests/concurrency.py
       - name: Build

@@ -63,6 +63,8 @@ jobs:
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913053833_whatsapp_dispatch_delivery_stages_noop_guard.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913173647_dashboard_snapshot_perf.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913180958_dashboard_snapshot.sql
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913193000_whatsapp_participant_identities.sql
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/participant-identities.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/auction.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/auction-wizard.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/dashboard-snapshot.sql

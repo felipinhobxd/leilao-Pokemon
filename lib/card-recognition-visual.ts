@@ -1,5 +1,15 @@
 import type { RecognitionCandidate } from "./card-recognition-core";
 
+// Fixed diagnostic fixture documented by TCGdex; never enters recognition/ranking.
+// https://tcgdex.dev/rest/filtering-sorting-pagination
+export function visualDiagnosticReference(pool: RecognitionCandidate[] = []): RecognitionCandidate {
+  const existing = pool.find(candidate => candidate.image?.startsWith("https://assets.tcgdex.net/"));
+  return existing ?? {
+    id: "diagnostic-basep-1", name: "Referência de teste", image: "https://assets.tcgdex.net/en/base/basep/1",
+    collection: "", cardNumber: "", localId: "", denominator: null, language: "en", hp: null, score: 0,
+  };
+}
+
 export type VisualReply = { similarities: number[]; backend: string; initMs?: number };
 export type VisualOutcome = { candidates: RecognitionCandidate[]; used: boolean; status: "not-needed" | "no-candidates" | "insufficient-clues" | "compared" | "failed"; reason?: string; error?: string; backend?: string; similarities?: number[]; initMs?: number };
 export type VisualTestBackend = "auto" | "webgpu/q4" | "wasm/q4" | "wasm/int8";

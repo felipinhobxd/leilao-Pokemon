@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
-import type { RecognitionCandidate, RecognitionResult } from "@/lib/card-recognition-core";
-import { recognizeVisually, type VisualTestBackend } from "@/lib/card-recognition-visual";
+import type { RecognitionResult } from "@/lib/card-recognition-core";
+import { recognizeVisually, visualDiagnosticReference, type VisualTestBackend } from "@/lib/card-recognition-visual";
 
 export default function RecognitionDebug({ file, result, busy }: { file: File; result?: RecognitionResult; busy: boolean }) {
   const [testing, setTesting] = useState(false);
@@ -11,21 +11,12 @@ export default function RecognitionDebug({ file, result, busy }: { file: File; r
     setTesting(true);
     setMessage("Preparando teste local…");
     try {
-      let reference = result?.visualCandidatePool?.find(c => c.image);
-      let testRequests = 0;
-      if (!reference) {
-        // Diagnostic reference only. Never saved to the draft or used as detected data.
-        const response = await fetch("https://api.tcgdex.net/v2/en/cards?pagination:page=1&pagination:itemsPerPage=1", { credentials: "omit", signal: AbortSignal.timeout(8000) });
-        testRequests++;
-        if (!response.ok) throw new Error(`Referência oficial: HTTP ${response.status}`);
-        const cards = await response.json();
-        if (!cards[0]?.image) throw new Error("Catálogo não forneceu imagem oficial para o teste");
-        reference = { id: cards[0].id, name: cards[0].name, image: cards[0].image } as RecognitionCandidate;
-      }
+      // A diagnostic must not depend on the first catalog listing having artwork.
+      const reference = visualDiagnosticReference(result?.visualCandidatePool);
       const outcome = await recognizeVisually(file, [reference], setMessage, backend);
       setMessage(JSON.stringify({ teste: outcome.used ? "PASS" : "FAIL", backend: outcome.backend,
         erro: outcome.error, modelo: "onnx-community/dinov2-small-ONNX", inicializacaoMs: outcome.initMs,
-        similaridades: outcome.similarities, referencia: reference.image, consultasSomenteDoTeste: testRequests,
+        similaridades: outcome.similarities, referencia: reference.image, consultasSomenteDoTeste: 0,
         observacao: "Testa embeddings e cosseno; não identifica nem altera a carta." }, null, 2));
     } catch (error) { setMessage(`FAIL: ${error instanceof Error ? error.message : String(error)}`); }
     finally { setTesting(false); }

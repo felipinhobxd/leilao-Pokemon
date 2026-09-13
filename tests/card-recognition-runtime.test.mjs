@@ -186,3 +186,16 @@ test('explicit visual test works outside localhost without auto-loading the mode
     assert.equal(result.candidates[0].evidence.visualMatch, undefined);
   } finally { visual.dispose(); globalThis.window = previous; }
 });
+
+test('visual diagnostic has an official reference even when catalog entries have no image', async () => {
+  const { visualDiagnosticReference } = await import('../lib/card-recognition-visual.ts');
+  const imageLess = { id: 'exu-!', name: 'Unown', localId: '!' };
+  const reference = visualDiagnosticReference([imageLess]);
+  assert.ok(reference.image.startsWith('https://assets.tcgdex.net/'));
+  assert.equal(reference.evidence, undefined);
+  assert.equal(reference.score, 0);
+  assert.equal(visualDiagnosticReference([]).image, reference.image);
+  const existing = { ...candidates[0] };
+  assert.equal(visualDiagnosticReference([imageLess, existing]), existing);
+  assert.deepEqual(imageLess, { id: 'exu-!', name: 'Unown', localId: '!' });
+});

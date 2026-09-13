@@ -17,6 +17,8 @@
 .radio-row{display:flex;align-items:center;gap:10px;min-height:44px;padding:9px 11px;border:1px solid transparent;border-radius:10px;color:var(--text);cursor:pointer;transition:background-color .16s ease,border-color .16s ease,box-shadow .16s ease}
 .radio-row:hover{background:var(--chip-hover);border-color:var(--chip-border)}
 .radio-row:has(input:checked){background:var(--accent-soft);border-color:var(--accent-border);color:var(--accent-soft-text);font-weight:800;box-shadow:inset 3px 0 0 var(--accent)}
+.radio-row:has(input:disabled){background:var(--disabled-bg);border-color:var(--disabled-border);color:var(--disabled-text);cursor:not-allowed;box-shadow:none}
+.radio-row:has(input:disabled):hover{background:var(--disabled-bg);border-color:var(--disabled-border)}
 .radio-row:has(input:focus-visible){outline:3px solid var(--focus-ring);outline-offset:2px}
 .radio-row input{width:auto;min-height:auto;accent-color:var(--accent)}
 .compact-bid{border:1px solid var(--line);border-radius:14px;padding:16px;background:var(--surface-soft)}

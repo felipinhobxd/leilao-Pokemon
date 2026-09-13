@@ -33,7 +33,6 @@ const sock = makeWASocket({
   logger,
   markOnlineOnConnect: false,
   syncFullHistory: false,
-  shouldSyncHistoryMessage: () => false,
 });
 
 sock.ev.on("creds.update", saveCreds);

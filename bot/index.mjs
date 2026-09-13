@@ -33,7 +33,6 @@ let sock;
 let schedulerTimer;
 let schedulerBusy = false;
 let finalizeBusy = false;
-let reconnecting = false;
 let voteQueue = Promise.resolve();
 const contactNames = new Map();
 
@@ -410,8 +409,11 @@ async function finalizeDueAuctions() {
 }
 
 async function connect() {
+  // Each socket gets its own retry guard; a failed replacement must retry too.
+  let reconnecting = false;
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
-  sock = makeWASocket({ auth: state, logger, markOnlineOnConnect: false, syncFullHistory: false, shouldSyncHistoryMessage: () => false, getMessage: getStoredPollMessage });
+  sock = makeWASocket({ auth: state, logger, markOnlineOnConnect: false, syncFullHistory: false, getMessage: getStoredPollMessage });
+  const activeSocket = sock;
   sock.ev.on("creds.update", saveCreds);
   sock.ev.on("contacts.upsert", contacts => contacts.forEach(rememberContact));
   sock.ev.on("contacts.update", contacts => contacts.forEach(rememberContact));
@@ -420,6 +422,7 @@ async function connect() {
     voteQueue = voteQueue.then(() => handleMessageUpdates(updates)).catch(error => console.error("Falha na fila de votos:", error?.message || error));
   });
   sock.ev.on("connection.update", ({ connection, qr, lastDisconnect }) => {
+    if (sock !== activeSocket) return;
     if (qr) {
       console.log("\nLeia o QR Code pelo WhatsApp:\n");
       qrcode.generate(qr, { small: true });
@@ -448,7 +451,10 @@ async function connect() {
       if (!reconnecting) {
         reconnecting = true;
         console.log("Reconectando em 5 segundos...");
-        setTimeout(() => void connect().catch(error => console.error(error)), 5000);
+        setTimeout(() => void connect().catch(error => {
+          console.error("Falha ao recriar conexão:", error?.message || error);
+          process.exit(1); // Let the supervisor retry instead of staying disconnected.
+        }), 5000);
       }
     }
   });

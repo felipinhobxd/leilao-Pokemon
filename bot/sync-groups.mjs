@@ -1,6 +1,7 @@
 import makeWASocket, { DisconnectReason, useMultiFileAuthState } from "@whiskeysockets/baileys";
 import { createClient } from "@supabase/supabase-js";
 import pino from "pino";
+import { syncParticipatingGroups } from "./groups.mjs";
 
 const required = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"];
 for (const key of required) {
@@ -44,19 +45,9 @@ sock.ev.on("connection.update", async ({ connection, qr, lastDisconnect }) => {
   }
   if (connection === "open") {
     try {
-      const groups = await sock.groupFetchAllParticipating();
-      const now = new Date().toISOString();
-      const rows = Object.values(groups ?? {}).map(group => ({
-        group_jid: group.id,
-        name: group.subject || group.id,
-        active: true,
-        updated_at: now,
-      }));
-      if (rows.length) {
-        const { error } = await db.from("whatsapp_groups").upsert(rows, { onConflict: "group_jid" });
-        if (error) throw error;
-      }
-      console.log(`Grupos sincronizados: ${rows.length}`);
+      const result = await syncParticipatingGroups(sock, db);
+      console.log(`Grupos sincronizados: ${result.count}`);
+      console.log(`Sincronização concluída em ${result.syncedAt}`);
       await finish(null, sock);
     } catch (error) {
       await finish(error, sock);

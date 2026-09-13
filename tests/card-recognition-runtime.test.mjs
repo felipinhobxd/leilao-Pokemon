@@ -30,7 +30,7 @@ test("card recognition stays local-first and free-service only", () => {
   ]) assert.equal(source.includes(forbidden), false, `${forbidden} must not be used by card recognition`);
 });
 
-test("ambiguous language searches beyond the form default; trusted OCR stops early", async () => {
+test("form language is only search priority; exact OCR stops with few requests", async () => {
   const original = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async url => {
@@ -41,16 +41,16 @@ test("ambiguous language searches beyond the form default; trusted OCR stops ear
   };
   try {
     const stats = { requests: 0, queries: [] };
-    const ranked = await runtime.resolveCatalog(buildOcrHints("Pikachu", "58/102"), "pt-BR", stats);
-    assert.ok(ranked.some(card => card.language === "en"));
-    assert.ok(calls.some(url => url.includes("/en/")));
+    const { ranked } = await runtime.resolveCatalog(buildOcrHints("Pikachu", "58/102"), "pt-BR", stats);
+    assert.ok(ranked.every(card => !card.evidence.languageMatch));
+    assert.ok(stats.requests <= 4);
     calls.length = 0;
     await runtime.resolveCatalog(buildOcrHints("Pikachu", "58/102", "Fraqueza Recuo Baralho"), "en", { requests: 0, queries: [] });
     assert.ok(calls.every(url => url.includes("/pt-br/")));
   } finally { globalThis.fetch = original; }
 });
 
-const { createVisualFallback, needsVisualFallback } = await import('../lib/card-recognition-visual.ts');
+const { createVisualFallback, needsVisualFallback, applyVisualEvidence, recognitionDebugEnabled } = await import('../lib/card-recognition-visual.ts');
 const evidence = { strongEvidence: true, fullNumberMatch: false, nameSimilarity: 0.9 };
 const candidates = [0, 1].map(i => ({ id: String(i), image: `https://assets.tcgdex.net/en/base/base1/${i}`, score: 70, evidence }));
 
@@ -85,6 +85,8 @@ test('model failure preserves OCR candidates and manual flow without repeated ba
   for (let i = 0; i < 3; i++) {
     const result = await visual.recognize(new Blob(), candidates);
     assert.equal(result.used, false);
+    assert.equal(result.status, "failed");
+    assert.match(result.error, /offline/);
     assert.deepEqual(result.candidates, candidates);
   }
   assert.equal(created, 1);
@@ -101,4 +103,55 @@ test('same photo uses the session/memory cache without DOM, OCR, network or mode
     assert.equal(reads, 1);
     assert.ok(results.every(result => result.source === 'cache' && result.catalogRequests === 0));
   } finally { globalThis.sessionStorage = previous; }
+});
+
+
+test('catalog has a shared eight-request budget and no queries without OCR clues', async () => {
+  const previous = globalThis.fetch;
+  let count = 0;
+  globalThis.fetch = async url => { count++; return { ok: true, json: async () => url.includes('?') ?
+    Array.from({length: 10}, (_, i) => ({id: `budget-${count}-${i}`, name: 'Unrelated', localId: '44'})) :
+    {id: `detail-${count}`, name: 'Unrelated', localId: '44', set: {name: 'Other', cardCount: {official: 99}}} }; };
+  try {
+    const empty = await runtime.resolveCatalog(buildOcrHints('', ''), 'pt-BR', {requests: 0, queries: []});
+    assert.equal(count, 0); assert.equal(empty.pool.length, 0);
+    const stats = {requests: 0, queries: []};
+    await runtime.resolveCatalog(buildOcrHints('Rayquaza', '153/217', 'Fraqueza Recuo'), 'pt-BR', stats);
+    assert.equal(count, 8); assert.equal(stats.exhausted, true);
+    await runtime.resolveCatalog(buildOcrHints('Another', '22/147'), 'ja', stats);
+    assert.equal(count, 8);
+  } finally { globalThis.fetch = previous; }
+});
+
+test('partial shortlist remains private unless visual minimum and margin both pass', async () => {
+  const { visualCandidatePool, rankRecognitionCandidates } = await import('../lib/card-recognition-core.ts');
+  const hints = buildOcrHints('Rayqu', '');
+  const raw = ['Rayquaza', 'Rayquaza EX'].map((name, i) => ({id: `partial-${i}`, name, localId: String(i), denominator: 217, cardNumber: `${i}/217`, collection: 'Set', language: 'en', hp: null, image: `https://assets.tcgdex.net/en/test/${i}`}));
+  const pool = visualCandidatePool(raw, hints);
+  assert.equal(pool.length, 1); // EX variant is below the conservative partial-name floor.
+  const two = visualCandidatePool([raw[0], {...raw[0], id: 'second', cardNumber: '2/217'}], hints);
+  assert.equal(two.length, 2); assert.equal(rankRecognitionCandidates(raw, hints).length, 0);
+  assert.equal(needsVisualFallback(two), true);
+  assert.ok(applyVisualEvidence(two, [0.84, 0.4]).every(c => !c.evidence.visualMatch));
+  assert.ok(applyVisualEvidence(two, [0.91, 0.89]).every(c => !c.evidence.visualMatch));
+  const promoted = applyVisualEvidence(two, [0.94, 0.7]);
+  assert.equal(promoted[0].evidence.visualMatch, true);
+  assert.equal(promoted[1].evidence.strongEvidence, false);
+});
+
+test('new drafts never use the filename and debug controls stay local', () => {
+  const wizard = fs.readFileSync(new URL('../app/auctions/new/bulk-wizard.tsx', import.meta.url), 'utf8');
+  const draft = wizard.slice(wizard.indexOf('function draftFor'), wizard.indexOf('function recognitionLabel'));
+  assert.match(draft, /name: ""/); assert.doesNotMatch(draft, /file\.name|baseName/);
+  const previous = globalThis.window;
+  const previousMode = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'production';
+  try {
+    globalThis.window = {location: {hostname: 'example.com', search: '?recognitionDebug=1'}};
+    assert.equal(recognitionDebugEnabled(), false);
+    globalThis.window.location.hostname = 'localhost';
+    assert.equal(recognitionDebugEnabled(), true);
+    globalThis.window.location.search = '';
+    assert.equal(recognitionDebugEnabled(), false);
+  } finally { globalThis.window = previous; if (previousMode === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previousMode; }
 });

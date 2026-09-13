@@ -24,6 +24,7 @@ export type CandidateEvidence = {
   languageMatch: boolean;
   hpMatch: boolean;
   strongEvidence: boolean;
+  visualMatch?: boolean;
 };
 
 export type RecognitionCandidate = {
@@ -57,6 +58,16 @@ export type RecognitionResult = {
   catalogRequests: number;
   visualUsed?: boolean;
   visualBackend?: string;
+  visualStatus?: "not-needed" | "no-candidates" | "insufficient-clues" | "loading" | "compared" | "failed";
+  visualError?: string;
+  visualReason?: string;
+  visualCandidateCount?: number;
+  visualInitMs?: number;
+  visualSimilarities?: number[];
+  visualCandidatePool?: RecognitionCandidate[];
+  catalogCandidatesBefore?: number;
+  catalogCandidatesAfter?: number;
+  catalogBudgetExhausted?: boolean;
 };
 
 export type ManualFieldMap = Partial<Record<RecognizableField, boolean>>;
@@ -407,6 +418,15 @@ export function rankRecognitionCandidates(candidates: Array<Omit<RecognitionCand
     .sort((a, b) => b.score - a.score || b.evidence.nameSimilarity - a.evidence.nameSimilarity)
     .slice(0, 5);
   return ranked;
+}
+
+// Partial evidence is eligible for comparison, not for display/autofill.
+export function visualCandidatePool(candidates: Array<Omit<RecognitionCandidate, "score" | "evidence">>, hints: OcrHints): RecognitionCandidate[] {
+  return candidates.map(candidate => ({ ...candidate, evidence: candidateEvidence(candidate, hints), score: scoreRecognitionCandidate(candidate, hints) }))
+    .filter(c => c.image && (c.evidence.localIdMatch ||
+      (hints.name.length >= 4 && c.evidence.nameSimilarity >= 0.55) ||
+      (c.evidence.denominatorMatch && c.evidence.localIdSimilarity >= 0.66)))
+    .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id)).slice(0, 5);
 }
 
 export function recognitionLevel(confidence: number): RecognitionLevel {

@@ -2,6 +2,7 @@
 
 import {
   buildOcrHints,
+  visualCandidatePool,
   collectorPartVariants,
   extractCardNumber,
   extractLikelyName,
@@ -16,14 +17,15 @@ import {
   type RecognitionResult,
 } from "@/lib/card-recognition-core";
 
-import { needsVisualFallback, recognizeVisually, shutdownVisualRecognition } from "@/lib/card-recognition-visual";
+import { needsVisualFallback, recognizeVisually, shutdownVisualRecognition, type VisualOutcome } from "@/lib/card-recognition-visual";
 
 const TESSERACT_VERSION = "7.0.0";
 const TESSERACT_SCRIPT = `https://cdn.jsdelivr.net/npm/tesseract.js@${TESSERACT_VERSION}/dist/tesseract.min.js`;
 const TCGDEX_BASE = "https://api.tcgdex.net/v2";
-const SESSION_CACHE_PREFIX = "leilao:card-recognition:v3:";
+const SESSION_CACHE_PREFIX = "leilao:card-recognition:v4:";
 const CATALOG_TTL_MS = 30 * 60_000;
 const MAX_CATALOG_DETAILS = 4;
+const MAX_CATALOG_REQUESTS = 8;
 const DETECTION_WIDTH = 300;
 const OCR_MAX_WIDTH = 1500;
 const OCR_MIN_LINE_HEIGHT = 180;
@@ -56,7 +58,7 @@ type TcgCard = {
   variants?: Record<string, unknown>;
 };
 type TcgCardBrief = { id: string; localId?: string | number; name?: string; image?: string | null };
-type CatalogStats = { requests: number; queries: string[] };
+type CatalogStats = { requests: number; queries: string[]; exhausted?: boolean };
 type CacheEntry = { expires: number; value: unknown };
 type CardBox = { x: number; y: number; width: number; height: number; score: number; fallback: boolean };
 type OcrRead = { text: string; confidence: number };
@@ -464,9 +466,10 @@ function saveSessionRecognition(hash: string, result: RecognitionResult) {
 async function fetchCatalog<T>(url: string, stats: CatalogStats): Promise<T> {
   const cached = catalogCache.get(url);
   if (cached && cached.expires > Date.now()) return cached.value as T;
+  if (stats.requests >= MAX_CATALOG_REQUESTS) { stats.exhausted = true; throw new Error("Catalog query budget exhausted"); }
   stats.requests += 1;
   stats.queries.push(url.replace(TCGDEX_BASE, ""));
-  const response = await fetch(url, { mode: "cors", credentials: "omit", cache: "force-cache" });
+  const response = await fetch(url, { mode: "cors", credentials: "omit", cache: "force-cache", signal: AbortSignal.timeout(8_000) });
   if (response.status === 404) throw Object.assign(new Error("not-found"), { status: 404 });
   if (!response.ok) throw new Error(`TCGdex respondeu ${response.status}.`);
   const value = await response.json() as T;
@@ -500,110 +503,54 @@ function briefScore(brief: TcgCardBrief, hints: OcrHints) {
   return name * 72 + local * 28;
 }
 
-async function fetchCardDetails(briefs: TcgCardBrief[], code: string, language: RecognitionLanguage, hints: OcrHints, stats: CatalogStats) {
-  const sorted = [...briefs].sort((a, b) => briefScore(b, hints) - briefScore(a, hints)).slice(0, MAX_CATALOG_DETAILS);
-  const result: Array<Omit<RecognitionCandidate, "score" | "evidence">> = [];
-  for (const brief of sorted) {
-    try {
-      const card = await fetchCatalog<TcgCard>(`${TCGDEX_BASE}/${code}/cards/${encodeURIComponent(brief.id)}`, stats);
-      const candidate = candidateFromCard(card, language);
-      if (candidate) result.push(candidate);
-    } catch { /* removed/malformed catalog entry: skip */ }
-  }
-  return result;
-}
-
 async function searchBriefs(code: string, params: URLSearchParams, stats: CatalogStats) {
   return fetchCatalog<TcgCardBrief[]>(`${TCGDEX_BASE}/${code}/cards?${params.toString()}`, stats);
 }
 
-function strongEnough(ranked: RecognitionCandidate[]) {
-  const best = ranked[0];
-  const second = ranked[1];
-  if (!best) return false;
-  const evidence = best.evidence;
-  if (!evidence) return best.score >= 90;
-  if (evidence.fullNumberMatch && evidence.nameSimilarity >= 0.72) return true;
-  if (evidence.nameSimilarity >= 0.98 && evidence.denominatorMatch && best.score >= 80) return true;
-  return best.score >= 92 && best.score - (second?.score ?? 0) >= 8;
-}
-
-async function candidatesForLanguage(hints: OcrHints, language: RecognitionLanguage, stats: CatalogStats) {
-  const code = tcgLanguage(language);
-  const collected = new Map<string, Omit<RecognitionCandidate, "score" | "evidence">>();
-  const addDetails = async (briefs: TcgCardBrief[]) => {
-    const details = await fetchCardDetails(briefs, code, language, hints, stats);
-    for (const candidate of details) collected.set(`${language}:${candidate.id}`, candidate);
-    return rankRecognitionCandidates([...collected.values()], hints);
-  };
-
-  const localIds = [...new Set([
-    ...(hints.localIdVariants ?? []),
-    ...collectorPartVariants(hints.localId, hints.denominator),
-  ])].filter(Boolean).slice(0, 3);
-  const cleanName = hints.name.trim();
-
-  // 1) strongest path: OCR name + collector number. Usually one list request + one detail request.
-  if (cleanName && localIds.length) {
-    for (const localId of localIds) {
-      const params = new URLSearchParams({
-        localId: `eq:${localId}`,
-        name: cleanName,
-        "pagination:page": "1",
-        "pagination:itemsPerPage": "6",
-      });
-      const briefs = await searchBriefs(code, params, stats);
-      if (!briefs.length) continue;
-      const ranked = await addDetails(briefs);
-      if (strongEnough(ranked)) return ranked;
-      break;
-    }
-  }
-
-  // 2) collector number only. The OCR name then ranks cards sharing that local id.
-  if (localIds.length) {
-    for (const localId of localIds) {
-      const params = new URLSearchParams({ localId: `eq:${localId}`, "pagination:page": "1", "pagination:itemsPerPage": "10" });
-      const briefs = await searchBriefs(code, params, stats);
-      if (!briefs.length) continue;
-      const ranked = await addDetails(briefs);
-      if (strongEnough(ranked)) return ranked;
-      break;
-    }
-  }
-
-  // 3) fuzzy name fallback. TCGdex's lax filter gives a small vocabulary; local-id similarity sorts it before details.
-  if (cleanName) {
-    const probes = [cleanName];
-    const letters = cleanName.replace(/[^A-Za-zÀ-ÿ]/g, "");
-    if (letters.length >= 6) probes.push(letters.slice(0, Math.min(6, letters.length)));
-    for (const name of [...new Set(probes)]) {
-      const params = new URLSearchParams({ name, "pagination:page": "1", "pagination:itemsPerPage": "12" });
-      const briefs = await searchBriefs(code, params, stats);
-      if (!briefs.length) continue;
-      const ranked = await addDetails(briefs);
-      if (ranked.length) return ranked;
-    }
-  }
-
-  return rankRecognitionCandidates([...collected.values()], hints);
-}
-
 export async function resolveCatalog(hints: OcrHints, preferredLanguage: string | undefined, stats: CatalogStats) {
   const candidates = new Map<string, Omit<RecognitionCandidate, "score" | "evidence">>();
-  const trustedLanguage = hints.language != null && hints.languageConfidence >= 55;
-  for (const language of uniqueLanguages(hints, preferredLanguage)) {
-    try {
-      const rankedForLanguage = await candidatesForLanguage(hints, language, stats);
-      for (const candidate of rankedForLanguage) {
-        const { score: _score, evidence: _evidence, ...raw } = candidate;
-        candidates.set(`${language}:${candidate.id}`, raw);
-      }
-    } catch { /* one catalog/language failure must not block manual flow */ }
-    const ranked = rankRecognitionCandidates([...candidates.values()], hints);
-    if (trustedLanguage && ranked[0]?.language === hints.language && (strongEnough(ranked) || ranked[0].score >= 82)) return ranked;
+  const snapshot = () => ({ ranked: rankRecognitionCandidates([...candidates.values()], hints),
+    pool: visualCandidatePool([...candidates.values()], hints), before: candidates.size });
+  if (!hints.localId && hints.name.replace(/[^\p{L}]/gu, "").length < 4) return snapshot();
+  const trusted = hints.language != null && hints.languageConfidence >= 55;
+  const languages = trusted ? [hints.language!] : uniqueLanguages(hints, preferredLanguage).slice(0, 2);
+  const ids = [...new Set([...(hints.localIdVariants ?? []), hints.localId])].filter(Boolean).slice(0, 2);
+  const name = hints.name.trim();
+  const attempted = new Set<string>();
+  for (const language of languages) {
+    const code = tcgLanguage(language);
+    const probes: Array<Record<string, string>> = [];
+    if (name.length >= 4) for (const id of ids) probes.push({ name, localId: `eq:${id}` });
+    for (const id of ids) probes.push({ localId: `eq:${id}` });
+    if (name.length >= 4) {
+      probes.push({ name });
+      if (name.length >= 6) probes.push({ name: name.slice(0, 6) });
+    }
+    for (const probe of probes) {
+      if (stats.requests >= MAX_CATALOG_REQUESTS) { stats.exhausted = true; return snapshot(); }
+      try {
+        const briefs = await searchBriefs(code, new URLSearchParams({ ...probe, "pagination:page": "1", "pagination:itemsPerPage": "10" }), stats);
+        const sorted = [...briefs].sort((a, b) => briefScore(b, hints) - briefScore(a, hints)).slice(0, MAX_CATALOG_DETAILS);
+        for (const brief of sorted) {
+          const key = `${language}:${brief.id}`;
+          if (attempted.has(key)) continue;
+          if (stats.requests >= MAX_CATALOG_REQUESTS) { stats.exhausted = true; return snapshot(); }
+          attempted.add(key);
+          try {
+            const card = await fetchCatalog<TcgCard>(`${TCGDEX_BASE}/${code}/cards/${encodeURIComponent(brief.id)}`, stats);
+            const candidate = candidateFromCard(card, language);
+            if (candidate) candidates.set(key, candidate);
+          } catch { /* Keep already retrieved candidates. */ }
+          const current = snapshot();
+          // Only OCR evidence supports early identification; the form language is just search order.
+          if (sorted.length === 1 && current.ranked[0]?.evidence?.fullNumberMatch && current.ranked[0].evidence.nameSimilarity >= 0.9) return current;
+        }
+        const current = snapshot();
+        if (current.pool.length >= 2) return current;
+      } catch { /* Offline catalog never blocks manual entry. */ }
+    }
   }
-  return rankRecognitionCandidates([...candidates.values()], hints);
+  return snapshot();
 }
 
 function pushDebug(debug: RecognitionDebug) {
@@ -612,7 +559,7 @@ function pushDebug(debug: RecognitionDebug) {
   window.__cardRecognitionDebug = [...current.slice(-19), debug];
 }
 
-async function recognizeFromOrientedSource(source: HTMLCanvasElement, fileName: string, preferredLanguage: string | undefined, onProgress?: (message: string) => void) {
+async function recognizeFromOrientedSource(source: HTMLCanvasElement, fileName: string, preferredLanguage: string | undefined, onProgress: ((message: string) => void) | undefined, stats: CatalogStats) {
   onProgress?.("🔍 Localizando carta");
   const box = locateCard(source);
   const worker = await getLatinWorker();
@@ -627,9 +574,9 @@ async function recognizeFromOrientedSource(source: HTMLCanvasElement, fileName: 
   const language = await recognizeLanguage(source, box, worker, name.best.text, number.best.text);
   let hints = mergeNumberAlternatives(language.hints, number.reads);
 
-  const stats: CatalogStats = { requests: 0, queries: [] };
   onProgress?.("🃏 Confirmando no catálogo");
-  let ranked: RecognitionCandidate[] = await resolveCatalog(hints, preferredLanguage, stats);
+  let catalog = await resolveCatalog(hints, preferredLanguage, stats);
+  let ranked: RecognitionCandidate[] = catalog.ranked;
 
   const shouldTryJapanese = (!hints.language || hints.languageConfidence < 45) && (!ranked.length || ranked[0].score < 70);
   if (shouldTryJapanese) {
@@ -642,12 +589,13 @@ async function recognizeFromOrientedSource(source: HTMLCanvasElement, fileName: 
       const japaneseHints = buildOcrHints(topRead.text, number.best.text, middleRead.text);
       if (japaneseHints.language === "ja") {
         hints = mergeNumberAlternatives(japaneseHints, number.reads);
-        ranked = await resolveCatalog(hints, "ja", stats);
+        catalog = await resolveCatalog(hints, "ja", stats);
+        ranked = catalog.ranked;
       }
     } catch { /* Japanese is an optional fallback */ }
   }
 
-  return { box, name, number, language, hints, stats, ranked, fileName };
+  return { box, name, number, language, hints, stats, ranked, catalog, fileName };
 }
 
 async function performRecognition(file: File, preferredLanguage?: string, onProgress?: (message: string) => void): Promise<RecognitionResult> {
@@ -667,19 +615,23 @@ async function performRecognition(file: File, preferredLanguage?: string, onProg
     source = locateCard(clockwise).score >= locateCard(counterClockwise).score ? clockwise : counterClockwise;
   }
 
-  let run = await recognizeFromOrientedSource(source, file.name, preferredLanguage, onProgress);
+  const stats: CatalogStats = { requests: 0, queries: [] };
+  let run = await recognizeFromOrientedSource(source, file.name, preferredLanguage, onProgress, stats);
   // Cheap upside-down fallback only when the fast pass found no meaningful image evidence.
   if (!run.hints.name && !run.hints.localId && !run.ranked.length) {
     const rotated = rotateCanvas(source, 180);
     canvases.push(rotated);
-    run = await recognizeFromOrientedSource(rotated, file.name, preferredLanguage, onProgress);
+    run = await recognizeFromOrientedSource(rotated, file.name, preferredLanguage, onProgress, stats);
     source = rotated;
   }
 
-  let visualUsed = false;
-  let visualBackend: string | undefined;
-  if (needsVisualFallback(run.ranked)) {
-    onProgress?.("🖼️ Comparando os candidatos visualmente");
+  const pool = run.catalog.pool;
+  const best = run.ranked[0];
+  const easy = best?.evidence?.fullNumberMatch && best.evidence.nameSimilarity >= 0.9 && best.score - (run.ranked[1]?.score ?? 0) >= 8;
+  let visual: VisualOutcome = { candidates: pool, used: false,
+    status: easy ? "not-needed" : !run.hints.localId && !run.hints.name ? "insufficient-clues" : "no-candidates",
+    reason: easy ? "OCR inequívoco" : !run.hints.localId && !run.hints.name ? "Pistas insuficientes" : "Menos de dois candidatos visuais plausíveis" };
+  if (!easy && needsVisualFallback(pool)) {
     const normalized = document.createElement("canvas");
     normalized.width = 224; normalized.height = 312;
     canvases.push(normalized);
@@ -687,20 +639,24 @@ async function performRecognition(file: File, preferredLanguage?: string, onProg
     if (ctx) {
       ctx.drawImage(source, run.box.x, run.box.y, run.box.width, run.box.height, 0, 0, 224, 312);
       const blob = await new Promise<Blob | null>(resolve => normalized.toBlob(resolve, "image/png"));
-      if (blob) {
-        const visual = await recognizeVisually(blob, run.ranked);
-        run.ranked = visual.candidates;
-        visualUsed = visual.used;
-        visualBackend = visual.backend;
-      }
-    }
+      if (blob) visual = await recognizeVisually(blob, pool, onProgress);
+      else visual = { ...visual, status: "failed", error: "Não foi possível preparar a imagem" };
+    } else visual = { ...visual, status: "failed", error: "Canvas indisponível" };
   }
+  // Only a visually confirmed winner may cross from the private shortlist into display.
+  const winner = visual.candidates.find(c => c.evidence?.visualMatch);
+  if (winner) run.ranked = [winner, ...run.ranked.filter(c => c.id !== winner.id || c.language !== winner.language)].slice(0, 5);
   const elapsedMs = Math.round(performance.now() - started);
   const result = resultFromCandidates(run.hints, run.ranked, elapsedMs, run.stats.requests, "ocr");
-  result.visualUsed = visualUsed;
-  result.visualBackend = visualBackend;
-  // Visual similarities have not been calibrated against real photos yet.
-  if (visualUsed && result.level === "high") { result.level = "medium"; result.confidence = Math.min(result.confidence, 79); }
+  if (visual.used && result.level === "high") { result.level = "medium"; result.confidence = Math.min(79, result.confidence); }
+  if (winner) {
+    Object.assign(result, { level: "medium", confidence: 60, name: winner.name, collection: winner.collection, cardNumber: winner.cardNumber });
+  }
+  if (!run.hints.language || run.hints.languageConfidence < 55) delete result.language;
+  Object.assign(result, { visualUsed: visual.used, visualStatus: visual.status, visualBackend: visual.backend,
+    visualError: visual.error, visualReason: visual.reason, visualCandidateCount: pool.length,
+    visualInitMs: visual.initMs, visualSimilarities: visual.similarities, visualCandidatePool: pool,
+    catalogCandidatesBefore: run.catalog.before, catalogCandidatesAfter: run.ranked.length, catalogBudgetExhausted: stats.exhausted ?? false });
   saveSessionRecognition(hash, result);
   pushDebug({
     file: { name: file.name, width: source.width, height: source.height },
@@ -744,5 +700,6 @@ export const cardRecognitionRuntime = {
   concurrency: 1,
   detectionWidth: DETECTION_WIDTH,
   maxCatalogDetailsPerSearch: MAX_CATALOG_DETAILS,
-  cacheVersion: 3,
+  maxCatalogRequests: MAX_CATALOG_REQUESTS,
+  cacheVersion: 4,
 };

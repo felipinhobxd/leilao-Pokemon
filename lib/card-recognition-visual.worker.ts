@@ -6,6 +6,8 @@ env.allowLocalModels = false;
 if (env.backends.onnx.wasm) env.backends.onnx.wasm.numThreads = 1;
 let extractor: ImageFeatureExtractionPipeline | null = null;
 let backend = "";
+let initMs = 0;
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error)).slice(0, 500);
 const embeddings = new Map<string, number[]>();
 
 async function embed(image: Blob) {
@@ -38,6 +40,7 @@ function cosine(a: number[], b: number[]) {
   return dot / (Math.sqrt(aa * bb) || 1);
 }
 async function compare(photo: Blob, images: string[]) {
+  self.postMessage({ progress: "🧠 Comparando localmente…" });
   const query = await embed(photo);
   const similarities: number[] = [];
   for (const base of images) {
@@ -47,37 +50,49 @@ async function compare(photo: Blob, images: string[]) {
     let embedding = embeddings.get(url.href);
     if (!embedding) {
       const response = await fetch(url, { credentials: "omit", signal: AbortSignal.timeout(15_000) });
-      if (!response.ok) throw new Error("Catalog image unavailable");
+      if (!response.ok) throw new Error(`Imagem oficial indisponível: HTTP ${response.status}`);
       embedding = await embed(await response.blob());
       if (embeddings.size >= 64) embeddings.delete(embeddings.keys().next().value!);
       embeddings.set(url.href, embedding);
     }
     similarities.push(cosine(query, embedding));
   }
-  return { similarities, backend };
+  return { similarities, backend, initMs };
 }
-self.onmessage = async (event: MessageEvent<{ photo: Blob; images: string[] }>) => {
-  const { photo, images } = event.data;
-  if (images.length < 2 || images.length > 5) { self.postMessage({ error: "Invalid candidate count" }); return; }
+self.onmessage = async (event: MessageEvent<{ photo: Blob; images: string[]; diagnostic?: boolean; testBackend?: string }>) => {
+  const { photo, images, diagnostic, testBackend } = event.data;
+  const errors: string[] = [];
+  if (images.length < (diagnostic ? 1 : 2) || images.length > 5) { self.postMessage({ error: "Invalid candidate count" }); return; }
   try {
+    if (extractor && testBackend && testBackend !== "auto" && backend !== testBackend) {
+      await extractor.dispose(); extractor = null; embeddings.clear();
+    }
     if (extractor) {
       try { self.postMessage(await compare(photo, images)); return; }
-      catch { await extractor.dispose(); extractor = null; embeddings.clear(); }
+      catch (error) { errors.push(`${backend}: ${errorText(error)}`); await extractor.dispose(); extractor = null; embeddings.clear(); }
     }
     const options: Array<{ device: "webgpu" | "wasm"; dtype: "q4" | "int8" }> = [];
     if ("gpu" in navigator) options.push({ device: "webgpu", dtype: "q4" });
     options.push({ device: "wasm", dtype: "q4" }, { device: "wasm", dtype: "int8" });
-    for (const option of options) {
+    const selected = diagnostic && testBackend && testBackend !== "auto" ? options.filter(option => `${option.device}/${option.dtype}` === testBackend) : options;
+    if (!selected.length) throw new Error(`${testBackend}: backend não disponível neste navegador`);
+    for (const option of selected) {
       try {
-        extractor = await pipeline("image-feature-extraction", MODEL, option);
+        const started = performance.now();
+        self.postMessage({ progress: "🧠 Preparando IA local pela primeira vez ou recuperando o cache…" });
+        extractor = await pipeline("image-feature-extraction", MODEL, { ...option, progress_callback: () => {
+          // Library progress confirms activity; do not invent percentages.
+        } });
+        initMs = Math.round(performance.now() - started);
         backend = `${option.device}/${option.dtype}`;
         const result = await compare(photo, images);
         self.postMessage(result);
         return;
-      } catch {
+      } catch (error) {
+        errors.push(`${option.device}/${option.dtype}: ${errorText(error)}`);
         await extractor?.dispose(); extractor = null; embeddings.clear();
       }
     }
-    throw new Error("Quantized visual model unavailable");
-  } catch { self.postMessage({ error: "Visual recognition unavailable" }); }
+    throw new Error(errors.join(" | ") || "Modelo quantizado indisponível");
+  } catch (error) { self.postMessage({ error: errorText(error) }); }
 };

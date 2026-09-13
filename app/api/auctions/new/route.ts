@@ -1,10 +1,11 @@
 import { authorize, failure, HttpError } from "@/lib/backend";
-import { buildPollOptions, cardConditions, cardLanguages } from "@/lib/auction-wizard";
+import { buildPollPlan, cardConditions, cardLanguages, DEFAULT_POLL_OPTIONS, MAX_POLL_OPTIONS } from "@/lib/auction-wizard";
 
 export const runtime = "nodejs";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const twoDecimals = (value: number) => Math.abs(value * 100 - Math.round(value * 100)) < 0.00001;
+const money = (value: number) => new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
 const text = (value: unknown, required = false) => {
   const result = String(value ?? "").trim();
   if (required && !result) throw new HttpError(400, "Preencha todos os campos obrigatórios.");
@@ -62,6 +63,16 @@ export async function POST(request: Request) {
     if (!Number.isFinite(increment) || increment <= 0 || !twoDecimals(increment)) throw new HttpError(400, "Incremento inválido.");
     if (buyout != null && (!Number.isFinite(buyout) || buyout < startingPrice || !twoDecimals(buyout))) throw new HttpError(400, "ARREMATE inválido.");
 
+    const requestedOptionCount = buyout == null ? Number(auction.option_count ?? DEFAULT_POLL_OPTIONS) : DEFAULT_POLL_OPTIONS;
+    if (buyout == null && (!Number.isSafeInteger(requestedOptionCount) || requestedOptionCount < 2 || requestedOptionCount > MAX_POLL_OPTIONS)) {
+      throw new HttpError(400, `A enquete sem ARREMATE precisa ter entre 2 e ${MAX_POLL_OPTIONS} opções.`);
+    }
+    const plan = buildPollPlan(startingPrice, increment, buyout, requestedOptionCount);
+    if (plan.overflow && buyout != null && plan.minimumIncrement != null) {
+      throw new HttpError(400, `Esses valores gerariam ${plan.optionCount} opções, mas o WhatsApp aceita no máximo ${MAX_POLL_OPTIONS}. Use incremento de pelo menos ${money(plan.minimumIncrement)}.`);
+    }
+    if (!plan.options.length || plan.options.length > MAX_POLL_OPTIONS) throw new HttpError(400, "Não foi possível montar os valores da enquete.");
+
     const groupId = String(auction.group_id ?? "");
     if (!uuid.test(groupId)) throw new HttpError(400, "Selecione um grupo do WhatsApp.");
     const scheduledAt = String(auction.scheduled_at ?? "");
@@ -72,9 +83,6 @@ export async function POST(request: Request) {
 
     const lotNumber = auction.lot_number === null || auction.lot_number === "" || auction.lot_number === undefined ? null : Number(auction.lot_number);
     if (lotNumber != null && (!Number.isSafeInteger(lotNumber) || lotNumber <= 0)) throw new HttpError(400, "Número do lote inválido.");
-
-    const options = buildPollOptions(startingPrice, increment, buyout);
-    if (!options.length || options.length > 12) throw new HttpError(400, "Não foi possível montar os valores da enquete.");
 
     const payload = {
       eventId,
@@ -95,7 +103,7 @@ export async function POST(request: Request) {
         scheduled_at: new Date(scheduledTime).toISOString(),
         scheduled_end_at: endAt ? new Date(endAt).toISOString() : null,
         group_id: groupId,
-        poll_options: options,
+        poll_options: plan.options,
       },
     };
 

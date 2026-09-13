@@ -77,6 +77,9 @@ export async function POST(request: Request) {
     if (!isOnline(worker.heartbeat_at)) {
       throw new HttpError(409, "O PC/worker está offline. O painel não consegue iniciar um computador desligado.");
     }
+    if (action === "sync_groups" && worker.status !== "connected") {
+      throw new HttpError(409, "Conecte o WhatsApp antes de atualizar os grupos.");
+    }
 
     const { data: existing } = await db
       .from("whatsapp_bot_commands")

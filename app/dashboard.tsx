@@ -6,6 +6,7 @@ import { createPublicSupabaseClient } from "@/lib/supabase";
 import type { Command } from "@/lib/commands";
 import type { Row, Snapshot } from "@/lib/backend";
 import { money } from "@/lib/domain";
+import { brasiliaInputToIso, formatBrasiliaTime, toBrasiliaInput } from "@/lib/brasilia-time";
 
 type Editor = { kind: "CARD" | "PARTICIPANT" | "AUCTION"; row?: Row };
 type Operations = { bot: { workerId:string; status:string; online:boolean; connected:boolean; version:string|null } | null; group: { id:string; name:string } | null };
@@ -47,10 +48,7 @@ export default function Dashboard() {
   const mutationLock = useRef(false);
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (editor && dialog.current && !dialog.current.open) dialog.current.showModal(); }, [editor]);
-  useEffect(() => {
-    const timer = setInterval(() => setClock(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
+  useEffect(() => { const timer = setInterval(() => setClock(Date.now()), 1000); return () => clearInterval(timer); }, []);
   useEffect(() => {
     const { data: subscription } = db.auth.onAuthStateChange((_event, next) => {
       accessToken.current = next?.access_token ?? null;
@@ -145,12 +143,18 @@ export default function Dashboard() {
     event.preventDefault(); if (!editor) return;
     const form = new FormData(event.currentTarget); const fields: Record<string, unknown> = Object.fromEntries(form);
     for (const key of ["starting_price", "buyout_price"]) if (key in fields) fields[key] = fields[key] === "" ? null : Number(fields[key]);
-    if ("scheduled_end_at" in fields) fields.scheduled_end_at = fields.scheduled_end_at ? new Date(String(fields.scheduled_end_at)).toISOString() : null;
+    if ("scheduled_end_at" in fields) {
+      if (fields.scheduled_end_at) {
+        const iso = brasiliaInputToIso(String(fields.scheduled_end_at));
+        if (!iso) { setError("Prazo inválido no horário de Brasília."); return; }
+        fields.scheduled_end_at = iso;
+      } else fields.scheduled_end_at = null;
+    }
     command(`${editor.kind}_${editor.row ? "UPDATE" : "CREATE"}`, { ...(editor.kind === "AUCTION" ? { auctionId: editor.row ? str(editor.row,"id") : undefined } : { id: editor.row ? str(editor.row,"id") : undefined }), data: fields });
   }
   function input(name: string, label: string, type = "text", required = false) {
     let value = str(editor?.row,name);
-    if (type === "datetime-local" && value) { const d = new Date(value); value = new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,16); }
+    if (type === "datetime-local" && value) value = toBrasiliaInput(value);
     return <label key={name}>{label}<input name={name} type={type} required={required} defaultValue={value} maxLength={name === "notes" ? 2000 : 200} {...(type === "number" ? { min: 0, max: 9999999999.99, step: "0.01" } : {})} /></label>;
   }
   return <main className="shell">
@@ -166,7 +170,7 @@ export default function Dashboard() {
           {auction.status==="draft" && <div className="actions"><button disabled={!writable} onClick={()=>command("AUCTION_OPEN",{auctionId:str(auction,"id")})}>Abrir leilão</button><button disabled={!writable} onClick={()=>setEditor({kind:"AUCTION",row:auction})}>Editar</button><button disabled={!writable} onClick={()=>{if(confirm("Cancelar este rascunho?"))command("AUCTION_DELETE",{auctionId:str(auction,"id")});}}>Remover</button></div>}
           {auction.status==="open" && <form className="form-grid" onSubmit={e=>{e.preventDefault();const f=new FormData(e.currentTarget);const type=String(f.get("type")) as Command["type"];if(type==="BUYOUT_CONFIRMED"&&!confirm("Confirmar ARREMATE e encerrar a disputa imediatamente?"))return;command(type,{auctionId:str(auction,"id"),participantId:String(f.get("participant")),...(["BID_PLACED","BID_CHANGED"].includes(type)?{amount:Number(f.get("amount"))}:{})});}}><label>Participante<select name="participant" required>{data.participants.filter(p=>p.status==="active").map(p=><option key={str(p,"id")} value={str(p,"id")}>{str(p,"display_name")}</option>)}</select></label><label>Ação<select name="type"><option value="BID_PLACED">Registrar lance</option><option value="BID_CHANGED">Trocar lance</option><option value="BID_WITHDRAWN">Retirar lance</option><option value="BUYOUT_REQUESTED">Solicitar ARREMATE</option><option value="BUYOUT_CONFIRMED">Confirmar ARREMATE</option></select></label><label>Valor do lance<input name="amount" type="number" min="0" max="9999999999.99" step="0.01" defaultValue={Number(auction.starting_price)} /></label><div className="actions"><button disabled={!writable}>Confirmar ação</button><button type="button" disabled={!writable} onClick={()=>{if(confirm("Finalizar agora e gerar a compra do maior lance elegível?"))command("AUCTION_FINALIZE",{auctionId:str(auction,"id")});}}>Finalizar leilão</button></div></form>}
         </>}
-      </article><aside className="panel timeline"><h2>Atividade recente</h2><div className="events">{[...data.auction_events].sort((a,b)=>str(b,"created_at").localeCompare(str(a,"created_at"))).slice(0,15).map(e=><div className="event" key={str(e,"id")}><time>{new Date(str(e,"created_at")).toLocaleTimeString("pt-BR")}</time><div><strong>{str(e,"event_type")}</strong><p>{str(participant(e.participant_id),"display_name") || "Administração"}</p></div></div>)}</div></aside></section>
+      </article><aside className="panel timeline"><h2>Atividade recente</h2><div className="events">{[...data.auction_events].sort((a,b)=>str(b,"created_at").localeCompare(str(a,"created_at"))).slice(0,15).map(e=><div className="event" key={str(e,"id")}><time>{formatBrasiliaTime(str(e,"created_at"))}</time><div><strong>{str(e,"event_type")}</strong><p>{str(participant(e.participant_id),"display_name") || "Administração"}</p></div></div>)}</div></aside></section>
       <section className="panel"><div className="panel-title"><h2>Cartas</h2><button disabled={!writable} onClick={()=>setEditor({kind:"CARD"})}>Nova carta</button></div><div className="table-wrap"><table><thead><tr><th>Carta</th><th>Coleção</th><th>Inicial / ARREMATE</th><th>Status</th><th>Ações</th></tr></thead><tbody>{data.cards.filter(c=>c.status!=="archived").map(c=><tr key={str(c,"id")}><td>{str(c,"name")}</td><td>{str(c,"collection")} {str(c,"card_number")}</td><td>{price(c.starting_price)} / {price(c.buyout_price)}</td><td>{labelStatus[str(c,"status")]}</td><td><div className="actions"><button disabled={!writable||c.status!=="available"} onClick={()=>setEditor({kind:"CARD",row:c})}>Editar</button><button disabled={!writable||c.status!=="available"} onClick={()=>command("AUCTION_CREATE",{data:{card_id:c.id,scheduled_end_at:null}})}>Criar leilão</button><button disabled={!writable||c.status!=="available"} onClick={()=>{if(confirm("Arquivar esta carta?"))command("CARD_DELETE",{id:str(c,"id")});}}>Arquivar</button></div></td></tr>)}</tbody></table></div>{!data.cards.length&&<p className="muted">Nenhuma carta cadastrada.</p>}</section>
       <section className="panel"><div className="panel-title"><div><h2>Participantes</h2><p className="muted">Cadastro automático pelo grupo e pelos votos do WhatsApp.</p></div></div><div className="table-wrap"><table><thead><tr><th>Nome</th><th>Telefone / WhatsApp</th><th>Status</th><th>Ações</th></tr></thead><tbody>{data.participants.map(p=><tr key={str(p,"id")}><td>{str(p,"display_name")}</td><td>{str(p,"phone_e164") || str(p,"whatsapp_id")}</td><td>{labelStatus[str(p,"status")]}</td><td><div className="actions"><button disabled={!writable} onClick={()=>setEditor({kind:"PARTICIPANT",row:p})}>Editar</button><button disabled={!writable||p.status==="banned"} onClick={()=>{if(confirm("Bloquear participante, preservando o histórico?"))command("PARTICIPANT_DELETE",{id:str(p,"id")});}}>Remover</button></div></td></tr>)}</tbody></table></div></section>
       <section className="panel"><h2>Compras</h2><div className="table-wrap"><table><thead><tr><th>Carta</th><th>Vencedor</th><th>Telefone / WhatsApp</th><th>Valor</th><th>Tipo</th><th>Status</th></tr></thead><tbody>{data.purchases.map(p=>{const person=participant(p.participant_id);const soldAuction=data.auctions.find(a=>a.id===p.auction_id);return <tr key={str(p,"id")}><td>{str(data.cards.find(c=>c.id===p.card_id),"name")}</td><td>{str(person,"display_name")}</td><td>{str(person,"phone_e164") || str(person,"whatsapp_id")}</td><td>{price(p.amount)}</td><td>{saleType(soldAuction?.win_type)}</td><td>{str(p,"status")}</td></tr>;})}</tbody></table></div></section>
@@ -174,7 +178,7 @@ export default function Dashboard() {
     {editor && <dialog ref={dialog} className="panel modal" aria-label="Cadastro" onCancel={e => { if (busy) e.preventDefault(); else setEditor(null); }}><h2>{editor.row?"Editar":"Novo cadastro"}</h2><form className="form-grid" onSubmit={saveEditor}>
       {editor.kind==="CARD"&&<>{input("name","Nome","text",true)}{input("collection","Coleção")}{input("card_number","Número")}{input("image_url","URL da imagem (HTTPS)","url")}{input("starting_price","Preço inicial","number",true)}{input("buyout_price","ARREMATE (opcional)","number")}{input("notes","Observações")}</>}
       {editor.kind==="PARTICIPANT"&&editor.row&&<>{input("display_name","Nome","text",true)}{input("whatsapp_id","Identificador WhatsApp","text",true)}{input("phone_e164","Telefone internacional")}{input("notes","Observações")}<label>Status<select name="status" defaultValue={str(editor.row,"status")||"active"}><option value="active">Ativo</option><option value="suspended">Suspenso</option><option value="banned">Bloqueado</option></select></label></>}
-      {editor.kind==="AUCTION"&&<>{input("starting_price","Preço inicial","number",true)}{input("buyout_price","ARREMATE (opcional)","number")}{input("scheduled_end_at","Prazo (horário local)","datetime-local")}</>}
+      {editor.kind==="AUCTION"&&<>{input("starting_price","Preço inicial","number",true)}{input("buyout_price","ARREMATE (opcional)","number")}{input("scheduled_end_at","Prazo (horário de Brasília)","datetime-local")}</>}
       <div className="actions"><button disabled={!writable}>Salvar</button><button type="button" disabled={busy} onClick={()=>setEditor(null)}>Cancelar</button></div></form></dialog>}
   </main>;
 }

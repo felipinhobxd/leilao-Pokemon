@@ -14,6 +14,8 @@ try {
     ['commands','POST'],
     ['whatsapp/bot','GET'],
     ['whatsapp/bot','POST'],
+    ['whatsapp/groups','GET'],
+    ['whatsapp/groups','POST'],
     ['whatsapp/schedules','GET'],
   ]) {
     const response=await fetch(`http://127.0.0.1:3199/api/${path}`,{method,signal:AbortSignal.timeout(3000)});

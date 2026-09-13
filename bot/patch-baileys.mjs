@@ -8,6 +8,7 @@ const libDir = path.dirname(baileysEntry);
 const recvTarget = path.join(libDir, "Socket", "messages-recv.js");
 const socketTarget = path.join(libDir, "Socket", "socket.js");
 const companionTarget = path.join(libDir, "Utils", "companion-reg-client-utils.js");
+const processMessageTarget = path.join(libDir, "Utils", "process-message.js");
 const checkOnly = process.argv.includes("--check");
 
 function occurrences(source, needle) {
@@ -158,12 +159,74 @@ async function patchCompanionRegistrationRefresh() {
   return "applied";
 }
 
+const pollUpdateReplacement = `} else if (content?.pollUpdateMessage) {
+        // LEILAO_POLL_UPDATES_PATCH: rc14 shipped this entire handler commented out.
+        const creationMsgKey = content.pollUpdateMessage.pollCreationMessageKey;
+        const pollMsg = await getMessage(creationMsgKey);
+        if (pollMsg) {
+            const meIdNormalised = jidNormalizedUser(meId);
+            const pollCreatorJid = getKeyAuthor(creationMsgKey, meIdNormalised);
+            const voterJid = getKeyAuthor(message.key, meIdNormalised);
+            const pollEncKey = pollMsg.messageContextInfo?.messageSecret;
+            if (!pollEncKey) {
+                logger?.warn({ creationMsgKey }, 'poll creation message has no messageSecret, cannot decrypt update');
+            }
+            else {
+                try {
+                    const voteMsg = decryptPollVote(content.pollUpdateMessage.vote, {
+                        pollEncKey,
+                        pollCreatorJid,
+                        pollMsgId: creationMsgKey.id,
+                        voterJid
+                    });
+                    const rawTimestamp = content.pollUpdateMessage.senderTimestampMs;
+                    const senderTimestampMs = Number(rawTimestamp?.toString?.() ?? rawTimestamp ?? Date.now());
+                    ev.emit('messages.update', [{
+                            key: creationMsgKey,
+                            update: {
+                                pollUpdates: [{
+                                        pollUpdateMessageKey: message.key,
+                                        vote: voteMsg,
+                                        senderTimestampMs
+                                    }]
+                            }
+                        }]);
+                }
+                catch (err) {
+                    logger?.warn({ err, creationMsgKey }, 'failed to decrypt poll vote');
+                }
+            }
+        }
+        else {
+            logger?.warn({ creationMsgKey }, 'poll creation message not found, cannot decrypt update');
+        }
+    }
+    `;
+
+async function patchPollVoteDecryption() {
+  let source = await readFile(processMessageTarget, "utf8");
+  if (source.includes("LEILAO_POLL_UPDATES_PATCH")) return "already";
+  if (checkOnly) throw new Error("Baileys poll vote decryption patch is missing.");
+
+  const commentedPollHandler = /}\s*\/\*\s*else if\(content\?\.pollUpdateMessage\) \{[\s\S]*?}\s*\*\/\s*(?=if \(Object\.keys\(chat\)\.length > 1\))/;
+  const match = source.match(commentedPollHandler);
+  if (!match || match.length !== 1) {
+    throw new Error("Could not locate rc14's commented poll-update handler. Refusing to patch an unknown build.");
+  }
+
+  source = source.replace(commentedPollHandler, pollUpdateReplacement);
+  await writeFile(processMessageTarget, source, "utf8");
+  return "applied";
+}
+
 const ackResult = await patchPreLoginAck();
 const refreshResult = await patchCompanionRegistrationRefresh();
+const pollResult = await patchPollVoteDecryption();
 
 if (checkOnly) {
-  console.log("Baileys QR pairing patches verified.");
+  console.log("Baileys QR pairing and poll vote patches verified.");
 } else {
   console.log(`Baileys pre-login ACK patch: ${ackResult}.`);
   console.log(`Baileys companion_reg_refresh patch: ${refreshResult}.`);
+  console.log(`Baileys poll vote decryption patch: ${pollResult}.`);
 }

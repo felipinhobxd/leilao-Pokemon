@@ -17,6 +17,7 @@ export const cardLanguages = [
   { value: "en", label: "Inglês 🇺🇸", flag: "🇺🇸" },
   { value: "ja", label: "Japonês 🇯🇵", flag: "🇯🇵" },
   { value: "es", label: "Espanhol 🇪🇸", flag: "🇪🇸" },
+  { value: "other", label: "Outro 🌐", flag: "🌐" },
 ] as const;
 
 const toCents = (value: number) => Math.round(value * 100);

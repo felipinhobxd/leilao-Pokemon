@@ -21,6 +21,8 @@ create table if not exists public.whatsapp_dispatches (
   announcement_message_id text,
   poll_message_id text unique,
   poll_message_json jsonb,
+  announcement_sent_at timestamptz,
+  poll_sent_at timestamptz,
   sent_at timestamptz,
   locked_at timestamptz,
   locked_by text,
@@ -40,6 +42,9 @@ create index if not exists whatsapp_dispatch_due_idx
   where status in ('scheduled','sending');
 create index if not exists whatsapp_dispatches_group_idx on public.whatsapp_dispatches(group_id);
 create index if not exists whatsapp_dispatches_creator_idx on public.whatsapp_dispatches(created_by);
+create index if not exists whatsapp_dispatch_pending_stage_idx
+  on public.whatsapp_dispatches(status, scheduled_at, announcement_sent_at, poll_sent_at)
+  where status in ('scheduled','sending');
 
 create table if not exists public.whatsapp_vote_state (
   auction_id uuid not null references public.auctions(id) on delete restrict,

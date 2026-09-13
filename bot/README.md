@@ -1,18 +1,20 @@
 # Bot WhatsApp — Leilão Pokémon
 
-Este processo roda no PC durante os leilões. Ele não deve ser hospedado no Netlify/Vercel.
+O Baileys continua rodando localmente no Windows. O uso diário não exige uma janela CMD aberta: `service.mjs` supervisiona o processo real do bot e o Windows Task Scheduler inicia o supervisor em segundo plano.
 
 ## O que ele faz
 
 - lê os disparos programados no Supabase;
-- envia a foto/texto da carta;
-- cria uma enquete de voto único;
-- acompanha votos e mudanças de voto;
-- registra lance, troca, retirada e ARREMATE no banco;
-- encerra automaticamente leilões com `scheduled_end_at` vencido;
+- envia foto/texto da carta e enquete nativa;
+- acompanha votos, trocas, retiradas e ARREMATE;
+- publica status/heartbeat do worker no Supabase;
+- publica QR temporário para o painel quando a sessão precisa ser vinculada;
+- aceita do painel os comandos Reconectar, Desconectar e Sincronizar grupos;
+- reinicia o processo do bot quando ele cai;
+- encerra automaticamente leilões com `scheduled_end_at` enquanto o worker estiver online;
 - anuncia ARREMATE e resultado final no grupo.
 
-## Instalação
+## Configuração inicial
 
 Use Node.js 24+.
 
@@ -21,7 +23,6 @@ cd bot
 npm.cmd install
 copy .env.example .env
 notepad .env
-npm.cmd start
 ```
 
 Preencha `.env` com:
@@ -29,29 +30,107 @@ Preencha `.env` com:
 - `SUPABASE_URL`: URL do projeto;
 - `SUPABASE_SERVICE_ROLE_KEY`: chave privada do servidor. Nunca envie ao navegador nem ao GitHub;
 - `BOT_ADMIN_USER_ID`: UUID de um `admin` ou `operator` ativo;
-- `BOT_WORKER_ID`: identificador livre, por exemplo `pc-leilao-01`;
-- `WHATSAPP_SESSION_DIR`: pode apontar para a sessão já usada no leitor antigo.
+- `BOT_WORKER_ID`: identificador estável, por exemplo `pc-leilao-01`;
+- `WHATSAPP_SESSION_DIR`: pode apontar para a sessão Baileys já usada pelo leitor antigo;
+- `BOT_HEARTBEAT_SECONDS`: padrão recomendado `12`;
+- `BOT_QR_TTL_SECONDS`: padrão recomendado `90`.
 
-Exemplo no Windows, reaproveitando a sessão existente:
+Exemplo reaproveitando a sessão existente:
 
 ```env
 WHATSAPP_SESSION_DIR=C:/Users/Admin/Documents/LeilaoPokemon/leitor-whatsapp/sessao
 ```
 
-Antes de iniciar, feche o `monitor.mjs` antigo. Duas instâncias usando a mesma sessão podem gerar o erro `440 connectionReplaced`.
+Antes da primeira instalação, feche `monitor.mjs` e qualquer outra instância do Baileys que use a mesma sessão. Duas instâncias podem gerar `440 connectionReplaced`.
 
-## Teste
+## Instalar em segundo plano no Windows
 
-1. Mantenha o bot aberto.
-2. Entre no painel web com sua conta administrativa.
-3. Crie uma carta e um leilão em rascunho.
-4. Abra `/whatsapp` no site.
-5. Selecione o leilão, os valores e um horário alguns minutos à frente.
-6. Deixe o bot aberto. No horário programado ele envia a carta e a enquete.
-7. Vote pelo WhatsApp e acompanhe os lances no painel principal.
+Abra PowerShell na pasta `bot` e execute:
 
-O grupo `teste` (`120363429348829532@g.us`) já está configurado no banco de desenvolvimento atual.
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\install-service.ps1
+```
+
+O instalador:
+
+- solicita UAC uma vez;
+- verifica Node/npm e dependências;
+- cria a tarefa `PokemonLeilaoWhatsAppBot`;
+- inicia o supervisor escondido;
+- configura inicialização automática no reboot/login;
+- configura reinício pelo Task Scheduler se o supervisor encerrar;
+- preserva a sessão Baileys existente.
+
+O próprio `service.mjs` também reinicia o processo `index.mjs` quando ele cai. O erro 440 é tratado como exceção: ele não entra em loop brigando com outra instância.
+
+Logs básicos ficam em:
+
+```text
+bot/logs/bot-service.log
+```
+
+Ao passar de aproximadamente 10 MB, o arquivo é rotacionado para `bot-service.previous.log` na próxima inicialização.
+
+## Remover o serviço
+
+```powershell
+.\uninstall-service.ps1
+```
+
+Isso remove somente a tarefa agendada. `.env`, sessão Baileys e logs não são apagados.
+
+## Uso manual / diagnóstico
+
+Para rodar o supervisor visivelmente:
+
+```powershell
+npm.cmd start
+```
+
+Para rodar apenas o bot antigo em primeiro plano:
+
+```powershell
+npm.cmd run start:foreground
+```
+
+Não rode o serviço e `start:foreground` ao mesmo tempo usando a mesma sessão.
+
+## Status e QR no painel
+
+Abra `/whatsapp` no painel.
+
+O worker envia heartbeat aproximadamente a cada 10–15 segundos. O painel considera o PC/worker offline quando o heartbeat fica antigo; ele nunca finge que consegue ligar um computador desligado.
+
+Quando o Baileys pedir autenticação:
+
+1. o supervisor publica somente o payload temporário do QR e sua representação visual;
+2. o painel mostra o QR somente para `admin`/`operator`;
+3. o QR expira automaticamente;
+4. ao conectar, `qr_payload`/QR visual são apagados;
+5. credenciais completas da pasta de sessão nunca são enviadas ao Supabase.
+
+O painel oferece:
+
+- **Reconectar** — reinicia a conexão Baileys sem reiniciar o Windows;
+- **Desconectar** — para a conexão, mantendo o supervisor vivo para receber um futuro Reconectar;
+- **Sincronizar grupos** — pausa o bot brevemente, sincroniza os grupos disponíveis no Supabase e retoma a conexão.
+
+## Arquitetura
+
+```text
+Painel Netlify
+→ Supabase
+→ supervisor local (service.mjs)
+→ bot Baileys (index.mjs)
+→ WhatsApp
+→ votos
+→ Supabase
+→ painel
+```
+
+O Baileys não deve ser hospedado permanentemente em Netlify Function, Edge Function ou Scheduled Function.
 
 ## Aviso
 
-Baileys é uma integração não oficial com o WhatsApp. Use um número separado para o bot quando possível e mantenha o volume de automação moderado.
+Baileys é uma integração não oficial com o WhatsApp. Use um número separado quando possível e mantenha o volume de automação moderado.

@@ -39,8 +39,21 @@ async function readQueue(db: Awaited<ReturnType<typeof authorize>>["db"], queueI
 
 export async function GET(request: Request) {
   try {
-    const { db } = await authorize(request);
-    const queueId = new URL(request.url).searchParams.get("queueId") ?? "";
+    const { db, user } = await authorize(request);
+    const params = new URL(request.url).searchParams;
+    let queueId = params.get("queueId") ?? "";
+    if (!queueId && params.get("latest") === "1") {
+      const { data, error } = await db.from("auction_publish_queues")
+        .select("id")
+        .eq("created_by", user.id)
+        .in("status", ["scheduled", "running", "paused"])
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) throw new Error("queue_read_failed");
+      if (!data?.id) return Response.json({ queue: null }, { status: 200, headers: { "Cache-Control": "no-store" } });
+      queueId = data.id;
+    }
     if (!uuid.test(queueId)) throw new HttpError(400, "Fila inválida.");
     return Response.json(await readQueue(db, queueId), { headers: { "Cache-Control": "no-store" } });
   } catch (error) {

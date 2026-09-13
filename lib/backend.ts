@@ -1,15 +1,16 @@
+import { Timing } from "./timing";
 import { createServerSupabaseClient } from "./supabase-server";
 
 export class HttpError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
-export async function authorize(request: Request, write = false) {
+export async function authorize(request: Request, write = false, timing = new Timing()) {
   const token = request.headers.get("authorization")?.match(/^Bearer (.+)$/)?.[1];
   if (!token) throw new HttpError(401, "Entre na sua conta administrativa.");
   const db = createServerSupabaseClient();
-  const { data: { user }, error } = await db.auth.getUser(token);
+  const { data: { user }, error } = await timing.measure("auth_getUser", () => db.auth.getUser(token));
   if (error || !user) throw new HttpError(401, "Sessão inválida ou expirada.");
-  const { data: profile, error: profileError } = await db.from("admin_profiles").select("role,active").eq("user_id", user.id).single();
+  const { data: profile, error: profileError } = await timing.measure("admin_profiles", () => db.from("admin_profiles").select("role,active").eq("user_id", user.id).single());
   if (profileError || !profile?.active || (write && !["admin", "operator"].includes(profile.role))) {
     throw new HttpError(403, "Conta sem permissão para esta operação.");
   }
@@ -25,8 +26,8 @@ export type Table = typeof tables[number];
 export type Row = Record<string, string | number | boolean | null | Record<string, unknown>>;
 export type Snapshot = Record<Table, Row[]>;
 // A JSON RPC avoids PostgREST row caps and reads a consistent database snapshot.
-export async function snapshot(db: ReturnType<typeof createServerSupabaseClient>): Promise<Snapshot> {
-  const { data, error } = await db.rpc("read_auction_snapshot");
+export async function snapshot(db: ReturnType<typeof createServerSupabaseClient>, dashboard = false): Promise<Snapshot> {
+  const { data, error } = await db.rpc(dashboard ? "read_dashboard_snapshot" : "read_auction_snapshot");
   if (error || !data) throw new Error("database_read_failed");
   return data as Snapshot;
 }

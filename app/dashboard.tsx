@@ -28,6 +28,9 @@ export default function Dashboard() {
   const [editor, setEditor] = useState<Editor | null>(null);
   const [retry, setRetry] = useState<Command | null>(null);
   const revision = useRef(0);
+  const fullLoadedAt = useRef(0);
+  const refreshPending = useRef<Promise<void> | null>(null);
+  const identity = useRef<string | null>(null);
   const accessToken = useRef<string | null>(null);
   const mutationLock = useRef(false);
   const dialog = useRef<HTMLDialogElement>(null);
@@ -36,7 +39,8 @@ export default function Dashboard() {
     const { data: subscription } = db.auth.onAuthStateChange((_event, next) => {
       accessToken.current = next?.access_token ?? null;
       setSession(next); setReady(true);
-      if (!next) { revision.current++; setData(null); setOperations({bot:null,group:null}); setRetry(null); setEditor(null); }
+      if (identity.current !== (next?.user.id ?? null) || !next) { revision.current++; fullLoadedAt.current=0; setData(null); setOperations({bot:null,group:null}); setRetry(null); setEditor(null); }
+      identity.current = next?.user.id ?? null;
     });
     return () => subscription.subscription.unsubscribe();
   }, [db]);
@@ -45,28 +49,42 @@ export default function Dashboard() {
     if (!auth.session) throw new Error("Entre novamente para continuar.");
     return fetch(url, { ...init, headers: { ...init?.headers, Authorization: `Bearer ${auth.session.access_token}` }, cache: "no-store" });
   }, [db]);
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (force = true, operationsOnly = false) => {
+    if (refreshPending.current) {
+      const pendingIdentity = identity.current;
+      await refreshPending.current;
+      if (identity.current !== pendingIdentity) return;
+      if (!force) return;
+    }
+    if (!force && !operationsOnly && Date.now()-fullLoadedAt.current < 2000) return;
     const version = ++revision.current;
-    try {
-      const response = await request("/api/dashboard"); const body = await response.json();
-      if (version !== revision.current || !accessToken.current) return;
-      if (!response.ok) { if ([401, 403].includes(response.status)) setData(null); throw new Error(body.error); }
-      setData(body.data); setRole(body.role); setOperations(body.operations ?? {bot:null,group:null});
-    } catch (e) { if (version === revision.current) setError(e instanceof Error ? e.message : "Falha ao atualizar."); }
+    const work = (async () => {
+      try {
+        const response = await request(operationsOnly ? "/api/dashboard?scope=operations" : "/api/dashboard");
+        const body = await response.json();
+        if (version !== revision.current || !accessToken.current) return;
+        if (!response.ok) { if ([401, 403].includes(response.status)) { setData(null); fullLoadedAt.current=0; } throw new Error(body.error); }
+        if (body.data) { setData(body.data); fullLoadedAt.current=Date.now(); }
+        setRole(body.role); setOperations(body.operations ?? {bot:null,group:null});
+      } catch (e) { if (version === revision.current) setError(e instanceof Error ? e.message : "Falha ao atualizar."); }
+    })();
+    refreshPending.current=work;
+    try { await work; } finally { if(refreshPending.current===work)refreshPending.current=null; }
   }, [request]);
   useEffect(() => {
     if (!session) return;
     let timer: ReturnType<typeof setTimeout>;
     const reload = () => { clearTimeout(timer); timer = setTimeout(() => void refresh(), 250); };
-    void refresh();
+    void refresh(false);
     const channel = db.channel("admin-auctions").on("postgres_changes", { event: "*", schema: "public", table: "auction_events" }, reload).subscribe(status => {
       setRealtime(status === "SUBSCRIBED" ? "Ao vivo" : "Reconectando…");
-      if (status === "SUBSCRIBED") reload();
+      if (status === "SUBSCRIBED") void refresh(false);
     });
-    window.addEventListener("focus", reload);
-    const fallback = setInterval(reload, 15000);
-    return () => { clearTimeout(timer); clearInterval(fallback); window.removeEventListener("focus", reload); void db.removeChannel(channel); };
-  }, [db, session, refresh]);
+    const focusReload = () => { if(!document.hidden)void refresh(false); };
+    window.addEventListener("focus", focusReload);
+    const fallback = setInterval(() => { if(!document.hidden)void refresh(false, Date.now()-fullLoadedAt.current < 60000); }, 15000);
+    return () => { clearTimeout(timer); clearInterval(fallback); window.removeEventListener("focus", focusReload); void db.removeChannel(channel); };
+  }, [db, session?.user.id, refresh]);
   async function execute(command: Command) {
     if (mutationLock.current) return;
     mutationLock.current = true; setBusy(true); setError(""); setNotice("");

@@ -1,3 +1,4 @@
+import { readBotStatus } from "@/lib/whatsapp-status";
 import { authorize, failure, HttpError } from "@/lib/backend";
 
 export const runtime = "nodejs";
@@ -14,37 +15,7 @@ function isOnline(heartbeat: unknown) {
 export async function GET(request: Request) {
   try {
     const { db, profile } = await authorize(request);
-    const { data: worker, error } = await db
-      .from("whatsapp_bot_workers")
-      .select("worker_id,status,heartbeat_at,connected_at,account_jid,last_error,qr_render,qr_expires_at,groups_synced_at,version,session_active,updated_at")
-      .order("heartbeat_at", { ascending: false, nullsFirst: false })
-      .limit(1)
-      .maybeSingle();
-    if (error) throw new Error("whatsapp_bot_status_read_failed");
-
-    const canControl = ["admin", "operator"].includes(profile.role);
-    const qrValid = canControl
-      && worker?.qr_render
-      && worker?.qr_expires_at
-      && Date.parse(worker.qr_expires_at) > Date.now();
-
-    return Response.json({
-      worker: worker ? {
-        workerId: worker.worker_id,
-        status: worker.status,
-        heartbeatAt: worker.heartbeat_at,
-        connectedAt: worker.connected_at,
-        accountJid: worker.account_jid,
-        lastError: worker.last_error,
-        qrText: qrValid ? worker.qr_render : null,
-        qrExpiresAt: qrValid ? worker.qr_expires_at : null,
-        groupsSyncedAt: worker.groups_synced_at,
-        version: worker.version,
-        sessionActive: worker.session_active,
-      } : null,
-      online: Boolean(worker && isOnline(worker.heartbeat_at)),
-      canControl,
-    }, { headers: { "Cache-Control": "no-store" } });
+    return Response.json(await readBotStatus(db, profile), { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return failure(error);
   }
@@ -81,7 +52,7 @@ export async function POST(request: Request) {
       throw new HttpError(409, "Conecte o WhatsApp antes de atualizar os grupos.");
     }
 
-    const { data: existing } = await db
+    const { data: existing, error: existingError } = await db
       .from("whatsapp_bot_commands")
       .select("id,status")
       .eq("worker_id", worker.worker_id)
@@ -90,6 +61,7 @@ export async function POST(request: Request) {
       .order("requested_at", { ascending: false })
       .limit(1)
       .maybeSingle();
+    if (existingError) throw new Error("whatsapp_bot_command_read_failed");
     if (existing) return Response.json({ command: existing, queued: false });
 
     const { data: command, error } = await db.from("whatsapp_bot_commands").insert({

@@ -33,6 +33,8 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Typecheck and event validation
         run: npm run typecheck && npm test
+      - name: Install WhatsApp bot dependencies
+        run: npm --prefix bot ci --no-audit --no-fund
       - name: Validate WhatsApp bot syntax
         run: npm --prefix bot run check
       - name: Validate Windows service scripts
@@ -59,8 +61,11 @@ jobs:
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913050837_auction_lot_sequence_service_role_grant.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913052500_whatsapp_dispatch_delivery_stages.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913053833_whatsapp_dispatch_delivery_stages_noop_guard.sql
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913173647_dashboard_snapshot_perf.sql
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913180958_dashboard_snapshot.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/auction.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/auction-wizard.sql
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/dashboard-snapshot.sql
       - name: Concurrent buyouts and duplicate events
         run: python3 tests/concurrency.py
       - name: Build

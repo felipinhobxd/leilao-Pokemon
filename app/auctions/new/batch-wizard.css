@@ -21,12 +21,27 @@
 .draft-title{display:grid;gap:3px;min-width:0;flex:1}
 .draft-title strong,.draft-title span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .draft-title span{font-size:.85rem;color:var(--muted)}
+.recognition-inline.identified{color:var(--success-text)}
+.recognition-inline.review{color:var(--accent-soft-text)}
+.recognition-inline.not-found,.recognition-inline.error{color:var(--danger-text)}
+.recognition-inline.queued,.recognition-inline.analyzing{color:var(--text)}
 .draft-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
 .danger-link{background:transparent!important;color:var(--danger-text)!important;border-color:var(--danger-border)!important}
 .danger-link:hover:not(:disabled){background:var(--danger-bg)!important}
 .draft-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;padding:0 12px 12px}
 .draft-fields label,.value-row label,.publication-grid label{display:grid;gap:5px}
 .draft-fields .wide{grid-column:1/-1}
+.recognition-box{grid-column:1/-1;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--surface-raised)}
+.recognition-box>div:first-child{display:grid;gap:4px;min-width:0}
+.recognition-box small{color:var(--muted);line-height:1.35;overflow-wrap:anywhere}
+.recognition-box.identified{border-color:var(--success-border);background:var(--success-bg)}
+.recognition-box.review{border-color:var(--accent-border);background:var(--accent-soft)}
+.recognition-box.not-found,.recognition-box.error{border-color:var(--danger-border);background:var(--danger-bg)}
+.recognition-box.queued,.recognition-box.analyzing{border-color:var(--chip-border)}
+.recognition-candidates{grid-column:1/-1;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;padding-top:4px}
+.recognition-candidates>span{grid-column:1/-1;color:var(--muted);font-size:.82rem;font-weight:700}
+.recognition-candidates button{display:grid;justify-items:start;text-align:left;gap:3px;min-width:0;min-height:58px}
+.recognition-candidates button strong,.recognition-candidates button small{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .value-row{display:grid;grid-template-columns:minmax(160px,1.4fr) repeat(6,minmax(100px,1fr));gap:10px;align-items:end;padding:12px}
 .value-row>div:first-child{display:grid;gap:4px}
 .value-row>div:first-child span{font-size:.82rem;color:var(--muted)}
@@ -55,6 +70,7 @@
   .draft-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
   .value-row{grid-template-columns:repeat(3,minmax(0,1fr))}
   .review-summary,.queue-summary{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .recognition-candidates{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 
 @media(max-width:700px){
@@ -64,6 +80,9 @@
   .draft-actions{width:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
   .draft-actions button{width:100%}
   .draft-fields,.publication-grid,.value-row{grid-template-columns:1fr}
+  .recognition-box{grid-template-columns:1fr}
+  .recognition-box>button{width:100%}
+  .recognition-candidates{grid-template-columns:1fr}
   .bulk-bar{display:grid;grid-template-columns:minmax(0,1fr) auto}
   .bulk-bar label{min-width:0}
   .review-summary,.queue-summary{grid-template-columns:1fr 1fr}

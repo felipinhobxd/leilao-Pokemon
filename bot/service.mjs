@@ -18,6 +18,7 @@ const WORKER_ID = process.env.BOT_WORKER_ID || `bot-${process.pid}`;
 const SESSION_DIR = path.resolve(here, process.env.WHATSAPP_SESSION_DIR || "./sessao");
 const HEARTBEAT_MS = Math.min(15_000, Math.max(10_000, Number(process.env.BOT_HEARTBEAT_SECONDS || 12) * 1000));
 const QR_TTL_MS = Math.min(180_000, Math.max(45_000, Number(process.env.BOT_QR_TTL_SECONDS || 90) * 1000));
+const AUTO_GROUP_SYNC_MAX_AGE_MS = 5 * 60_000;
 const packageJson = JSON.parse(await readFile(new URL("./package.json", import.meta.url), "utf8"));
 const BOT_VERSION = String(packageJson.version || "0.0.0");
 
@@ -33,6 +34,8 @@ let heartbeatTimer = null;
 let commandTimer = null;
 let commandBusy = false;
 let publishBusy = false;
+let automaticSyncBusy = false;
+let lastAutomaticSyncAttempt = 0;
 
 const runtime = {
   status: "starting",
@@ -132,6 +135,12 @@ function decodeQrMarker(line) {
   return true;
 }
 
+function groupsSyncIsFresh() {
+  if (!runtime.groupsSyncedAt) return false;
+  const time = Date.parse(runtime.groupsSyncedAt);
+  return Number.isFinite(time) && Date.now() - time < AUTO_GROUP_SYNC_MAX_AGE_MS;
+}
+
 function handleChildLine(line, isError = false) {
   if (!line) return;
   if (!isError && decodeQrMarker(line)) return;
@@ -144,6 +153,10 @@ function handleChildLine(line, isError = false) {
     runtime.qrRender = null;
     runtime.qrExpiresAt = null;
     void publishState();
+    if (!groupsSyncIsFresh() && Date.now() - lastAutomaticSyncAttempt >= AUTO_GROUP_SYNC_MAX_AGE_MS) {
+      lastAutomaticSyncAttempt = Date.now();
+      setTimeout(() => void syncGroupsWithRestart(true), 750);
+    }
   } else if (line.includes("Reconectando em") || line.includes("Conexão encerrada")) {
     if (desiredRunning) void publishState({ status: "reconnecting" });
   } else if (line.includes("Erro 440")) {
@@ -273,6 +286,31 @@ async function runGroupSync() {
   runtime.groupsSyncedAt = new Date().toISOString();
 }
 
+async function syncGroupsWithRestart(automatic = false) {
+  if (automatic && automaticSyncBusy) return;
+  if (automatic) automaticSyncBusy = true;
+  const resume = desiredRunning;
+  desiredRunning = false;
+  clearTimeout(restartTimer);
+  restartTimer = null;
+  await stopChild();
+  try {
+    await publishState({ status: "connecting", lastError: null });
+    await runGroupSync();
+    await publishState({ lastError: null });
+  } catch (error) {
+    runtime.lastError = String(error?.message || error).slice(0, 1000);
+    await publishState({ status: "error" });
+    if (!automatic) throw error;
+    console.error("Falha na sincronização automática de grupos:", error?.message || error);
+  } finally {
+    desiredRunning = resume;
+    if (automatic) automaticSyncBusy = false;
+    if (resume) await startChild();
+    else await publishState({ status: "disconnected" });
+  }
+}
+
 async function executeBotCommand(command) {
   if (command.command === "disconnect") {
     desiredRunning = false;
@@ -298,20 +336,7 @@ async function executeBotCommand(command) {
   }
 
   if (command.command === "sync_groups") {
-    const resume = desiredRunning;
-    desiredRunning = false;
-    clearTimeout(restartTimer);
-    restartTimer = null;
-    await stopChild();
-    try {
-      await publishState({ status: "connecting", lastError: null });
-      await runGroupSync();
-      await publishState();
-    } finally {
-      desiredRunning = resume;
-      if (resume) await startChild();
-      else await publishState({ status: "disconnected" });
-    }
+    await syncGroupsWithRestart(false);
     return;
   }
 

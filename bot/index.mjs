@@ -7,6 +7,7 @@ import makeWASocket, {
 import { createClient } from "@supabase/supabase-js";
 import pino from "pino";
 import qrcode from "qrcode-terminal";
+import { buildAuctionCaption } from "./format.mjs";
 
 const required = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "BOT_ADMIN_USER_ID"];
 for (const key of required) {
@@ -266,30 +267,13 @@ async function fetchAuctionContext(dispatch) {
   return { group, auction, card };
 }
 
-function buildAnnouncement(card, auction) {
-  const lines = [
-    "🥇 *Leilão liberado agora!*",
-    "",
-    "Essa carta vai para quem der o maior lance:",
-    "",
-    `🃏 *Carta:* ${card.name}${card.card_number ? ` - ${card.card_number}` : ""}`,
-  ];
-  if (card.condition) lines.push(`⭐ *Condição:* ${card.condition}`);
-  if (card.language) lines.push(`🌐 *Idioma:* ${card.language}`);
-  lines.push(`💵 *Lance inicial:* ${brl(auction.starting_price)}`);
-  if (auction.buyout_price != null) lines.push(`🏁 *Arremate:* ${brl(auction.buyout_price)}`);
-  if (auction.scheduled_end_at) lines.push(`⏰ *Encerra:* ${new Date(auction.scheduled_end_at).toLocaleString("pt-BR")}`);
-  lines.push("", "Maior lance leva. A opção com 🦭 é ARREMATE e encerra imediatamente.");
-  return lines.join("\n");
-}
-
 async function sendDispatch(dispatch) {
   const { group, auction, card } = await fetchAuctionContext(dispatch);
   if (auction.status !== "draft") throw new Error("auction_not_draft");
   const options = Array.isArray(dispatch.poll_options) ? dispatch.poll_options : [];
   if (!options.length || options.length > 12) throw new Error("invalid_poll_options");
 
-  const caption = buildAnnouncement(card, auction);
+  const caption = buildAuctionCaption(card, auction);
   const announcement = card.image_url
     ? await sock.sendMessage(group.group_jid, { image: { url: card.image_url }, caption })
     : await sock.sendMessage(group.group_jid, { text: caption });

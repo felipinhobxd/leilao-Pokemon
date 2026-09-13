@@ -13,10 +13,10 @@ export const cardConditions = [
 ] as const;
 
 export const cardLanguages = [
-  { value: "pt-BR", label: "PT-BR 🇧🇷", flag: "🇧🇷" },
-  { value: "en", label: "EN 🇺🇸", flag: "🇺🇸" },
-  { value: "ja", label: "JP 🇯🇵", flag: "🇯🇵" },
-  { value: "es", label: "ES 🇪🇸", flag: "🇪🇸" },
+  { value: "pt-BR", label: "Português 🇧🇷", flag: "🇧🇷" },
+  { value: "en", label: "Inglês 🇺🇸", flag: "🇺🇸" },
+  { value: "ja", label: "Japonês 🇯🇵", flag: "🇯🇵" },
+  { value: "es", label: "Espanhol 🇪🇸", flag: "🇪🇸" },
 ] as const;
 
 const toCents = (value: number) => Math.round(value * 100);

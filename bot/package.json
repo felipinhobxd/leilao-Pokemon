@@ -10,7 +10,7 @@
     "postinstall": "node patch-baileys.mjs",
     "start": "node --env-file=.env service.mjs",
     "start:foreground": "node --env-file=.env index.mjs",
-    "check": "node --check index.mjs && node --check format.mjs && node --check dispatch-id.mjs && node --check service.mjs && node --check instrument.mjs && node --check groups.mjs && node --check sync-groups.mjs && node --check patch-baileys.mjs && node patch-baileys.mjs --check && node --check node_modules/@whiskeysockets/baileys/lib/Utils/process-message.js"
+    "check": "node --check index.mjs && node --check group-participants.mjs && node --check format.mjs && node --check dispatch-id.mjs && node --check service.mjs && node --check instrument.mjs && node --check groups.mjs && node --check sync-groups.mjs && node --check patch-baileys.mjs && node patch-baileys.mjs --check && node --check node_modules/@whiskeysockets/baileys/lib/Utils/process-message.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.116.0",

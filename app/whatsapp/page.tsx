@@ -13,6 +13,7 @@ type Bootstrap = { botStatus:BotData; groups:Group[]; defaultGroupId:string|null
 function when(value:string|null|undefined){if(!value)return "—";const time=Date.parse(value);return Number.isFinite(time)?new Date(time).toLocaleString("pt-BR"):"—"}
 function botStatusLabel(status:string){return ({starting:"Iniciando",waiting_qr:"Aguardando QR",connecting:"Conectando",connected:"Conectado",reconnecting:"Reconectando",disconnected:"Desconectado",error:"Erro"} as Record<string,string>)[status]??status}
 function dispatchLabel(status:string){return ({scheduled:"Pendente",sending:"Enviando",sent:"Enviado",failed:"Falhou",cancelled:"Cancelado"} as Record<string,string>)[status]??status}
+function heartbeatFresh(value:unknown){return typeof value==="string"&&Number.isFinite(Date.parse(value))&&Date.now()-Date.parse(value)<=35_000}
 
 export default function WhatsAppPage(){
   const [db]=useState(createPublicSupabaseClient);
@@ -52,6 +53,7 @@ export default function WhatsAppPage(){
       setGroups(body.groups??[]);
       setDefaultGroupId(body.defaultGroupId??"");
       setDispatches(body.dispatches??[]);
+      setError("");
     }finally{loadingRef.current=false;setRefreshing(false)}
   },[db]);
 
@@ -73,13 +75,44 @@ export default function WhatsAppPage(){
     if(!session)return;
     let debounce:ReturnType<typeof setTimeout>|undefined;
     const reload=()=>{if(debounce)clearTimeout(debounce);debounce=setTimeout(()=>void load().catch(()=>undefined),250)};
-    const interval=setInterval(reload,15_000);
+    const interval=setInterval(reload,60_000);
+    const freshness=setInterval(()=>{
+      setBot(previous=>{
+        if(!previous.worker)return previous;
+        const online=heartbeatFresh(previous.worker.heartbeatAt);
+        return online===previous.online?previous:{...previous,online};
+      });
+    },5_000);
     const channel=db.channel("whatsapp-central")
+      .on("postgres_changes",{event:"*",schema:"public",table:"whatsapp_bot_workers"},payload=>{
+        const row=payload.new as Record<string,unknown>;
+        if(!row.worker_id)return;
+        setBot(previous=>{
+          const heartbeatAt=typeof row.heartbeat_at==="string"?row.heartbeat_at:null;
+          const qrExpiresAt=typeof row.qr_expires_at==="string"?row.qr_expires_at:null;
+          const qrValid=previous.canControl&&Boolean(qrExpiresAt&&Date.parse(qrExpiresAt)>Date.now());
+          return {
+            canControl:previous.canControl,
+            online:heartbeatFresh(heartbeatAt),
+            worker:{
+              workerId:String(row.worker_id),status:String(row.status??"disconnected"),heartbeatAt,
+              connectedAt:typeof row.connected_at==="string"?row.connected_at:null,
+              accountJid:typeof row.account_jid==="string"?row.account_jid:null,
+              lastError:typeof row.last_error==="string"?row.last_error:null,
+              qrText:qrValid&&typeof row.qr_render==="string"?row.qr_render:null,
+              qrExpiresAt:qrValid?qrExpiresAt:null,
+              groupsSyncedAt:typeof row.groups_synced_at==="string"?row.groups_synced_at:null,
+              version:typeof row.version==="string"?row.version:null,
+              sessionActive:row.session_active===true,
+            },
+          };
+        });
+      })
       .on("postgres_changes",{event:"*",schema:"public",table:"whatsapp_dispatches"},reload)
       .on("postgres_changes",{event:"*",schema:"public",table:"whatsapp_groups"},reload)
       .subscribe();
     window.addEventListener("focus",reload);
-    return()=>{if(debounce)clearTimeout(debounce);clearInterval(interval);window.removeEventListener("focus",reload);void db.removeChannel(channel)};
+    return()=>{if(debounce)clearTimeout(debounce);clearInterval(interval);clearInterval(freshness);window.removeEventListener("focus",reload);void db.removeChannel(channel)};
   },[db,session,load]);
 
   async function command(action:"reconnect"|"disconnect"|"sync_groups"){

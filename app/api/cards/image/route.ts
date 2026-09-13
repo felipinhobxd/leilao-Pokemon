@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { authorize, failure, HttpError } from "@/lib/backend";
 
 export const runtime = "nodejs";
@@ -31,19 +32,18 @@ export async function POST(request: Request) {
     if (file.size <= 0 || file.size > 5 * 1024 * 1024) throw new HttpError(400, "A imagem deve ter no máximo 5 MB.");
 
     await ensureBucket(db);
-    const now = new Date();
-    const prefix = `${now.getUTCFullYear()}/${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
-    const path = `${prefix}/${crypto.randomUUID()}.${extension}`;
     const bytes = Buffer.from(await file.arrayBuffer());
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    const path = `cards/${digest}.${extension}`;
     const { error } = await db.storage.from(bucket).upload(path, bytes, {
       contentType: file.type,
       cacheControl: "31536000",
       upsert: false,
     });
-    if (error) throw new Error("card_image_upload_failed");
+    if (error && !/already exists|duplicate|resource.*exists/i.test(error.message)) throw new Error("card_image_upload_failed");
     const { data } = db.storage.from(bucket).getPublicUrl(path);
     if (!data.publicUrl?.startsWith("https://")) throw new Error("card_image_url_failed");
-    return Response.json({ url: data.publicUrl });
+    return Response.json({ url: data.publicUrl, path, deduplicated: Boolean(error) });
   } catch (error) {
     return failure(error);
   }

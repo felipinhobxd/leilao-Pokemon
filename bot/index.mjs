@@ -9,6 +9,7 @@ import pino from "pino";
 import qrcode from "qrcode-terminal";
 import { dispatchMessageId, dispatchPollSecret } from "./dispatch-id.mjs";
 import { buildAuctionCaption } from "./format.mjs";
+import { phoneFromWhatsAppJid, syncGroupParticipants } from "./group-participants.mjs";
 
 const required = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "BOT_ADMIN_USER_ID"];
 for (const key of required) {
@@ -61,8 +62,7 @@ function jidDigits(jid) {
 }
 
 function phoneFromJid(jid) {
-  const digits = jidDigits(jid);
-  return digits ? `+${digits}` : null;
+  return phoneFromWhatsAppJid(jid);
 }
 
 function fallbackIdentityName(value) {
@@ -185,6 +185,28 @@ async function ensureParticipant(identity) {
   return created;
 }
 
+async function syncAuctionGroup(groupJid) {
+  try {
+    const result = await syncGroupParticipants({ sock, groupJid, contactNames, ensureParticipant });
+    console.log(`👥 Grupo sincronizado: ${result.subject} · ${result.synced}/${result.total} membros identificados`);
+    return result;
+  } catch (error) {
+    console.warn("Não foi possível sincronizar participantes do grupo:", error?.message || error);
+    return null;
+  }
+}
+
+async function syncOpenAuctionGroups() {
+  const { data, error } = await db.from("auctions")
+    .select("whatsapp_group_id")
+    .eq("status", "open")
+    .not("whatsapp_group_id", "is", null)
+    .limit(20);
+  if (error) throw new Error(error.message);
+  const groupJids = [...new Set((data ?? []).map(row => row.whatsapp_group_id).filter(Boolean))];
+  for (const groupJid of groupJids) await syncAuctionGroup(groupJid);
+}
+
 async function claimDispatch() {
   const { data, error } = await db.rpc("claim_whatsapp_dispatch", { p_worker_id: WORKER_ID });
   if (error) throw new Error(error.message);
@@ -260,13 +282,15 @@ async function sendDispatch(claimedDispatch) {
     }, { messageId: dispatch.poll_message_id });
     if (!poll?.key?.id || !poll.message) throw new Error("poll_send_failed");
     const sentAt = new Date().toISOString();
+    const realPollMessageId = poll.key.id;
     const { error } = await db.from("whatsapp_dispatches").update({
+      poll_message_id: realPollMessageId,
       poll_message_json: serializeMessage(poll.message),
       poll_sent_at: sentAt,
       updated_at: sentAt,
     }).eq("id", dispatch.id);
     if (error) throw new Error(error.message);
-    dispatch = { ...dispatch, poll_message_json: serializeMessage(poll.message), poll_sent_at: sentAt };
+    dispatch = { ...dispatch, poll_message_id: realPollMessageId, poll_message_json: serializeMessage(poll.message), poll_sent_at: sentAt };
   }
 
   await processCommand({ type: "AUCTION_OPEN", eventId: `wa-open:${dispatch.id}`, auctionId: auction.id });
@@ -288,6 +312,7 @@ async function sendDispatch(claimedDispatch) {
   }).eq("id", dispatch.id);
   if (error) throw new Error(error.message);
   console.log(`📤 Enquete enviada: ${card.name} → ${group.name}`);
+  void syncAuctionGroup(group.group_jid);
 }
 
 async function runScheduler() {
@@ -373,7 +398,7 @@ async function handlePollVote(dispatch, pollUpdate) {
 async function handleMessageUpdates(updates) {
   for (const { key, update } of updates) {
     if (!key?.id || !update?.pollUpdates?.length) continue;
-    const { data: dispatch, error } = await db.from("whatsapp_dispatches").select("*").eq("poll_message_id", key.id).eq("status", "sent").maybeSingle();
+    const { data: dispatch, error } = await db.from("whatsapp_dispatches").select("*").eq("poll_message_id", key.id).maybeSingle();
     if (error || !dispatch?.poll_message_json) continue;
     const ordered = [...update.pollUpdates].sort((a, b) => Number(a?.senderTimestampMs?.toString?.() ?? 0) - Number(b?.senderTimestampMs?.toString?.() ?? 0));
     for (const pollUpdate of ordered) {
@@ -433,6 +458,7 @@ async function connect() {
       console.log("Aguardando agendamentos e votos...\n");
       clearInterval(schedulerTimer);
       schedulerTimer = setInterval(() => { void runScheduler(); void finalizeDueAuctions(); }, 3000);
+      void syncOpenAuctionGroups().catch(error => console.warn("Falha ao sincronizar grupos abertos:", error?.message || error));
       void runScheduler();
       void finalizeDueAuctions();
     }

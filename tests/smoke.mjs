@@ -8,9 +8,16 @@ try {
     await new Promise(resolve=>setTimeout(resolve,100));
   }
   assert.ok(online,'production server started');
-  for(const [path,method] of [['dashboard','GET'],['export','GET'],['commands','POST']]) {
+  for(const [path,method] of [
+    ['dashboard','GET'],
+    ['export','GET'],
+    ['commands','POST'],
+    ['whatsapp/bot','GET'],
+    ['whatsapp/bot','POST'],
+    ['whatsapp/schedules','GET'],
+  ]) {
     const response=await fetch(`http://127.0.0.1:3199/api/${path}`,{method,signal:AbortSignal.timeout(3000)});
-    assert.equal(response.status,401,`${path} must reject unauthenticated requests`);
+    assert.equal(response.status,401,`${path} ${method} must reject unauthenticated requests`);
   }
-  console.log('PASS: dashboard, Excel and command routes require authentication.');
+  console.log('PASS: dashboard, Excel, commands and WhatsApp routes require authentication.');
 } finally { server.kill(); }

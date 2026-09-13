@@ -12,8 +12,8 @@ export async function GET(request: Request) {
   const started = performance.now();
   try {
     const authStarted = performance.now();
-    const { db, profile } = await authorize(request);
-    const authMs = performance.now() - authStarted;
+    const { db, profile, timing } = await authorize(request);
+    const authorizeMs = performance.now() - authStarted;
     const queryStarted = performance.now();
 
     const [workerResult, groupsResult, auctionsResult, dispatchesResult] = await Promise.all([
@@ -80,7 +80,13 @@ export async function GET(request: Request) {
     }, {
       headers: {
         "Cache-Control": "private, no-store",
-        "Server-Timing": `authorize;dur=${authMs.toFixed(1)}, queries;dur=${queryMs.toFixed(1)}, total;dur=${totalMs.toFixed(1)}`,
+        "Server-Timing": [
+          `claims;dur=${timing.claimsMs.toFixed(1)}`,
+          `profile;dur=${timing.profileMs.toFixed(1)}`,
+          `authorize;dur=${authorizeMs.toFixed(1)}`,
+          `queries;dur=${queryMs.toFixed(1)}`,
+          `total;dur=${totalMs.toFixed(1)}`,
+        ].join(", "),
       },
     });
   } catch (error) {

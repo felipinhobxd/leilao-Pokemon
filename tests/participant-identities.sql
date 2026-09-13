@@ -4,7 +4,7 @@ do $$
 declare
   first_result jsonb;
   enriched_result jsonb;
-  participant_id uuid;
+  resolved_participant_id uuid;
   participant_count integer;
   identity_count integer;
   stored_phone text;
@@ -16,7 +16,7 @@ begin
     'Participante WhatsApp',
     clock_timestamp()
   );
-  participant_id := (first_result->>'id')::uuid;
+  resolved_participant_id := (first_result->>'id')::uuid;
 
   enriched_result := public.resolve_whatsapp_participant(
     array['80179053510687@lid','554198587027@s.whatsapp.net'],
@@ -25,14 +25,14 @@ begin
     clock_timestamp() + interval '1 second'
   );
 
-  if (enriched_result->>'id')::uuid <> participant_id then
+  if (enriched_result->>'id')::uuid <> resolved_participant_id then
     raise exception 'PN/LID mapping created a duplicate participant';
   end if;
 
   select count(*), max(phone_e164), max(display_name)
     into participant_count, stored_phone, stored_name
-  from public.participants
-  where id = participant_id;
+  from public.participants p
+  where p.id = resolved_participant_id;
 
   if participant_count <> 1 then
     raise exception 'expected exactly one participant, got %', participant_count;
@@ -45,9 +45,9 @@ begin
   end if;
 
   select count(*) into identity_count
-  from public.participant_identities
-  where participant_identities.participant_id = participant_id
-    and identity in ('80179053510687@lid','554198587027@s.whatsapp.net');
+  from public.participant_identities pi
+  where pi.participant_id = resolved_participant_id
+    and pi.identity in ('80179053510687@lid','554198587027@s.whatsapp.net');
 
   if identity_count <> 2 then
     raise exception 'expected two aliases for the same participant, got %', identity_count;

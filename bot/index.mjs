@@ -10,6 +10,8 @@ import qrcode from "qrcode-terminal";
 import { dispatchMessageId, dispatchPollSecret } from "./dispatch-id.mjs";
 import { buildAuctionCaption } from "./format.mjs";
 import { phoneFromWhatsAppJid, syncGroupParticipants } from "./group-participants.mjs";
+import { isLidJid, isPhoneJid, normalizeUserJid } from "./poll-identities.mjs";
+import { decryptIncomingPollVote } from "./poll-votes.mjs";
 
 const required = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "BOT_ADMIN_USER_ID"];
 for (const key of required) {
@@ -36,16 +38,42 @@ let schedulerBusy = false;
 let finalizeBusy = false;
 let voteQueue = Promise.resolve();
 const contactNames = new Map();
+const pollMessageCache = new Map();
+const pendingPollVotes = new Map();
+const trackedGroupJids = new Set();
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const brl = value => new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(Number(value));
 
+function storageValue(value) {
+  if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
+    return { type: "Buffer", data: Buffer.from(value).toString("base64") };
+  }
+  if (Array.isArray(value)) return value.map(storageValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, storageValue(item)]));
+  }
+  return value;
+}
+
 function reviveStoredMessage(value) {
-  return JSON.parse(JSON.stringify(value), BufferJSON.reviver);
+  const revived = JSON.parse(JSON.stringify(value), BufferJSON.reviver);
+  // Older dispatches were persisted through protobuf toJSON(), which converted
+  // messageSecret to a plain base64 string before BufferJSON could see it.
+  const secret = revived?.messageContextInfo?.messageSecret;
+  if (typeof secret === "string") {
+    try {
+      const bytes = Buffer.from(secret, "base64");
+      if (bytes.length === 32) revived.messageContextInfo.messageSecret = bytes;
+    } catch {}
+  }
+  return revived;
 }
 
 function serializeMessage(value) {
-  return JSON.parse(JSON.stringify(value, BufferJSON.replacer));
+  // Walk the protobuf object ourselves so its toJSON() cannot turn Uint8Array
+  // secrets into ambiguous plain strings.
+  return storageValue(value);
 }
 
 function eventTime(value) {
@@ -70,11 +98,15 @@ function fallbackIdentityName(value) {
   return !name || name === "Participante WhatsApp" || /^\+?\d{8,15}$/.test(name) || name.includes("@lid") || name.includes("@s.whatsapp.net");
 }
 
+function uniqueUserJids(values) {
+  return [...new Set(values.map(normalizeUserJid).filter(jid => jid && !String(jid).endsWith("@g.us")))];
+}
+
 function rememberContact(contact) {
   const name = String(contact?.notify || contact?.name || contact?.verifiedName || contact?.pushName || contact?.username || "").trim();
   if (!name) return;
-  for (const jid of [contact?.id, contact?.lid, contact?.phoneNumber]) {
-    if (jid) contactNames.set(jid, name);
+  for (const jid of uniqueUserJids([contact?.id, contact?.lid, contact?.phoneNumber])) {
+    contactNames.set(jid, name);
   }
 }
 
@@ -82,16 +114,17 @@ function rememberMessageSender(message) {
   const name = String(message?.pushName ?? "").trim();
   if (!name) return;
   const key = message?.key ?? {};
-  for (const jid of [key.participantAlt, key.participant, key.remoteJidAlt, key.remoteJid]) {
-    if (jid && !String(jid).endsWith("@g.us")) contactNames.set(jid, name);
+  for (const jid of uniqueUserJids([key.participantAlt, key.participant, key.remoteJidAlt, key.remoteJid])) {
+    contactNames.set(jid, name);
   }
 }
 
 function voterFromUpdate(update) {
   const key = update?.pollUpdateMessageKey;
   if (!key) return null;
-  if (key.fromMe) return sock?.user?.id ?? null;
-  return key.participantAlt || key.participant || key.remoteJidAlt || key.remoteJid || null;
+  // Keep the real routing identity from the event even for fromMe=true. The
+  // connected account is allowed to participate and must not be discarded.
+  return key.participantAlt || key.participant || (key.fromMe ? sock?.user?.id : null) || key.remoteJidAlt || key.remoteJid || null;
 }
 
 async function resolveVoterIdentity(update) {
@@ -99,47 +132,68 @@ async function resolveVoterIdentity(update) {
   if (!key) return null;
   const raw = voterFromUpdate(update);
   if (!raw || String(raw).endsWith("@g.us")) return null;
-  const candidates = [key.participantAlt, key.participant, key.remoteJidAlt, key.remoteJid, raw]
-    .filter(jid => jid && !String(jid).endsWith("@g.us"));
+
+  const candidates = uniqueUserJids([
+    key.participantAlt,
+    key.participant,
+    key.remoteJidAlt,
+    key.fromMe ? sock?.user?.id : null,
+    key.fromMe ? sock?.user?.lid : null,
+    raw,
+  ]);
   const groupJid = [key.remoteJid, key.remoteJidAlt].find(jid => String(jid ?? "").endsWith("@g.us"));
   let groupParticipant = null;
+
   if (groupJid && sock?.groupMetadata) {
     try {
       const metadata = await sock.groupMetadata(groupJid);
       groupParticipant = metadata?.participants?.find(person => {
-        const ids = [person?.id, person?.lid, person?.phoneNumber].filter(Boolean);
+        const ids = uniqueUserJids([person?.id, person?.lid, person?.phoneNumber]);
         return ids.some(id => candidates.includes(id));
       }) ?? null;
       if (groupParticipant) {
         rememberContact(groupParticipant);
-        for (const jid of [groupParticipant.id, groupParticipant.lid, groupParticipant.phoneNumber]) {
-          if (jid && !candidates.includes(jid)) candidates.push(jid);
+        for (const jid of uniqueUserJids([groupParticipant.id, groupParticipant.lid, groupParticipant.phoneNumber])) {
+          if (!candidates.includes(jid)) candidates.push(jid);
         }
       }
     } catch {}
   }
-  let phoneJid = candidates.find(jid => String(jid).endsWith("@s.whatsapp.net")) || groupParticipant?.phoneNumber || null;
-  if (!phoneJid) {
-    const lid = candidates.find(jid => String(jid).endsWith("@lid"));
-    const resolver = sock?.signalRepository?.lidMapping?.getPNForLID;
-    if (lid && typeof resolver === "function") {
-      try {
-        phoneJid = await resolver.call(sock.signalRepository.lidMapping, lid);
-        if (phoneJid && !candidates.includes(phoneJid)) candidates.push(phoneJid);
-      } catch {}
-    }
+
+  const mapping = sock?.signalRepository?.lidMapping;
+  for (const jid of [...candidates]) {
+    try {
+      if (isLidJid(jid) && typeof mapping?.getPNForLID === "function") {
+        const pn = normalizeUserJid(await mapping.getPNForLID(jid));
+        if (pn && !candidates.includes(pn)) candidates.push(pn);
+      } else if (isPhoneJid(jid) && typeof mapping?.getLIDForPN === "function") {
+        const lid = normalizeUserJid(await mapping.getLIDForPN(jid));
+        if (lid && !candidates.includes(lid)) candidates.push(lid);
+      }
+    } catch {}
   }
-  const canonicalJid = phoneJid || raw;
-  const phoneE164 = phoneFromJid(phoneJid || canonicalJid);
+
+  const phoneJid = candidates.find(isPhoneJid) || normalizeUserJid(groupParticipant?.phoneNumber) || null;
+  const canonicalJid = phoneJid || normalizeUserJid(raw);
+  const phoneE164 = phoneFromJid(phoneJid);
   const cachedName = candidates.map(jid => contactNames.get(jid)).find(Boolean);
   const keyName = key.participantUsername || key.remoteJidUsername;
   const metadataName = groupParticipant?.notify || groupParticipant?.name || groupParticipant?.verifiedName || groupParticipant?.username;
-  const displayName = String(cachedName || metadataName || keyName || phoneE164 || jidDigits(canonicalJid) || "Participante WhatsApp").trim();
-  return { voterJid: canonicalJid, rawJid: raw, aliases: [...new Set(candidates)], phoneE164, displayName };
+  const ownName = key.fromMe ? (sock?.user?.name || sock?.user?.notify || sock?.user?.verifiedName) : null;
+  const displayName = String(cachedName || metadataName || keyName || ownName || phoneE164 || jidDigits(canonicalJid) || "Participante WhatsApp").trim();
+  return {
+    voterJid: canonicalJid,
+    rawJid: normalizeUserJid(raw),
+    aliases: uniqueUserJids(candidates),
+    phoneE164,
+    displayName,
+  };
 }
 
 async function getStoredPollMessage(key) {
   if (!key?.id) return undefined;
+  const cached = pollMessageCache.get(key.id);
+  if (cached?.message) return cached.message;
   const { data, error } = await db.from("whatsapp_dispatches").select("poll_message_json").eq("poll_message_id", key.id).maybeSingle();
   if (error || !data?.poll_message_json) return undefined;
   return reviveStoredMessage(data.poll_message_json);
@@ -152,40 +206,19 @@ async function processCommand(command) {
 }
 
 async function ensureParticipant(identity) {
-  const now = new Date().toISOString();
-  const lookupJids = [...new Set([identity.voterJid, identity.rawJid, ...(identity.aliases ?? [])].filter(Boolean))];
-  let existing = null;
-  if (lookupJids.length) {
-    const { data, error } = await db.from("participants").select("id,whatsapp_id,phone_e164,display_name,status,suspension_until").in("whatsapp_id", lookupJids).limit(1);
-    if (error) throw new Error(error.message);
-    existing = data?.[0] ?? null;
-  }
-  if (!existing && identity.phoneE164) {
-    const { data, error } = await db.from("participants").select("id,whatsapp_id,phone_e164,display_name,status,suspension_until").eq("phone_e164", identity.phoneE164).limit(1);
-    if (error) throw new Error(error.message);
-    existing = data?.[0] ?? null;
-  }
-  if (existing) {
-    const patch = { last_seen_at: now };
-    if (identity.phoneE164 && !existing.phone_e164) patch.phone_e164 = identity.phoneE164;
-    if (identity.displayName && fallbackIdentityName(existing.display_name) && !fallbackIdentityName(identity.displayName)) patch.display_name = identity.displayName;
-    const { data: updated, error } = await db.from("participants").update(patch).eq("id", existing.id).select("id,whatsapp_id,phone_e164,display_name,status,suspension_until").single();
-    if (error) throw new Error(error.message);
-    return updated;
-  }
-  const { data: created, error: insertError } = await db.from("participants").insert({
-    whatsapp_id: identity.voterJid,
-    phone_e164: identity.phoneE164,
-    display_name: identity.displayName,
-    status: "active",
-    first_seen_at: now,
-    last_seen_at: now,
-  }).select("id,whatsapp_id,phone_e164,display_name,status,suspension_until").single();
-  if (insertError || !created) throw new Error(insertError?.message || "participant_create_failed");
-  return created;
+  const identities = uniqueUserJids([identity.voterJid, identity.rawJid, ...(identity.aliases ?? [])]);
+  const { data, error } = await db.rpc("resolve_whatsapp_participant", {
+    p_identities: identities,
+    p_phone_e164: identity.phoneE164 || null,
+    p_display_name: identity.displayName || "Participante WhatsApp",
+    p_seen_at: new Date().toISOString(),
+  });
+  if (error || !data) throw new Error(error?.message || "participant_resolve_failed");
+  return data;
 }
 
 async function syncAuctionGroup(groupJid) {
+  trackedGroupJids.add(groupJid);
   try {
     const result = await syncGroupParticipants({ sock, groupJid, contactNames, ensureParticipant });
     console.log(`👥 Grupo sincronizado: ${result.subject} · ${result.synced}/${result.total} membros identificados`);
@@ -252,9 +285,16 @@ async function persistDispatchMessageIds(dispatch) {
   return data;
 }
 
+async function drainPendingPollVotes(pollMessageId) {
+  const waiting = pendingPollVotes.get(pollMessageId) ?? [];
+  pendingPollVotes.delete(pollMessageId);
+  for (const message of waiting) await processIncomingPollMessage(message);
+}
+
 async function sendDispatch(claimedDispatch) {
   let dispatch = await persistDispatchMessageIds(claimedDispatch);
   const { group, auction, card } = await fetchAuctionContext(dispatch);
+  trackedGroupJids.add(group.group_jid);
   if (!["draft", "open"].includes(auction.status)) throw new Error("auction_not_publishable");
   const options = Array.isArray(dispatch.poll_options) ? dispatch.poll_options : [];
   if (!options.length || options.length > 12) throw new Error("invalid_poll_options");
@@ -283,17 +323,21 @@ async function sendDispatch(claimedDispatch) {
     if (!poll?.key?.id || !poll.message) throw new Error("poll_send_failed");
     const sentAt = new Date().toISOString();
     const realPollMessageId = poll.key.id;
+    const serializedPoll = serializeMessage(poll.message);
+    dispatch = { ...dispatch, poll_message_id: realPollMessageId, poll_message_json: serializedPoll, poll_sent_at: sentAt };
+    pollMessageCache.set(realPollMessageId, { key: poll.key, message: poll.message, dispatch, ready: false });
     const { error } = await db.from("whatsapp_dispatches").update({
       poll_message_id: realPollMessageId,
-      poll_message_json: serializeMessage(poll.message),
+      poll_message_json: serializedPoll,
       poll_sent_at: sentAt,
       updated_at: sentAt,
     }).eq("id", dispatch.id);
     if (error) throw new Error(error.message);
-    dispatch = { ...dispatch, poll_message_id: realPollMessageId, poll_message_json: serializeMessage(poll.message), poll_sent_at: sentAt };
   }
 
-  await processCommand({ type: "AUCTION_OPEN", eventId: `wa-open:${dispatch.id}`, auctionId: auction.id });
+  if (auction.status === "draft") {
+    await processCommand({ type: "AUCTION_OPEN", eventId: `wa-open:${dispatch.id}`, auctionId: auction.id });
+  }
   await db.from("auctions").update({
     whatsapp_group_id: group.group_jid,
     poll_id: dispatch.poll_message_id,
@@ -302,16 +346,21 @@ async function sendDispatch(claimedDispatch) {
   }).eq("id", auction.id);
 
   const now = new Date().toISOString();
-  const { error } = await db.from("whatsapp_dispatches").update({
+  const { data: sentDispatch, error } = await db.from("whatsapp_dispatches").update({
     status: "sent",
     sent_at: now,
     locked_at: null,
     locked_by: null,
     last_error: null,
     updated_at: now,
-  }).eq("id", dispatch.id);
+  }).eq("id", dispatch.id).select("*").single();
   if (error) throw new Error(error.message);
+  dispatch = sentDispatch || { ...dispatch, status: "sent", sent_at: now };
+
+  const cached = pollMessageCache.get(dispatch.poll_message_id);
+  if (cached) pollMessageCache.set(dispatch.poll_message_id, { ...cached, dispatch, ready: true });
   console.log(`📤 Enquete enviada: ${card.name} → ${group.name}`);
+  await drainPendingPollVotes(dispatch.poll_message_id);
   void syncAuctionGroup(group.group_jid);
 }
 
@@ -336,55 +385,123 @@ async function auditLateVote(auctionId, participantId, type, eventId, payload) {
   await db.from("auction_events").insert({ auction_id: auctionId, participant_id: participantId, admin_user_id: ADMIN_USER_ID, event_type: type, external_event_id: eventId, payload });
 }
 
-async function handlePollVote(dispatch, pollUpdate) {
+async function findVoteState(auctionId, participantId) {
+  const { data, error } = await db.from("whatsapp_vote_state")
+    .select("*")
+    .eq("auction_id", auctionId)
+    .eq("participant_id", participantId)
+    .order("last_event_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data ?? null;
+}
+
+async function saveVoteState(previous, values) {
+  const row = {
+    ...values,
+    voter_jid: previous?.voter_jid || values.voter_jid,
+    updated_at: new Date().toISOString(),
+  };
+  if (previous) {
+    const { error } = await db.from("whatsapp_vote_state").update(row)
+      .eq("auction_id", previous.auction_id)
+      .eq("voter_jid", previous.voter_jid);
+    if (error) throw new Error(error.message);
+  } else {
+    const { error } = await db.from("whatsapp_vote_state").insert(row);
+    if (error) throw new Error(error.message);
+  }
+}
+
+async function logCurrentLeader(auctionId) {
+  const { data: bids, error } = await db.from("bids")
+    .select("participant_id,amount,processed_at,confirmation_order")
+    .eq("auction_id", auctionId)
+    .eq("status", "active")
+    .order("amount", { ascending: false })
+    .order("processed_at", { ascending: true })
+    .order("confirmation_order", { ascending: true })
+    .limit(20);
+  if (error || !bids?.length) return;
+  const now = Date.now();
+  for (const bid of bids) {
+    const { data: person } = await db.from("participants").select("display_name,phone_e164,status,suspension_until").eq("id", bid.participant_id).maybeSingle();
+    if (!person || person.status !== "active") continue;
+    if (person.suspension_until && Date.parse(person.suspension_until) > now) continue;
+    console.log(`🏆 Maior lance: ${person.display_name}${person.phone_e164 ? ` (${person.phone_e164})` : ""} → ${brl(bid.amount)}`);
+    return;
+  }
+}
+
+function logResolvedParticipant(participant, identity) {
+  const aliases = uniqueUserJids(identity.aliases ?? []);
+  const lid = aliases.find(isLidJid) || "—";
+  const pn = aliases.find(isPhoneJid) || "—";
+  console.log(`👥 Participante resolvido: ${participant.display_name} | LID: ${lid} | PN: ${pn}`);
+}
+
+async function handlePollVote(dispatch, pollUpdate, originalMessageOverride) {
   const identity = await resolveVoterIdentity(pollUpdate);
   if (!identity) return;
   const participant = await ensureParticipant(identity);
+  logResolvedParticipant(participant, identity);
+
   const voterJid = identity.voterJid;
   const occurredAt = eventTime(pollUpdate.senderTimestampMs);
-  const originalMessage = reviveStoredMessage(dispatch.poll_message_json);
+  const originalMessage = originalMessageOverride || reviveStoredMessage(dispatch.poll_message_json);
   const aggregated = getAggregateVotesInPollMessage({ message: originalMessage, pollUpdates: [pollUpdate] }, sock?.user?.id);
   const selectedLabel = aggregated.find(option => option.voters.length > 0)?.name ?? null;
   const options = Array.isArray(dispatch.poll_options) ? dispatch.poll_options : [];
   const selected = selectedLabel ? options.find(option => option.label === selectedLabel) : null;
-  const { data: previous } = await db.from("whatsapp_vote_state").select("*").eq("auction_id", dispatch.auction_id).eq("voter_jid", voterJid).maybeSingle();
-  const stablePart = `${dispatch.poll_message_id}:${voterJid}:${pollUpdate.senderTimestampMs?.toString?.() ?? Date.now()}`.slice(0, 170);
+  const previous = await findVoteState(dispatch.auction_id, participant.id);
+  const stablePart = `${dispatch.poll_message_id}:${participant.id}:${pollUpdate.senderTimestampMs?.toString?.() ?? Date.now()}`.slice(0, 170);
 
   if (!selected) {
     if (!previous?.active) return;
+    const oldAmount = previous.amount;
     const eventId = `wa-withdraw:${stablePart}`.slice(0, 200);
     if (previous.is_buyout) {
       await auditLateVote(dispatch.auction_id, participant.id, "BUYOUT_WITHDRAW_ATTEMPT", eventId, { voter_jid: voterJid, phone_e164: participant.phone_e164, display_name: participant.display_name, event_at: occurredAt });
     } else {
-      try { await processCommand({ type: "BID_WITHDRAWN", eventId, auctionId: dispatch.auction_id, participantId: participant.id, occurredAt }); }
-      catch (error) {
+      try {
+        await processCommand({ type: "BID_WITHDRAWN", eventId, auctionId: dispatch.auction_id, participantId: participant.id, occurredAt });
+      } catch (error) {
         if (String(error?.message || error).includes("auction_not_open")) {
           await auditLateVote(dispatch.auction_id, participant.id, "BID_WITHDRAWN_AFTER_CLOSE", eventId, { voter_jid: voterJid, phone_e164: participant.phone_e164, display_name: participant.display_name, event_at: occurredAt });
         } else throw error;
       }
     }
-    await db.from("whatsapp_vote_state").upsert({ auction_id: dispatch.auction_id, voter_jid: voterJid, participant_id: participant.id, option_label: null, amount: null, is_buyout: false, active: false, last_event_id: eventId, last_event_at: occurredAt, updated_at: new Date().toISOString() });
-    console.log(`↩️ Voto removido: ${participant.display_name}`);
+    await saveVoteState(previous, { auction_id: dispatch.auction_id, voter_jid: voterJid, participant_id: participant.id, option_label: null, amount: null, is_buyout: false, active: false, last_event_id: eventId, last_event_at: occurredAt });
+    console.log(`❌ Voto removido: ${participant.display_name} → ${oldAmount == null ? "—" : brl(oldAmount)}`);
+    if (!previous.is_buyout) await logCurrentLeader(dispatch.auction_id);
     return;
   }
 
   if (previous?.active && previous.option_label === selected.label) return;
   const amount = Number(selected.amount);
-  const isBuyout = Boolean(selected.isBuyout || String(selected.label).includes("🦭"));
+  const isBuyout = Boolean(selected.isBuyout || /ARREMATE/i.test(String(selected.label)) || String(selected.label).includes("🔥"));
   const type = isBuyout ? "BUYOUT_CONFIRMED" : previous?.active ? "BID_CHANGED" : "BID_PLACED";
   const eventId = `wa-vote:${stablePart}:${amount}`.slice(0, 200);
+
   try {
     const result = await processCommand({ type, eventId, auctionId: dispatch.auction_id, participantId: participant.id, ...(isBuyout ? {} : { amount }), occurredAt });
-    await db.from("whatsapp_vote_state").upsert({ auction_id: dispatch.auction_id, voter_jid: voterJid, participant_id: participant.id, option_label: selected.label, amount, is_buyout: isBuyout, active: true, last_event_id: eventId, last_event_at: occurredAt, updated_at: new Date().toISOString() });
+    await saveVoteState(previous, { auction_id: dispatch.auction_id, voter_jid: voterJid, participant_id: participant.id, option_label: selected.label, amount, is_buyout: isBuyout, active: true, last_event_id: eventId, last_event_at: occurredAt });
     const contact = participant.phone_e164 ? ` (${participant.phone_e164})` : "";
-    console.log(`${isBuyout ? "🦭 ARREMATE" : "💰 Lance"}: ${participant.display_name}${contact} → ${brl(amount)}`);
     if (isBuyout) {
+      console.log(`🔥 ARREMATE: ${participant.display_name}${contact} → ${brl(result?.auction?.final_price ?? amount)}`);
       const { group, card } = await fetchAuctionContext(dispatch);
       await sock.sendMessage(group.group_jid, { text: `🏆 *ARREMATADO!*\n\n🃏 ${card.name}\n👤 ${participant.display_name}\n💰 ${brl(result?.auction?.final_price ?? amount)}` });
+    } else if (previous?.active) {
+      console.log(`🔄 Voto alterado: ${participant.display_name}${contact} → ${brl(previous.amount)} → ${brl(amount)}`);
+      await logCurrentLeader(dispatch.auction_id);
+    } else {
+      console.log(`🗳️ Voto recebido: ${participant.display_name}${contact} → ${brl(amount)}`);
+      await logCurrentLeader(dispatch.auction_id);
     }
   } catch (error) {
     const message = String(error?.message || error);
-    if (message.includes("auction_not_open") || message.includes("deadline_expired") || message.includes("participant_not_eligible")) {
+    if (message.includes("auction_not_open") || message.includes("deadline_expired") || message.includes("participant_not_eligible") || message.includes("stale_event")) {
       const rejectedType = isBuyout && message.includes("auction_not_open") ? "BUYOUT_LOST_RACE" : "WHATSAPP_VOTE_REJECTED";
       const { data: closedAuction } = isBuyout ? await db.from("auctions").select("winner_participant_id,final_price,status").eq("id", dispatch.auction_id).maybeSingle() : { data: null };
       await auditLateVote(dispatch.auction_id, participant.id, rejectedType, eventId, { voter_jid: voterJid, phone_e164: participant.phone_e164, display_name: participant.display_name, option: selected.label, amount, reason: message.slice(0, 300), winner_participant_id: closedAuction?.winner_participant_id ?? null, final_price: closedAuction?.final_price ?? null, event_at: occurredAt });
@@ -395,15 +512,77 @@ async function handlePollVote(dispatch, pollUpdate) {
   }
 }
 
-async function handleMessageUpdates(updates) {
-  for (const { key, update } of updates) {
-    if (!key?.id || !update?.pollUpdates?.length) continue;
-    const { data: dispatch, error } = await db.from("whatsapp_dispatches").select("*").eq("poll_message_id", key.id).maybeSingle();
-    if (error || !dispatch?.poll_message_json) continue;
-    const ordered = [...update.pollUpdates].sort((a, b) => Number(a?.senderTimestampMs?.toString?.() ?? 0) - Number(b?.senderTimestampMs?.toString?.() ?? 0));
-    for (const pollUpdate of ordered) {
-      try { await handlePollVote(dispatch, pollUpdate); }
-      catch (error) { console.error("Falha ao processar voto:", error?.message || error); }
+async function loadDispatchForPoll(pollMessageId) {
+  const cached = pollMessageCache.get(pollMessageId);
+  if (cached?.ready && cached.dispatch) return { dispatch: cached.dispatch, cached };
+  const { data: dispatch, error } = await db.from("whatsapp_dispatches").select("*").eq("poll_message_id", pollMessageId).maybeSingle();
+  if (error) throw new Error(error.message);
+  return { dispatch, cached };
+}
+
+async function processIncomingPollMessage(message) {
+  const creationKey = message?.message?.pollUpdateMessage?.pollCreationMessageKey;
+  const pollMessageId = creationKey?.id;
+  if (!pollMessageId) return;
+
+  const cached = pollMessageCache.get(pollMessageId);
+  if (cached && !cached.ready) {
+    const waiting = pendingPollVotes.get(pollMessageId) ?? [];
+    waiting.push(message);
+    pendingPollVotes.set(pollMessageId, waiting);
+    return;
+  }
+
+  const loaded = await loadDispatchForPoll(pollMessageId);
+  const dispatch = loaded.dispatch;
+  if (!dispatch?.poll_message_json && !loaded.cached?.message) {
+    console.warn(`Voto recebido para enquete desconhecida: ${pollMessageId}`);
+    return;
+  }
+
+  const pollMessage = loaded.cached?.message || reviveStoredMessage(dispatch.poll_message_json);
+  const pollKey = loaded.cached?.key || {
+    id: pollMessageId,
+    remoteJid: creationKey.remoteJid,
+    remoteJidAlt: creationKey.remoteJidAlt,
+    participant: creationKey.participant,
+    participantAlt: creationKey.participantAlt,
+    fromMe: creationKey.fromMe,
+  };
+
+  try {
+    const decrypted = await decryptIncomingPollVote({ sock, message, pollMessage, pollKey });
+    if (!decrypted) return;
+    await handlePollVote(dispatch, decrypted.pollUpdate, pollMessage);
+  } catch (error) {
+    const diagnostic = error?.diagnostic ?? {};
+    console.warn("Falha real ao descriptografar/processar voto:", {
+      message: error?.message || String(error),
+      pollMessageId: diagnostic.pollMessageId || pollMessageId,
+      fromMe: diagnostic.fromMe ?? Boolean(message?.key?.fromMe),
+      creatorCandidates: diagnostic.creatorCandidates,
+      voterCandidates: diagnostic.voterCandidates,
+    });
+  }
+}
+
+async function enrichParticipantFromMessage(message) {
+  const groupJid = String(message?.key?.remoteJid ?? "");
+  if (!trackedGroupJids.has(groupJid) || message?.message?.pollUpdateMessage) return;
+  const identity = await resolveVoterIdentity({ pollUpdateMessageKey: message.key });
+  if (!identity) return;
+  if (message.pushName && fallbackIdentityName(identity.displayName)) identity.displayName = message.pushName;
+  await ensureParticipant(identity);
+}
+
+async function handleIncomingMessages(messages) {
+  for (const message of messages ?? []) {
+    rememberMessageSender(message);
+    if (message?.message?.pollUpdateMessage?.pollCreationMessageKey?.id) {
+      await processIncomingPollMessage(message);
+    } else {
+      try { await enrichParticipantFromMessage(message); }
+      catch (error) { console.warn("Falha ao enriquecer participante por mensagem:", error?.message || error); }
     }
   }
 }
@@ -423,12 +602,16 @@ async function finalizeDueAuctions() {
         if (!auction.whatsapp_group_id) continue;
         const { data: card } = await db.from("cards").select("name").eq("id", auction.card_id).single();
         if (finalAuction?.winner_participant_id) {
-          const { data: winner } = await db.from("participants").select("display_name").eq("id", finalAuction.winner_participant_id).single();
+          const { data: winner } = await db.from("participants").select("display_name,phone_e164").eq("id", finalAuction.winner_participant_id).single();
+          console.log(`⏰ Leilão encerrado: ${winner?.display_name ?? "Participante"} venceu por ${brl(finalAuction.final_price)}`);
           await sock.sendMessage(auction.whatsapp_group_id, { text: `🏁 *Leilão encerrado!*\n\n🃏 ${card?.name ?? "Carta"}\n👤 Vencedor: ${winner?.display_name ?? "Participante"}\n💰 ${brl(finalAuction.final_price)}` });
         } else {
+          console.log("⏰ Leilão encerrado: sem comprador");
           await sock.sendMessage(auction.whatsapp_group_id, { text: `🏁 Leilão de *${card?.name ?? "carta"}* encerrado sem lances válidos.` });
         }
-      } catch (error) { console.error("Falha ao finalizar leilão:", error?.message || error); }
+      } catch (error) {
+        if (!String(error?.message || error).includes("auction_not_open")) console.error("Falha ao finalizar leilão:", error?.message || error);
+      }
     }
   } finally { finalizeBusy = false; }
 }
@@ -437,14 +620,13 @@ async function connect() {
   // Each socket gets its own retry guard; a failed replacement must retry too.
   let reconnecting = false;
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
-  sock = makeWASocket({ auth: state, logger, markOnlineOnConnect: false, syncFullHistory: false, getMessage: getStoredPollMessage });
+  sock = makeWASocket({ auth: state, logger, markOnlineOnConnect: false, syncFullHistory: false, emitOwnEvents: true, getMessage: getStoredPollMessage });
   const activeSocket = sock;
   sock.ev.on("creds.update", saveCreds);
   sock.ev.on("contacts.upsert", contacts => contacts.forEach(rememberContact));
   sock.ev.on("contacts.update", contacts => contacts.forEach(rememberContact));
-  sock.ev.on("messages.upsert", ({ messages }) => messages.forEach(rememberMessageSender));
-  sock.ev.on("messages.update", updates => {
-    voteQueue = voteQueue.then(() => handleMessageUpdates(updates)).catch(error => console.error("Falha na fila de votos:", error?.message || error));
+  sock.ev.on("messages.upsert", ({ messages }) => {
+    voteQueue = voteQueue.then(() => handleIncomingMessages(messages)).catch(error => console.error("Falha na fila de mensagens/votos:", error?.message || error));
   });
   sock.ev.on("connection.update", ({ connection, qr, lastDisconnect }) => {
     if (sock !== activeSocket) return;

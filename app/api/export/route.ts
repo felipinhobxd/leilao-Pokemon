@@ -17,7 +17,7 @@ const sheets: [Table, string, [string, string][]][] = [
 
 function cleanPhone(phone: unknown, whatsapp: unknown) {
   const direct = String(phone ?? "").trim();
-  if (direct) return direct;
+  if (/^\+\d{8,15}$/.test(direct)) return direct;
   const raw = String(whatsapp ?? "").trim();
   if (/^\+\d{8,15}$/.test(raw)) return raw;
   const local = raw.split("@")[0].split(":")[0];
@@ -26,7 +26,7 @@ function cleanPhone(phone: unknown, whatsapp: unknown) {
 
 function winTypeLabel(value: unknown) {
   const type = String(value ?? "").toLowerCase();
-  if (type.includes("buyout") || type.includes("arremate")) return "ARREMATE";
+  if (type.includes("buyout") || type.includes("arremate")) return "Arremate";
   if (type.includes("bid") || type.includes("highest")) return "Maior lance";
   return type ? String(value) : "Venda";
 }
@@ -64,7 +64,6 @@ export async function GET(request: Request) {
       .filter(p => p.status === "confirmed")
       .sort((a, b) => String(b.confirmed_at ?? "").localeCompare(String(a.confirmed_at ?? "")));
 
-    // Primeira aba: visão limpa para uso diário e fechamento das vendas.
     const sales = workbook.addWorksheet("Vendas");
     sales.columns = [
       { header: "Lote", key: "lot", width: 10 },
@@ -98,7 +97,6 @@ export async function GET(request: Request) {
     sales.getColumn("confirmedAt").numFmt = "dd/mm/yyyy hh:mm";
     styleSheet(sales);
 
-    // Segunda aba: resumo rápido para conferência financeira.
     const totalRevenue = confirmedPurchases.reduce((total, purchase) => total + Number(purchase.amount ?? 0), 0);
     const uniqueBuyers = new Set(confirmedPurchases.map(p => String(p.participant_id ?? "")).filter(Boolean)).size;
     const summary = workbook.addWorksheet("Resumo");
@@ -120,7 +118,6 @@ export async function GET(request: Request) {
     summary.getCell("B6").numFmt = '"R$" #,##0.00';
     styleSheet(summary);
 
-    // Abas técnicas continuam disponíveis para auditoria e conferência detalhada.
     for (const [table, title, columns] of sheets) {
       const sheet = workbook.addWorksheet(title);
       sheet.columns = columns.map(([header, key]) => ({

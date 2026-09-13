@@ -38,6 +38,8 @@ create table if not exists public.whatsapp_dispatches (
 create index if not exists whatsapp_dispatch_due_idx
   on public.whatsapp_dispatches(status, scheduled_at)
   where status in ('scheduled','sending');
+create index if not exists whatsapp_dispatches_group_idx on public.whatsapp_dispatches(group_id);
+create index if not exists whatsapp_dispatches_creator_idx on public.whatsapp_dispatches(created_by);
 
 create table if not exists public.whatsapp_vote_state (
   auction_id uuid not null references public.auctions(id) on delete restrict,
@@ -52,6 +54,7 @@ create table if not exists public.whatsapp_vote_state (
   updated_at timestamptz not null default clock_timestamp(),
   primary key (auction_id, voter_jid)
 );
+create index if not exists whatsapp_vote_state_participant_idx on public.whatsapp_vote_state(participant_id);
 
 alter table public.whatsapp_groups enable row level security;
 alter table public.whatsapp_dispatches enable row level security;

@@ -33,7 +33,7 @@ NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=CHAVE_PUBLICAVEL
 SUPABASE_SERVICE_ROLE_KEY=CHAVE_PRIVADA_APENAS_NO_SERVIDOR
 ```
 
-As variáveis públicas precisam estar definidas **antes do build**. Sem elas, a página exibe configuração pendente e não inventa dados. Não há credenciais ou projeto Supabase embutidos no repositório.
+As variáveis públicas precisam estar definidas **antes do build**. Sem elas, a página exibe configuração pendente e não inventa dados. O `.env.example` contém a URL e a chave publicável do projeto PokemonLeilao; a chave privada deve ser preenchida somente no ambiente local/hospedagem.
 
 ### Banco novo
 
@@ -49,7 +49,7 @@ values ('UUID-DO-USUARIO-AUTH', 'Administrador', 'admin');
 4. Entre no painel com e-mail/senha desse usuário. Usuários Auth sem perfil ativo não acessam dados. Somente o SQL Editor/servidor confiável provisiona perfis administrativos.
 5. Execute advisors de segurança/performance no projeto hospedado e confira a publicação `supabase_realtime`. O SQL inclui as tabelas necessárias e índices das FKs.
 
-**Estado da configuração:** a conexão Supabase consultada durante esta implementação retornou `projects: []`. Aplicação remota, advisors, variáveis reais e teste Realtime hospedado ainda dependem de disponibilizar o projeto correto. Testes locais/CI usam banco descartável e não comprovam configuração de produção.
+**Estado da configuração:** schema aplicado e testes funcionais/RLS aprovados no projeto `gsyuoggymjdzxibfujyv` (PokemonLeilao), com rollback dos dados de teste. Realtime habilitado em seis tabelas. Advisors de segurança sem WARN/ERROR após restringir a função de event trigger da plataforma; o INFO de RLS sem política em `processed_commands` é intencional (acesso exclusivo do backend). Índices ainda sem uso são esperados em banco vazio. Falta criar o usuário administrativo, preencher a chave privada no ambiente e testar o painel autenticado/Realtime no navegador.
 
 ## API e futura ponte WhatsApp
 

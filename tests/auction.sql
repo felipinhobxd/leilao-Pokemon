@@ -1,5 +1,5 @@
 begin;
-insert into auth.users values('00000000-0000-0000-0000-000000000001');
+insert into auth.users(id) values('00000000-0000-0000-0000-000000000001');
 insert into public.admin_profiles(user_id,display_name) values('00000000-0000-0000-0000-000000000001','Test admin');
 create function pg_temp.check_that(ok boolean, message text) returns void language plpgsql as $$ begin if ok is distinct from true then raise exception 'ASSERT: %',message; end if; end $$;
 create function pg_temp.cmd(c jsonb) returns jsonb language sql as $$ select public.process_auction_command(c,'00000000-0000-0000-0000-000000000001') $$;

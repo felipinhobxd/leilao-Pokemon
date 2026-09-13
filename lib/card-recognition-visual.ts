@@ -42,7 +42,7 @@ export function createVisualFallback(createWorker: () => Worker, idleMs = 120_00
   };
   const recognize = (photo: Blob, candidates: RecognitionCandidate[], onProgress?: (message: string) => void, testBackend?: VisualTestBackend) => {
     const run = async (): Promise<VisualOutcome> => {
-      const forced = testBackend !== undefined && recognitionDebugEnabled();
+      const forced = testBackend !== undefined && typeof window !== "undefined";
       if (!forced && !needsVisualFallback(candidates)) return { candidates, used: false, status: candidates.length < 2 ? "no-candidates" : "not-needed", reason: candidates.length < 2 ? "Menos de dois candidatos visuais plausíveis" : "OCR inequívoco ou shortlist inadequada" };
       if (!forced && Date.now() < disabledUntil) return { candidates, used: false, status: "failed", error: lastError, reason: "Nova tentativa suspensa temporariamente após falha" };
       clearTimeout(idle);

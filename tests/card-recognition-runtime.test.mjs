@@ -155,3 +155,34 @@ test('new drafts never use the filename and debug controls stay local', () => {
     assert.equal(recognitionDebugEnabled(), false);
   } finally { globalThis.window = previous; if (previousMode === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previousMode; }
 });
+
+test('explicit retry bypasses cached failure and attempts fresh image decoding', async () => {
+  const previousStorage = globalThis.sessionStorage;
+  const previousDecode = globalThis.createImageBitmap;
+  let decodes = 0;
+  globalThis.sessionStorage = { getItem: () => JSON.stringify({ level: 'low', candidates: [], hints: buildOcrHints('', '') }) };
+  globalThis.createImageBitmap = async () => { decodes++; throw new Error('fresh decode reached'); };
+  try {
+    const file = new File(['retry-fixture'], 'card.png');
+    assert.equal((await runtime.recognizePokemonCard(file)).source, 'cache');
+    await assert.rejects(runtime.recognizePokemonCard(file, 'pt-BR', undefined, { bypassCache: true }), /fresh decode reached/);
+    assert.equal(decodes, 1);
+  } finally { globalThis.sessionStorage = previousStorage; globalThis.createImageBitmap = previousDecode; }
+});
+
+test('explicit visual test works outside localhost without auto-loading the model', async () => {
+  const previous = globalThis.window;
+  let created = 0;
+  globalThis.window = { location: { hostname: 'example.com', search: '' } };
+  const visual = createVisualFallback(() => {
+    created++;
+    return { postMessage() { this.onmessage({ data: { similarities: [0.8], backend: 'wasm/q4' } }); }, terminate() {} };
+  });
+  try {
+    assert.equal(created, 0);
+    const result = await visual.recognize(new Blob(), [candidates[0]], undefined, 'auto');
+    assert.equal(result.used, true);
+    assert.equal(created, 1);
+    assert.equal(result.candidates[0].evidence.visualMatch, undefined);
+  } finally { visual.dispose(); globalThis.window = previous; }
+});

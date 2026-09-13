@@ -22,7 +22,7 @@ import { needsVisualFallback, recognizeVisually, shutdownVisualRecognition, type
 const TESSERACT_VERSION = "7.0.0";
 const TESSERACT_SCRIPT = `https://cdn.jsdelivr.net/npm/tesseract.js@${TESSERACT_VERSION}/dist/tesseract.min.js`;
 const TCGDEX_BASE = "https://api.tcgdex.net/v2";
-const SESSION_CACHE_PREFIX = "leilao:card-recognition:v4:";
+const SESSION_CACHE_PREFIX = "leilao:card-recognition:v5:";
 const CATALOG_TTL_MS = 30 * 60_000;
 const MAX_CATALOG_DETAILS = 4;
 const MAX_CATALOG_REQUESTS = 8;
@@ -598,10 +598,10 @@ async function recognizeFromOrientedSource(source: HTMLCanvasElement, fileName: 
   return { box, name, number, language, hints, stats, ranked, catalog, fileName };
 }
 
-async function performRecognition(file: File, preferredLanguage?: string, onProgress?: (message: string) => void): Promise<RecognitionResult> {
+async function performRecognition(file: File, preferredLanguage?: string, onProgress?: (message: string) => void, bypassCache = false): Promise<RecognitionResult> {
   const started = performance.now();
   const hash = await sha256(file);
-  const cached = sessionRecognition(hash);
+  const cached = bypassCache ? null : sessionRecognition(hash);
   if (cached) { onProgress?.("Resultado reutilizado do cache local"); return cached; }
 
   const decoded = await decodeImage(file);
@@ -678,8 +678,8 @@ async function performRecognition(file: File, preferredLanguage?: string, onProg
   } finally { for (const canvas of canvases) canvas.width = canvas.height = 0; }
 }
 
-export function recognizePokemonCard(file: File, preferredLanguage?: string, onProgress?: (message: string) => void) {
-  const run = () => performRecognition(file, preferredLanguage, onProgress);
+export function recognizePokemonCard(file: File, preferredLanguage?: string, onProgress?: (message: string) => void, options: { bypassCache?: boolean } = {}) {
+  const run = () => performRecognition(file, preferredLanguage, onProgress, options.bypassCache);
   const queued = recognitionTail.then(run, run);
   recognitionTail = queued.then(() => undefined, () => undefined);
   return queued;
@@ -701,5 +701,5 @@ export const cardRecognitionRuntime = {
   detectionWidth: DETECTION_WIDTH,
   maxCatalogDetailsPerSearch: MAX_CATALOG_DETAILS,
   maxCatalogRequests: MAX_CATALOG_REQUESTS,
-  cacheVersion: 4,
+  cacheVersion: 5,
 };

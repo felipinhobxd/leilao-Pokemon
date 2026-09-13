@@ -1,17 +1,13 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { RecognitionCandidate, RecognitionResult } from "@/lib/card-recognition-core";
-import { recognitionDebugEnabled, recognizeVisually, type VisualTestBackend } from "@/lib/card-recognition-visual";
+import { recognizeVisually, type VisualTestBackend } from "@/lib/card-recognition-visual";
 
 export default function RecognitionDebug({ file, result, busy }: { file: File; result?: RecognitionResult; busy: boolean }) {
-  const [enabled, setEnabled] = useState(false);
   const [testing, setTesting] = useState(false);
   const [message, setMessage] = useState("");
   const [backend, setBackend] = useState<VisualTestBackend>("auto");
-  useEffect(() => { setEnabled(recognitionDebugEnabled()); }, []);
-  if (!enabled) return null;
   async function testLocalAI() {
-    if (!recognitionDebugEnabled()) return;
     setTesting(true);
     setMessage("Preparando teste local…");
     try {
@@ -34,7 +30,15 @@ export default function RecognitionDebug({ file, result, busy }: { file: File; r
     } catch (error) { setMessage(`FAIL: ${error instanceof Error ? error.message : String(error)}`); }
     finally { setTesting(false); }
   }
-  return <details className="wide"><summary>Diagnóstico do reconhecimento local</summary>
+  const status = !result ? "IA local: aguardando reconhecimento" : result.visualUsed
+    ? `IA local: comparação executada (${result.visualBackend ?? "backend não informado"})`
+    : result.visualStatus === "failed" ? "IA local: falhou — veja os detalhes abaixo"
+    : `IA local: não executada — ${result.visualReason ?? "sem candidatos suficientes"}`;
+  return <section className="wide">
+    <p role="status">{status}</p>
+    <button type="button" className="secondary" disabled={testing || busy} onClick={() => void testLocalAI()}>{testing ? "Testando IA local…" : "Testar IA local"}</button>
+    <pre aria-live="polite" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 }}>{message}</pre>
+    <details><summary>Detalhes do reconhecimento e opções do teste</summary>
     <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 }}>{JSON.stringify({
       OCR: { nome: result?.hints.name ?? "", numero: result?.hints.cardNumber ?? "", idioma: result?.hints.language ?? null },
       catalogo: { requests: result?.catalogRequests, antesDoFiltro: result?.catalogCandidatesBefore, depoisDoFiltro: result?.catalogCandidatesAfter, limiteAtingido: result?.catalogBudgetExhausted, cache: result?.source === "cache" },
@@ -44,7 +48,5 @@ export default function RecognitionDebug({ file, result, busy }: { file: File; r
     <label>Backend do teste<select value={backend} onChange={e => setBackend(e.target.value as VisualTestBackend)} disabled={testing}>
       <option value="auto">Automático</option><option value="webgpu/q4">WebGPU/q4</option><option value="wasm/q4">WASM/q4</option><option value="wasm/int8">WASM/int8</option>
     </select></label>
-    <button type="button" className="secondary" disabled={testing || busy} onClick={() => void testLocalAI()}>Testar IA local</button>
-    <pre aria-live="polite" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 }}>{message}</pre>
-  </details>;
+  </details></section>;
 }

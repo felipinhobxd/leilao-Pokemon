@@ -1,4 +1,5 @@
 "use client";
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { createPublicSupabaseClient } from "@/lib/supabase";
@@ -7,6 +8,7 @@ import type { Row, Snapshot } from "@/lib/backend";
 import { money } from "@/lib/domain";
 
 type Editor = { kind: "CARD" | "PARTICIPANT" | "AUCTION"; row?: Row };
+type Operations = { bot: { workerId:string; status:string; online:boolean; connected:boolean; version:string|null } | null; group: { id:string; name:string } | null };
 const labelStatus: Record<string, string> = { active: "Ativo", suspended: "Suspenso", banned: "Bloqueado", available: "Disponível", archived: "Arquivada", in_auction: "Em leilão", draft: "Rascunho", open: "Aberto", sold: "Vendido", closed: "Sem vencedor", cancelled: "Cancelado" };
 const str = (row: Row | undefined, key: string) => String(row?.[key] ?? "");
 const price = (value: unknown) => money(value == null ? null : Number(value));
@@ -16,6 +18,7 @@ export default function Dashboard() {
   const [session, setSession] = useState<Session | null>(null);
   const [ready, setReady] = useState(false);
   const [data, setData] = useState<Snapshot | null>(null);
+  const [operations, setOperations] = useState<Operations>({ bot:null, group:null });
   const [role, setRole] = useState("viewer");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -33,7 +36,7 @@ export default function Dashboard() {
     const { data: subscription } = db.auth.onAuthStateChange((_event, next) => {
       accessToken.current = next?.access_token ?? null;
       setSession(next); setReady(true);
-      if (!next) { revision.current++; setData(null); setRetry(null); setEditor(null); }
+      if (!next) { revision.current++; setData(null); setOperations({bot:null,group:null}); setRetry(null); setEditor(null); }
     });
     return () => subscription.subscription.unsubscribe();
   }, [db]);
@@ -48,7 +51,7 @@ export default function Dashboard() {
       const response = await request("/api/dashboard"); const body = await response.json();
       if (version !== revision.current || !accessToken.current) return;
       if (!response.ok) { if ([401, 403].includes(response.status)) setData(null); throw new Error(body.error); }
-      setData(body.data); setRole(body.role);
+      setData(body.data); setRole(body.role); setOperations(body.operations ?? {bot:null,group:null});
     } catch (e) { if (version === revision.current) setError(e instanceof Error ? e.message : "Falha ao atualizar."); }
   }, [request]);
   useEffect(() => {
@@ -60,9 +63,8 @@ export default function Dashboard() {
       setRealtime(status === "SUBSCRIBED" ? "Ao vivo" : "Reconectando…");
       if (status === "SUBSCRIBED") reload();
     });
-    // Refresh on focus and periodically to recover missed events / expired roles.
     window.addEventListener("focus", reload);
-    const fallback = setInterval(reload, 30000);
+    const fallback = setInterval(reload, 15000);
     return () => { clearTimeout(timer); clearInterval(fallback); window.removeEventListener("focus", reload); void db.removeChannel(channel); };
   }, [db, session, refresh]);
   async function execute(command: Command) {
@@ -102,6 +104,9 @@ export default function Dashboard() {
   const bids = (data?.bids.filter(b => b.auction_id === auction?.id && b.status === "active" && participant(b.participant_id)?.status === "active" && (!participant(b.participant_id)?.suspension_until || Date.parse(str(participant(b.participant_id),"suspension_until")) <= Date.now())) ?? []).sort((a,b) => Number(b.amount)-Number(a.amount) || str(a,"processed_at").localeCompare(str(b,"processed_at")) || Number(a.confirmation_order)-Number(b.confirmation_order));
   const winner = auction?.winner_participant_id ? participant(auction.winner_participant_id) : participant(bids[0]?.participant_id);
   const amount = auction?.status === "sold" ? auction.final_price : bids[0]?.amount;
+  const participantCount = new Set(bids.map(b=>String(b.participant_id))).size;
+  const nextLot = Math.max(0,...auctions.map(a=>Number(a.lot_number)||0))+1;
+  const botLabel = operations.bot?.connected ? "🟢 Conectado" : operations.bot?.online ? "🟡 Reconectando" : "🔴 Offline";
   function saveEditor(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!editor) return;
     const form = new FormData(event.currentTarget); const fields: Record<string, unknown> = Object.fromEntries(form);
@@ -119,9 +124,10 @@ export default function Dashboard() {
     {error && <p role="alert" className="alert">{error}</p>}{notice && <p role="status" className="notice">{notice}</p>}
     {retry && <button disabled={busy} onClick={() => void execute(retry)}>Reenviar a mesma operação</button>}
     {!ready ? <p>Carregando sessão…</p> : !session ? <form className="panel login form-grid" onSubmit={login}><h2>Acesso administrativo</h2><label>E-mail<input name="email" type="email" autoComplete="username" required /></label><label>Senha<input name="password" type="password" autoComplete="current-password" required /></label><button disabled={busy}>Entrar</button></form> : !data ? <section className="panel"><p>Carregando dados do banco…</p><button onClick={() => void refresh()}>Tentar novamente</button></section> : <>
+      <section className="panel" style={{marginBottom:14}}><div className="panel-title"><div><p className="eyebrow">OPERAÇÃO AO VIVO</p><h2>{botLabel}</h2></div><span className="status-pill">Próximo lote #{nextLot}</span></div><div className="stats-grid"><div className="stat-card"><span>Bot</span><strong>{botLabel}</strong></div><div className="stat-card"><span>Grupo</span><strong>{operations.group?.name??"Não selecionado"}</strong></div><div className="stat-card"><span>Leilão atual</span><strong>{auction?`#${Number(auction.lot_number)||"—"} ${str(card,"name")}`:"Nenhum"}</strong></div><div className="stat-card"><span>Maior lance</span><strong>{price(amount)}</strong></div><div className="stat-card"><span>Participantes</span><strong>{participantCount}</strong></div><div className="stat-card"><span>Próximo lote</span><strong>#{nextLot}</strong></div></div><div className="actions" style={{marginTop:14}}><Link className="button-link" href="/auctions/new">＋ Novo leilão</Link><a className="button-link" href="#current-auction">Ver leilão atual</a><Link className="button-link" href="/whatsapp">Central WhatsApp</Link></div></section>
       <section className="stats-grid">{[["Cartas",data.cards.filter(c=>c.status!=="archived").length],["Participantes",data.participants.filter(p=>p.status==="active").length],["Leilões abertos",auctions.filter(a=>a.status==="open").length],["Compras confirmadas",data.purchases.filter(p=>p.status==="confirmed").length]].map(([label,value])=><div className="stat-card" key={label}><span>{label}</span><strong>{value}</strong></div>)}</section>
-      <section className="main-grid"><article className="panel"><div className="panel-title"><h2>Disputa</h2><select aria-label="Selecionar leilão" value={str(auction,"id")} onChange={e=>setSelected(e.target.value)}>{auctions.map(a=><option key={str(a,"id")} value={str(a,"id")}>{str(data.cards.find(c=>c.id===a.card_id),"name")} · {labelStatus[str(a,"status")] ?? str(a,"status")}</option>)}</select></div>
-        {!auction ? <p className="muted">Cadastre uma carta e crie seu primeiro leilão.</p> : <><h2>{str(card,"name")}</h2><p className="muted">{str(card,"collection")} · {str(card,"card_number")}</p><div className="card-content">{str(card,"image_url").startsWith("https://") && <div className="card-image-wrap"><img className="card-image" src={str(card,"image_url")} alt={str(card,"name")} referrerPolicy="no-referrer" /></div>}<div className="bid-box"><span>{auction.status==="sold" ? "Vencedor" : "Líder elegível"}</span><strong>{str(winner,"display_name") || "Sem lances"}</strong><b>{price(amount)}</b><span>Inicial: {price(auction.starting_price)} · ARREMATE: {price(auction.buyout_price)}</span><p className="muted">Prazo: {auction.scheduled_end_at ? new Date(str(auction,"scheduled_end_at")).toLocaleString("pt-BR") : "Encerramento manual"}</p></div></div>
+      <section className="main-grid"><article className="panel" id="current-auction"><div className="panel-title"><h2>Disputa</h2><select aria-label="Selecionar leilão" value={str(auction,"id")} onChange={e=>setSelected(e.target.value)}>{auctions.map(a=><option key={str(a,"id")} value={str(a,"id")}>#{Number(a.lot_number)||"—"} {str(data.cards.find(c=>c.id===a.card_id),"name")} · {labelStatus[str(a,"status")] ?? str(a,"status")}</option>)}</select></div>
+        {!auction ? <p className="muted">Crie seu primeiro leilão em “Novo leilão”.</p> : <><h2>#{Number(auction.lot_number)||"—"} {str(card,"name")}</h2><p className="muted">{str(card,"collection")} · {str(card,"card_number")}</p><div className="card-content">{str(card,"image_url").startsWith("https://") && <div className="card-image-wrap"><img className="card-image" src={str(card,"image_url")} alt={str(card,"name")} referrerPolicy="no-referrer" /></div>}<div className="bid-box"><span>{auction.status==="sold" ? "Vencedor" : "Líder elegível"}</span><strong>{str(winner,"display_name") || "Sem lances"}</strong><b>{price(amount)}</b><span>Inicial: {price(auction.starting_price)} · ARREMATE: {price(auction.buyout_price)}</span><p className="muted">Prazo: {auction.scheduled_end_at ? new Date(str(auction,"scheduled_end_at")).toLocaleString("pt-BR") : "Encerramento manual"}</p></div></div>
           {auction.status==="draft" && <div className="actions"><button disabled={!writable} onClick={()=>command("AUCTION_OPEN",{auctionId:str(auction,"id")})}>Abrir leilão</button><button disabled={!writable} onClick={()=>setEditor({kind:"AUCTION",row:auction})}>Editar</button><button disabled={!writable} onClick={()=>{if(confirm("Cancelar este rascunho?"))command("AUCTION_DELETE",{auctionId:str(auction,"id")});}}>Remover</button></div>}
           {auction.status==="open" && <form className="form-grid" onSubmit={e=>{e.preventDefault();const f=new FormData(e.currentTarget);const type=String(f.get("type")) as Command["type"];if(type==="BUYOUT_CONFIRMED"&&!confirm("Confirmar ARREMATE e encerrar a disputa imediatamente?"))return;command(type,{auctionId:str(auction,"id"),participantId:String(f.get("participant")),...(["BID_PLACED","BID_CHANGED"].includes(type)?{amount:Number(f.get("amount"))}:{})});}}><label>Participante<select name="participant" required>{data.participants.filter(p=>p.status==="active").map(p=><option key={str(p,"id")} value={str(p,"id")}>{str(p,"display_name")}</option>)}</select></label><label>Ação<select name="type"><option value="BID_PLACED">Registrar lance</option><option value="BID_CHANGED">Trocar lance</option><option value="BID_WITHDRAWN">Retirar lance</option><option value="BUYOUT_REQUESTED">Solicitar ARREMATE</option><option value="BUYOUT_CONFIRMED">Confirmar ARREMATE</option></select></label><label>Valor do lance<input name="amount" type="number" min="0" max="9999999999.99" step="0.01" defaultValue={Number(auction.starting_price)} /></label><div className="actions"><button disabled={!writable}>Confirmar ação</button><button type="button" disabled={!writable} onClick={()=>{if(confirm("Finalizar agora e gerar a compra do maior lance elegível?"))command("AUCTION_FINALIZE",{auctionId:str(auction,"id")});}}>Finalizar leilão</button></div></form>}
         </>}

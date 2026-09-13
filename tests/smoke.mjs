@@ -11,7 +11,7 @@ try {
   for(const [path,method] of [
     ['dashboard','GET'],['export','GET'],['commands','POST'],
     ['whatsapp/bot','GET'],['whatsapp/bot','POST'],['whatsapp/groups','GET'],['whatsapp/groups','POST'],['whatsapp/schedules','GET'],
-    ['auctions/new','GET'],['auctions/new','POST'],['cards/image','POST'],
+    ['auctions/new','GET'],['auctions/new','POST'],['auctions/new/status?auctionId=12345678-1234-1234-1234-123456789abc','GET'],['cards/image','POST'],
   ]) {
     const response=await fetch(`http://127.0.0.1:3199/api/${path}`,{method,signal:AbortSignal.timeout(3000)});
     assert.equal(response.status,401,`${path} ${method} must reject unauthenticated requests`);

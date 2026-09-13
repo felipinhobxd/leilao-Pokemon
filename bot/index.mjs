@@ -7,6 +7,7 @@ import makeWASocket, {
 import { createClient } from "@supabase/supabase-js";
 import pino from "pino";
 import qrcode from "qrcode-terminal";
+import { dispatchMessageId, dispatchPollSecret } from "./dispatch-id.mjs";
 import { buildAuctionCaption } from "./format.mjs";
 
 const required = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "BOT_ADMIN_USER_ID"];
@@ -97,21 +98,12 @@ function voterFromUpdate(update) {
 async function resolveVoterIdentity(update) {
   const key = update?.pollUpdateMessageKey;
   if (!key) return null;
-
   const raw = voterFromUpdate(update);
   if (!raw || String(raw).endsWith("@g.us")) return null;
-
-  const candidates = [
-    key.participantAlt,
-    key.participant,
-    key.remoteJidAlt,
-    key.remoteJid,
-    raw,
-  ].filter(jid => jid && !String(jid).endsWith("@g.us"));
-
+  const candidates = [key.participantAlt, key.participant, key.remoteJidAlt, key.remoteJid, raw]
+    .filter(jid => jid && !String(jid).endsWith("@g.us"));
   const groupJid = [key.remoteJid, key.remoteJidAlt].find(jid => String(jid ?? "").endsWith("@g.us"));
   let groupParticipant = null;
-
   if (groupJid && sock?.groupMetadata) {
     try {
       const metadata = await sock.groupMetadata(groupJid);
@@ -125,11 +117,8 @@ async function resolveVoterIdentity(update) {
           if (jid && !candidates.includes(jid)) candidates.push(jid);
         }
       }
-    } catch {
-      // Identity resolution is best effort. The vote itself must keep working.
-    }
+    } catch {}
   }
-
   let phoneJid = candidates.find(jid => String(jid).endsWith("@s.whatsapp.net")) || groupParticipant?.phoneNumber || null;
   if (!phoneJid) {
     const lid = candidates.find(jid => String(jid).endsWith("@lid"));
@@ -138,44 +127,27 @@ async function resolveVoterIdentity(update) {
       try {
         phoneJid = await resolver.call(sock.signalRepository.lidMapping, lid);
         if (phoneJid && !candidates.includes(phoneJid)) candidates.push(phoneJid);
-      } catch {
-        // Some LIDs cannot be mapped to a phone number. Keep the stable LID in that case.
-      }
+      } catch {}
     }
   }
-
   const canonicalJid = phoneJid || raw;
   const phoneE164 = phoneFromJid(phoneJid || canonicalJid);
   const cachedName = candidates.map(jid => contactNames.get(jid)).find(Boolean);
   const keyName = key.participantUsername || key.remoteJidUsername;
   const metadataName = groupParticipant?.notify || groupParticipant?.name || groupParticipant?.verifiedName || groupParticipant?.username;
   const displayName = String(cachedName || metadataName || keyName || phoneE164 || jidDigits(canonicalJid) || "Participante WhatsApp").trim();
-
-  return {
-    voterJid: canonicalJid,
-    rawJid: raw,
-    aliases: [...new Set(candidates)],
-    phoneE164,
-    displayName,
-  };
+  return { voterJid: canonicalJid, rawJid: raw, aliases: [...new Set(candidates)], phoneE164, displayName };
 }
 
 async function getStoredPollMessage(key) {
   if (!key?.id) return undefined;
-  const { data, error } = await db
-    .from("whatsapp_dispatches")
-    .select("poll_message_json")
-    .eq("poll_message_id", key.id)
-    .maybeSingle();
+  const { data, error } = await db.from("whatsapp_dispatches").select("poll_message_json").eq("poll_message_id", key.id).maybeSingle();
   if (error || !data?.poll_message_json) return undefined;
   return reviveStoredMessage(data.poll_message_json);
 }
 
 async function processCommand(command) {
-  const { data, error } = await db.rpc("process_auction_command", {
-    p_command: command,
-    p_admin_user_id: ADMIN_USER_ID,
-  });
+  const { data, error } = await db.rpc("process_auction_command", { p_command: command, p_admin_user_id: ADMIN_USER_ID });
   if (error) throw new Error(error.message || "database_command_failed");
   return data;
 }
@@ -184,55 +156,32 @@ async function ensureParticipant(identity) {
   const now = new Date().toISOString();
   const lookupJids = [...new Set([identity.voterJid, identity.rawJid, ...(identity.aliases ?? [])].filter(Boolean))];
   let existing = null;
-
   if (lookupJids.length) {
-    const { data, error } = await db
-      .from("participants")
-      .select("id,whatsapp_id,phone_e164,display_name,status,suspension_until")
-      .in("whatsapp_id", lookupJids)
-      .limit(1);
+    const { data, error } = await db.from("participants").select("id,whatsapp_id,phone_e164,display_name,status,suspension_until").in("whatsapp_id", lookupJids).limit(1);
     if (error) throw new Error(error.message);
     existing = data?.[0] ?? null;
   }
-
   if (!existing && identity.phoneE164) {
-    const { data, error } = await db
-      .from("participants")
-      .select("id,whatsapp_id,phone_e164,display_name,status,suspension_until")
-      .eq("phone_e164", identity.phoneE164)
-      .limit(1);
+    const { data, error } = await db.from("participants").select("id,whatsapp_id,phone_e164,display_name,status,suspension_until").eq("phone_e164", identity.phoneE164).limit(1);
     if (error) throw new Error(error.message);
     existing = data?.[0] ?? null;
   }
-
   if (existing) {
     const patch = { last_seen_at: now };
     if (identity.phoneE164 && !existing.phone_e164) patch.phone_e164 = identity.phoneE164;
-    if (identity.displayName && fallbackIdentityName(existing.display_name) && !fallbackIdentityName(identity.displayName)) {
-      patch.display_name = identity.displayName;
-    }
-    const { data: updated, error } = await db
-      .from("participants")
-      .update(patch)
-      .eq("id", existing.id)
-      .select("id,whatsapp_id,phone_e164,display_name,status,suspension_until")
-      .single();
+    if (identity.displayName && fallbackIdentityName(existing.display_name) && !fallbackIdentityName(identity.displayName)) patch.display_name = identity.displayName;
+    const { data: updated, error } = await db.from("participants").update(patch).eq("id", existing.id).select("id,whatsapp_id,phone_e164,display_name,status,suspension_until").single();
     if (error) throw new Error(error.message);
     return updated;
   }
-
-  const { data: created, error: insertError } = await db
-    .from("participants")
-    .insert({
-      whatsapp_id: identity.voterJid,
-      phone_e164: identity.phoneE164,
-      display_name: identity.displayName,
-      status: "active",
-      first_seen_at: now,
-      last_seen_at: now,
-    })
-    .select("id,whatsapp_id,phone_e164,display_name,status,suspension_until")
-    .single();
+  const { data: created, error: insertError } = await db.from("participants").insert({
+    whatsapp_id: identity.voterJid,
+    phone_e164: identity.phoneE164,
+    display_name: identity.displayName,
+    status: "active",
+    first_seen_at: now,
+    last_seen_at: now,
+  }).select("id,whatsapp_id,phone_e164,display_name,status,suspension_until").single();
   if (insertError || !created) throw new Error(insertError?.message || "participant_create_failed");
   return created;
 }
@@ -267,52 +216,78 @@ async function fetchAuctionContext(dispatch) {
   return { group, auction, card };
 }
 
-async function sendDispatch(dispatch) {
+async function persistDispatchMessageIds(dispatch) {
+  const announcementMessageId = dispatch.announcement_message_id || dispatchMessageId(dispatch.id, "announcement");
+  const pollMessageId = dispatch.poll_message_id || dispatchMessageId(dispatch.id, "poll");
+  if (dispatch.announcement_message_id === announcementMessageId && dispatch.poll_message_id === pollMessageId) {
+    return { ...dispatch, announcement_message_id: announcementMessageId, poll_message_id: pollMessageId };
+  }
+  const { data, error } = await db.from("whatsapp_dispatches").update({
+    announcement_message_id: announcementMessageId,
+    poll_message_id: pollMessageId,
+    updated_at: new Date().toISOString(),
+  }).eq("id", dispatch.id).select("*").single();
+  if (error || !data) throw new Error(error?.message || "dispatch_message_ids_failed");
+  return data;
+}
+
+async function sendDispatch(claimedDispatch) {
+  let dispatch = await persistDispatchMessageIds(claimedDispatch);
   const { group, auction, card } = await fetchAuctionContext(dispatch);
-  if (auction.status !== "draft") throw new Error("auction_not_draft");
+  if (!["draft", "open"].includes(auction.status)) throw new Error("auction_not_publishable");
   const options = Array.isArray(dispatch.poll_options) ? dispatch.poll_options : [];
   if (!options.length || options.length > 12) throw new Error("invalid_poll_options");
-
   const caption = buildAuctionCaption(card, auction);
-  const announcement = card.image_url
-    ? await sock.sendMessage(group.group_jid, { image: { url: card.image_url }, caption })
-    : await sock.sendMessage(group.group_jid, { text: caption });
 
-  const poll = await sock.sendMessage(group.group_jid, {
-    poll: {
-      name: dispatch.poll_title,
-      values: options.map(option => String(option.label)),
-      selectableCount: 1,
-    },
-  });
-  if (!poll?.key?.id || !poll.message) throw new Error("poll_send_failed");
+  if (!dispatch.announcement_sent_at) {
+    const announcement = card.image_url
+      ? await sock.sendMessage(group.group_jid, { image: { url: card.image_url }, caption }, { messageId: dispatch.announcement_message_id })
+      : await sock.sendMessage(group.group_jid, { text: caption }, { messageId: dispatch.announcement_message_id });
+    if (!announcement?.key?.id) throw new Error("announcement_send_failed");
+    const sentAt = new Date().toISOString();
+    const { error } = await db.from("whatsapp_dispatches").update({ announcement_sent_at: sentAt, updated_at: sentAt }).eq("id", dispatch.id);
+    if (error) throw new Error(error.message);
+    dispatch = { ...dispatch, announcement_sent_at: sentAt };
+  }
 
-  await processCommand({
-    type: "AUCTION_OPEN",
-    eventId: `wa-open:${dispatch.id}`,
-    auctionId: auction.id,
-  });
+  if (!dispatch.poll_sent_at || !dispatch.poll_message_json) {
+    const poll = await sock.sendMessage(group.group_jid, {
+      poll: {
+        name: dispatch.poll_title,
+        values: options.map(option => String(option.label)),
+        selectableCount: 1,
+        messageSecret: dispatchPollSecret(dispatch.id),
+      },
+    }, { messageId: dispatch.poll_message_id });
+    if (!poll?.key?.id || !poll.message) throw new Error("poll_send_failed");
+    const sentAt = new Date().toISOString();
+    const { error } = await db.from("whatsapp_dispatches").update({
+      poll_message_json: serializeMessage(poll.message),
+      poll_sent_at: sentAt,
+      updated_at: sentAt,
+    }).eq("id", dispatch.id);
+    if (error) throw new Error(error.message);
+    dispatch = { ...dispatch, poll_message_json: serializeMessage(poll.message), poll_sent_at: sentAt };
+  }
 
+  await processCommand({ type: "AUCTION_OPEN", eventId: `wa-open:${dispatch.id}`, auctionId: auction.id });
   await db.from("auctions").update({
     whatsapp_group_id: group.group_jid,
-    poll_id: poll.key.id,
-    message_id: announcement?.key?.id ?? null,
+    poll_id: dispatch.poll_message_id,
+    message_id: dispatch.announcement_message_id,
     updated_at: new Date().toISOString(),
   }).eq("id", auction.id);
 
+  const now = new Date().toISOString();
   const { error } = await db.from("whatsapp_dispatches").update({
     status: "sent",
-    announcement_message_id: announcement?.key?.id ?? null,
-    poll_message_id: poll.key.id,
-    poll_message_json: serializeMessage(poll.message),
-    sent_at: new Date().toISOString(),
+    sent_at: now,
     locked_at: null,
     locked_by: null,
     last_error: null,
-    updated_at: new Date().toISOString(),
+    updated_at: now,
   }).eq("id", dispatch.id);
   if (error) throw new Error(error.message);
-
   console.log(`📤 Enquete enviada: ${card.name} → ${group.name}`);
 }
 
@@ -323,35 +298,23 @@ async function runScheduler() {
     for (let i = 0; i < 5; i++) {
       const dispatch = await claimDispatch();
       if (!dispatch) break;
-      try {
-        await sendDispatch(dispatch);
-      } catch (error) {
+      try { await sendDispatch(dispatch); }
+      catch (error) {
         console.error("Falha no disparo:", error?.message || error);
         await markDispatchRetry(dispatch, error);
       }
     }
-  } catch (error) {
-    console.error("Falha no agendador:", error?.message || error);
-  } finally {
-    schedulerBusy = false;
-  }
+  } catch (error) { console.error("Falha no agendador:", error?.message || error); }
+  finally { schedulerBusy = false; }
 }
 
 async function auditLateVote(auctionId, participantId, type, eventId, payload) {
-  await db.from("auction_events").insert({
-    auction_id: auctionId,
-    participant_id: participantId,
-    admin_user_id: ADMIN_USER_ID,
-    event_type: type,
-    external_event_id: eventId,
-    payload,
-  });
+  await db.from("auction_events").insert({ auction_id: auctionId, participant_id: participantId, admin_user_id: ADMIN_USER_ID, event_type: type, external_event_id: eventId, payload });
 }
 
 async function handlePollVote(dispatch, pollUpdate) {
   const identity = await resolveVoterIdentity(pollUpdate);
   if (!identity) return;
-
   const participant = await ensureParticipant(identity);
   const voterJid = identity.voterJid;
   const occurredAt = eventTime(pollUpdate.senderTimestampMs);
@@ -360,112 +323,47 @@ async function handlePollVote(dispatch, pollUpdate) {
   const selectedLabel = aggregated.find(option => option.voters.length > 0)?.name ?? null;
   const options = Array.isArray(dispatch.poll_options) ? dispatch.poll_options : [];
   const selected = selectedLabel ? options.find(option => option.label === selectedLabel) : null;
-
-  const { data: previous } = await db.from("whatsapp_vote_state")
-    .select("*")
-    .eq("auction_id", dispatch.auction_id)
-    .eq("voter_jid", voterJid)
-    .maybeSingle();
-
+  const { data: previous } = await db.from("whatsapp_vote_state").select("*").eq("auction_id", dispatch.auction_id).eq("voter_jid", voterJid).maybeSingle();
   const stablePart = `${dispatch.poll_message_id}:${voterJid}:${pollUpdate.senderTimestampMs?.toString?.() ?? Date.now()}`.slice(0, 170);
 
   if (!selected) {
     if (!previous?.active) return;
     const eventId = `wa-withdraw:${stablePart}`.slice(0, 200);
     if (previous.is_buyout) {
-      await auditLateVote(dispatch.auction_id, participant.id, "BUYOUT_WITHDRAW_ATTEMPT", eventId, {
-        voter_jid: voterJid,
-        phone_e164: participant.phone_e164,
-        display_name: participant.display_name,
-        event_at: occurredAt,
-      });
+      await auditLateVote(dispatch.auction_id, participant.id, "BUYOUT_WITHDRAW_ATTEMPT", eventId, { voter_jid: voterJid, phone_e164: participant.phone_e164, display_name: participant.display_name, event_at: occurredAt });
     } else {
-      try {
-        await processCommand({ type: "BID_WITHDRAWN", eventId, auctionId: dispatch.auction_id, participantId: participant.id, occurredAt });
-      } catch (error) {
+      try { await processCommand({ type: "BID_WITHDRAWN", eventId, auctionId: dispatch.auction_id, participantId: participant.id, occurredAt }); }
+      catch (error) {
         if (String(error?.message || error).includes("auction_not_open")) {
-          await auditLateVote(dispatch.auction_id, participant.id, "BID_WITHDRAWN_AFTER_CLOSE", eventId, {
-            voter_jid: voterJid,
-            phone_e164: participant.phone_e164,
-            display_name: participant.display_name,
-            event_at: occurredAt,
-          });
+          await auditLateVote(dispatch.auction_id, participant.id, "BID_WITHDRAWN_AFTER_CLOSE", eventId, { voter_jid: voterJid, phone_e164: participant.phone_e164, display_name: participant.display_name, event_at: occurredAt });
         } else throw error;
       }
     }
-    await db.from("whatsapp_vote_state").upsert({
-      auction_id: dispatch.auction_id,
-      voter_jid: voterJid,
-      participant_id: participant.id,
-      option_label: null,
-      amount: null,
-      is_buyout: false,
-      active: false,
-      last_event_id: eventId,
-      last_event_at: occurredAt,
-      updated_at: new Date().toISOString(),
-    });
+    await db.from("whatsapp_vote_state").upsert({ auction_id: dispatch.auction_id, voter_jid: voterJid, participant_id: participant.id, option_label: null, amount: null, is_buyout: false, active: false, last_event_id: eventId, last_event_at: occurredAt, updated_at: new Date().toISOString() });
     console.log(`↩️ Voto removido: ${participant.display_name}`);
     return;
   }
 
   if (previous?.active && previous.option_label === selected.label) return;
-
   const amount = Number(selected.amount);
   const isBuyout = Boolean(selected.isBuyout || String(selected.label).includes("🦭"));
   const type = isBuyout ? "BUYOUT_CONFIRMED" : previous?.active ? "BID_CHANGED" : "BID_PLACED";
   const eventId = `wa-vote:${stablePart}:${amount}`.slice(0, 200);
-
   try {
-    const result = await processCommand({
-      type,
-      eventId,
-      auctionId: dispatch.auction_id,
-      participantId: participant.id,
-      ...(isBuyout ? {} : { amount }),
-      occurredAt,
-    });
-
-    await db.from("whatsapp_vote_state").upsert({
-      auction_id: dispatch.auction_id,
-      voter_jid: voterJid,
-      participant_id: participant.id,
-      option_label: selected.label,
-      amount,
-      is_buyout: isBuyout,
-      active: true,
-      last_event_id: eventId,
-      last_event_at: occurredAt,
-      updated_at: new Date().toISOString(),
-    });
-
+    const result = await processCommand({ type, eventId, auctionId: dispatch.auction_id, participantId: participant.id, ...(isBuyout ? {} : { amount }), occurredAt });
+    await db.from("whatsapp_vote_state").upsert({ auction_id: dispatch.auction_id, voter_jid: voterJid, participant_id: participant.id, option_label: selected.label, amount, is_buyout: isBuyout, active: true, last_event_id: eventId, last_event_at: occurredAt, updated_at: new Date().toISOString() });
     const contact = participant.phone_e164 ? ` (${participant.phone_e164})` : "";
     console.log(`${isBuyout ? "🦭 ARREMATE" : "💰 Lance"}: ${participant.display_name}${contact} → ${brl(amount)}`);
-
     if (isBuyout) {
       const { group, card } = await fetchAuctionContext(dispatch);
-      await sock.sendMessage(group.group_jid, {
-        text: `🏆 *ARREMATADO!*\n\n🃏 ${card.name}\n👤 ${participant.display_name}\n💰 ${brl(result?.auction?.final_price ?? amount)}`,
-      });
+      await sock.sendMessage(group.group_jid, { text: `🏆 *ARREMATADO!*\n\n🃏 ${card.name}\n👤 ${participant.display_name}\n💰 ${brl(result?.auction?.final_price ?? amount)}` });
     }
   } catch (error) {
     const message = String(error?.message || error);
     if (message.includes("auction_not_open") || message.includes("deadline_expired") || message.includes("participant_not_eligible")) {
       const rejectedType = isBuyout && message.includes("auction_not_open") ? "BUYOUT_LOST_RACE" : "WHATSAPP_VOTE_REJECTED";
-      const { data: closedAuction } = isBuyout
-        ? await db.from("auctions").select("winner_participant_id,final_price,status").eq("id", dispatch.auction_id).maybeSingle()
-        : { data: null };
-      await auditLateVote(dispatch.auction_id, participant.id, rejectedType, eventId, {
-        voter_jid: voterJid,
-        phone_e164: participant.phone_e164,
-        display_name: participant.display_name,
-        option: selected.label,
-        amount,
-        reason: message.slice(0, 300),
-        winner_participant_id: closedAuction?.winner_participant_id ?? null,
-        final_price: closedAuction?.final_price ?? null,
-        event_at: occurredAt,
-      });
+      const { data: closedAuction } = isBuyout ? await db.from("auctions").select("winner_participant_id,final_price,status").eq("id", dispatch.auction_id).maybeSingle() : { data: null };
+      await auditLateVote(dispatch.auction_id, participant.id, rejectedType, eventId, { voter_jid: voterJid, phone_e164: participant.phone_e164, display_name: participant.display_name, option: selected.label, amount, reason: message.slice(0, 300), winner_participant_id: closedAuction?.winner_participant_id ?? null, final_price: closedAuction?.final_price ?? null, event_at: occurredAt });
       console.log(`${isBuyout ? "🥈 ARREMATE posterior" : "⚠️ Voto rejeitado"}: ${participant.display_name}${participant.phone_e164 ? ` (${participant.phone_e164})` : ""} → ${selected.label}`);
       return;
     }
@@ -476,24 +374,12 @@ async function handlePollVote(dispatch, pollUpdate) {
 async function handleMessageUpdates(updates) {
   for (const { key, update } of updates) {
     if (!key?.id || !update?.pollUpdates?.length) continue;
-    const { data: dispatch, error } = await db
-      .from("whatsapp_dispatches")
-      .select("*")
-      .eq("poll_message_id", key.id)
-      .eq("status", "sent")
-      .maybeSingle();
+    const { data: dispatch, error } = await db.from("whatsapp_dispatches").select("*").eq("poll_message_id", key.id).eq("status", "sent").maybeSingle();
     if (error || !dispatch?.poll_message_json) continue;
-    const ordered = [...update.pollUpdates].sort((a, b) => {
-      const left = Number(a?.senderTimestampMs?.toString?.() ?? 0);
-      const right = Number(b?.senderTimestampMs?.toString?.() ?? 0);
-      return left - right;
-    });
+    const ordered = [...update.pollUpdates].sort((a, b) => Number(a?.senderTimestampMs?.toString?.() ?? 0) - Number(b?.senderTimestampMs?.toString?.() ?? 0));
     for (const pollUpdate of ordered) {
-      try {
-        await handlePollVote(dispatch, pollUpdate);
-      } catch (error) {
-        console.error("Falha ao processar voto:", error?.message || error);
-      }
+      try { await handlePollVote(dispatch, pollUpdate); }
+      catch (error) { console.error("Falha ao processar voto:", error?.message || error); }
     }
   }
 }
@@ -503,16 +389,8 @@ async function finalizeDueAuctions() {
   finalizeBusy = true;
   try {
     const now = new Date().toISOString();
-    const { data: auctions, error } = await db
-      .from("auctions")
-      .select("id,card_id,whatsapp_group_id,scheduled_end_at")
-      .eq("status", "open")
-      .not("scheduled_end_at", "is", null)
-      .lte("scheduled_end_at", now)
-      .order("scheduled_end_at")
-      .limit(10);
+    const { data: auctions, error } = await db.from("auctions").select("id,card_id,whatsapp_group_id,scheduled_end_at").eq("status", "open").not("scheduled_end_at", "is", null).lte("scheduled_end_at", now).order("scheduled_end_at").limit(10);
     if (error) throw error;
-
     for (const auction of auctions ?? []) {
       const eventId = `bot-finalize:${auction.id}:${auction.scheduled_end_at}`.slice(0, 200);
       try {
@@ -522,61 +400,39 @@ async function finalizeDueAuctions() {
         const { data: card } = await db.from("cards").select("name").eq("id", auction.card_id).single();
         if (finalAuction?.winner_participant_id) {
           const { data: winner } = await db.from("participants").select("display_name").eq("id", finalAuction.winner_participant_id).single();
-          await sock.sendMessage(auction.whatsapp_group_id, {
-            text: `🏁 *Leilão encerrado!*\n\n🃏 ${card?.name ?? "Carta"}\n👤 Vencedor: ${winner?.display_name ?? "Participante"}\n💰 ${brl(finalAuction.final_price)}`,
-          });
+          await sock.sendMessage(auction.whatsapp_group_id, { text: `🏁 *Leilão encerrado!*\n\n🃏 ${card?.name ?? "Carta"}\n👤 Vencedor: ${winner?.display_name ?? "Participante"}\n💰 ${brl(finalAuction.final_price)}` });
         } else {
           await sock.sendMessage(auction.whatsapp_group_id, { text: `🏁 Leilão de *${card?.name ?? "carta"}* encerrado sem lances válidos.` });
         }
-      } catch (error) {
-        console.error("Falha ao finalizar leilão:", error?.message || error);
-      }
+      } catch (error) { console.error("Falha ao finalizar leilão:", error?.message || error); }
     }
-  } finally {
-    finalizeBusy = false;
-  }
+  } finally { finalizeBusy = false; }
 }
 
 async function connect() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
-  sock = makeWASocket({
-    auth: state,
-    logger,
-    markOnlineOnConnect: false,
-    syncFullHistory: false,
-    shouldSyncHistoryMessage: () => false,
-    getMessage: getStoredPollMessage,
-  });
-
+  sock = makeWASocket({ auth: state, logger, markOnlineOnConnect: false, syncFullHistory: false, shouldSyncHistoryMessage: () => false, getMessage: getStoredPollMessage });
   sock.ev.on("creds.update", saveCreds);
   sock.ev.on("contacts.upsert", contacts => contacts.forEach(rememberContact));
   sock.ev.on("contacts.update", contacts => contacts.forEach(rememberContact));
   sock.ev.on("messages.upsert", ({ messages }) => messages.forEach(rememberMessageSender));
   sock.ev.on("messages.update", updates => {
-    voteQueue = voteQueue
-      .then(() => handleMessageUpdates(updates))
-      .catch(error => console.error("Falha na fila de votos:", error?.message || error));
+    voteQueue = voteQueue.then(() => handleMessageUpdates(updates)).catch(error => console.error("Falha na fila de votos:", error?.message || error));
   });
-
   sock.ev.on("connection.update", ({ connection, qr, lastDisconnect }) => {
     if (qr) {
       console.log("\nLeia o QR Code pelo WhatsApp:\n");
       qrcode.generate(qr, { small: true });
     }
-
     if (connection === "open") {
       reconnecting = false;
       console.log(`\n✅ WhatsApp conectado. Worker: ${WORKER_ID}`);
       console.log("Aguardando agendamentos e votos...\n");
       clearInterval(schedulerTimer);
-      schedulerTimer = setInterval(() => {
-        void runScheduler();
-        void finalizeDueAuctions();
-      }, 3000);
+      schedulerTimer = setInterval(() => { void runScheduler(); void finalizeDueAuctions(); }, 3000);
       void runScheduler();
       void finalizeDueAuctions();
     }
-
     if (connection === "close") {
       clearInterval(schedulerTimer);
       const code = lastDisconnect?.error?.output?.statusCode ?? lastDisconnect?.error?.data?.reason;

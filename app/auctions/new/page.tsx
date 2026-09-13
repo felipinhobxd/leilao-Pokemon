@@ -1,5 +1,5 @@
-import NewAuctionWizard from "./wizard";
+import BatchAuctionWizard from "./batch-wizard";
 
 export default function NewAuctionPage() {
-  return <NewAuctionWizard />;
+  return <BatchAuctionWizard />;
 }

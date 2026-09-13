@@ -20,11 +20,22 @@ export async function GET(request: Request) {
   try {
     const { db } = await authorize(request);
     const [{ data: groups, error: groupError }, { data: dispatches, error: dispatchError }] = await Promise.all([
-      db.from("whatsapp_groups").select("id,group_jid,name,active").eq("active", true).order("name"),
-      db.from("whatsapp_dispatches").select("id,auction_id,group_id,scheduled_at,poll_title,poll_options,status,poll_message_id,sent_at,attempts,last_error,updated_at").order("scheduled_at", { ascending: false }).limit(100),
+      db.from("whatsapp_groups")
+        .select("id,group_jid,name,active,is_default,last_synced_at,updated_at")
+        .eq("active", true)
+        .order("name"),
+      db.from("whatsapp_dispatches")
+        .select("id,auction_id,group_id,scheduled_at,poll_title,poll_options,status,poll_message_id,sent_at,attempts,last_error,updated_at")
+        .order("scheduled_at", { ascending: false })
+        .limit(100),
     ]);
     if (groupError || dispatchError) throw new Error("whatsapp_schedule_read_failed");
-    return Response.json({ groups: groups ?? [], dispatches: dispatches ?? [] });
+    const activeGroups = groups ?? [];
+    return Response.json({
+      groups: activeGroups,
+      defaultGroupId: activeGroups.find(group => group.is_default)?.id ?? null,
+      dispatches: dispatches ?? [],
+    }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return failure(error);
   }

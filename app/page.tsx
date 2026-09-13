@@ -8,28 +8,9 @@ export default function Home() {
 
   return <>
     <Dashboard />
-    <Link
-      href="/whatsapp"
-      aria-label="Abrir área de automação do WhatsApp"
-      style={{
-        position: "fixed",
-        right: 22,
-        bottom: 22,
-        zIndex: 50,
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "12px 16px",
-        borderRadius: 12,
-        border: "1px solid #67531c",
-        background: "var(--accent)",
-        color: "#111318",
-        fontWeight: 800,
-        textDecoration: "none",
-        boxShadow: "0 12px 30px #0008",
-      }}
-    >
-      💬 Área do WhatsApp
-    </Link>
+    <div className="floating-actions">
+      <Link href="/auctions/new" className="floating-action primary" aria-label="Criar novo leilão">＋ NOVO LEILÃO</Link>
+      <Link href="/whatsapp" className="floating-action" aria-label="Abrir área de automação do WhatsApp">💬 Área do WhatsApp</Link>
+    </div>
   </>;
 }

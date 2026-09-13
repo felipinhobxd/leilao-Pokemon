@@ -1,0 +1,2 @@
+-- Supabase migration 20260913045826 provisioned the public card-images bucket.
+-- The upload route also verifies/provisions this bucket at runtime using the server-only service role.

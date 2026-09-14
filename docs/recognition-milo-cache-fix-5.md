@@ -1,0 +1,1 @@
+On compatibility failure the current Milo cache generation is cleared and fetched once with cache reload before the runtime reports an error.

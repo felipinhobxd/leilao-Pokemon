@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { summarizeRecognitionBenchmark, evaluateRecognitionSample } from "../lib/card-recognition-benchmark.ts";
 
 const v10 = fs.readFileSync(new URL("../lib/card-recognition-browser-v10.ts", import.meta.url), "utf8");
-const globalVisual = fs.readFileSync(new URL("../lib/card-recognition-global.ts", import.meta.url), "utf8");
+const milo = fs.readFileSync(new URL("../lib/card-recognition-milo.ts", import.meta.url), "utf8");
 const normalize = fs.readFileSync(new URL("../lib/card-recognition-normalize.ts", import.meta.url), "utf8");
 const wizard = fs.readFileSync(new URL("../app/auctions/new/bulk-wizard.tsx", import.meta.url), "utf8");
 const tsconfig = JSON.parse(fs.readFileSync(new URL("../tsconfig.json", import.meta.url), "utf8"));
@@ -38,16 +38,16 @@ test("default UI language is not evidence and v10 does not forward it to inferen
   assert.doesNotMatch(v10, /v9\.recognizePokemonCard\([^\n]+selectedLanguage/);
 });
 
-test("OCR can be completely wrong without blocking global visual retrieval", () => {
-  const globalCall = v10.indexOf("searchGlobalVisual(normalization.blob");
+test("OCR can be completely wrong without blocking Milo image-only retrieval", () => {
+  const visualCall = v10.indexOf("searchMiloVisual(normalization.blob");
   const exactExit = v10.indexOf("exactCatalogDecision(base)");
-  assert.ok(globalCall > exactExit && globalCall > 0);
-  assert.match(globalVisual, /independentFromOcrName: true/);
-  assert.match(globalVisual, /loadGlobalIndex\(\)/);
-  assert.match(globalVisual, /topMatches\(index, descriptor/);
-  // Retrieval is descriptor->index; neither OCR hints nor recognized Pokémon name are function inputs.
-  assert.match(globalVisual, /export async function searchGlobalVisual\(\s*normalizedCard: Blob,\s*detectedLanguage\?/s);
-  assert.doesNotMatch(globalVisual.slice(globalVisual.indexOf("function topMatches"), globalVisual.indexOf("function emptyEvidence")), /name|ocr|hint/i);
+  assert.ok(visualCall > exactExit && visualCall > 0);
+  assert.match(milo, /discoveryDependsOnOcr: false/);
+  assert.match(milo, /function topMatches\(index: LoadedIndex, query: Float32Array\)/);
+  assert.match(milo, /const matches = topMatches\(index, encoded\.embedding\)/);
+  // Candidate discovery is embedding -> global index. OCR hints only enter after Top-K exists.
+  assert.match(milo, /const matches = topMatches\(index, encoded\.embedding\);\s*let candidates = shortlist\(index, matches, language\);\s*const detailIndexes = chooseDetailIndexes\(candidates, hints\)/s);
+  assert.doesNotMatch(milo.slice(milo.indexOf("function topMatches"), milo.indexOf("function emptyEvidence")), /name|ocr|hint/i);
 });
 
 test("normalization estimates four edges/corners and applies a real projective homography", () => {

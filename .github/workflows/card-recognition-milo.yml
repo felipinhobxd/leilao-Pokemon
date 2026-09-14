@@ -1,0 +1,53 @@
+name: Card Recognition Milo Benchmark Assets
+
+on:
+  push:
+    branches: [feat/card-recognition-v10]
+    paths:
+      - scripts/build-card-embedding-index-milo.py
+      - .github/workflows/card-recognition-milo.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-milo-index:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: pip
+      - name: Install benchmark dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          numpy==2.2.6 pillow==11.3.0 requests==2.32.5
+          huggingface-hub==0.34.4 onnxruntime==1.22.1
+      - name: Build Milo reference embeddings from public TCGdex scans
+        env:
+          CARD_INDEX_CONCURRENCY: 8
+        run: python scripts/build-card-embedding-index-milo.py --output card-recognition-milo --batch 16
+      - name: Preserve an offline ONNX Runtime wheel set for private local-photo evaluation
+        run: python -m pip download --only-binary=:all: --dest card-recognition-milo/offline-wheels onnxruntime==1.22.1
+      - name: Record third-party benchmark notice
+        shell: bash
+        run: |
+          cat > card-recognition-milo/THIRD_PARTY-NOTICE.txt <<'EOF'
+          Benchmark-only asset; not approved for product integration.
+          Model: HanClinto/milo v1.0.0
+          Source: https://huggingface.co/HanClinto/milo
+          Current upstream license observed during this experiment: AGPL-3.0.
+          Exact model SHA256 is recorded in milo-index.stats.json.
+          EOF
+          cat card-recognition-milo/milo-index.stats.json
+          du -h card-recognition-milo/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: card-recognition-milo-benchmark
+          path: card-recognition-milo/
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 1

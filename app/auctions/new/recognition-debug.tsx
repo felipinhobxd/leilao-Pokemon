@@ -7,7 +7,7 @@ import { normalizeCardPhoto } from "@/lib/card-recognition-normalize";
 import { recognizeVisually } from "@/lib/card-recognition-visual";
 
 type V11DebugResult = RecognitionResult & {
-  decisionStatus?: "IDENTIFICADA" | "PROVÁVEL" | "INCERTA";
+  decisionStatus?: "IDENTIFICADA" | "PROVÁVEL" | "REVISAR" | "SEM RESULTADO";
   confidenceKind?: string;
   normalization?: { method?: string; confidence?: number; rotation?: number };
   recognitionMemory?: {

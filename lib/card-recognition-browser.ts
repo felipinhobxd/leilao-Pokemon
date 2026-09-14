@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  catalogHints,
   buildOcrHints,
   visualCandidatePool,
   collectorPartVariants,
@@ -595,6 +596,7 @@ async function searchBriefs(code: string, params: URLSearchParams, stats: Catalo
 }
 
 export async function resolveCatalog(hints: OcrHints, preferredLanguage: string | undefined, stats: CatalogStats) {
+  hints = catalogHints(hints);
   const candidates = new Map<string, Omit<RecognitionCandidate, "score" | "evidence">>();
   let strategy: "set+localId" | "set-index+search" | "search" = "search";
   let setCandidates: string[] = [];
@@ -647,7 +649,7 @@ export async function resolveCatalog(hints: OcrHints, preferredLanguage: string 
             if (found) break;
           }
         }
-        if (candidates.size) return snapshot();
+        if (snapshot().ranked.some(candidate => !name || (candidate.evidence?.nameSimilarity ?? 0) >= 0.90)) return snapshot();
         strategy = "set-index+search";
       } catch { /* Cached/generic lookup below remains available. */ }
     }
@@ -657,6 +659,7 @@ export async function resolveCatalog(hints: OcrHints, preferredLanguage: string 
   for (const language of languages) {
     const code = tcgLanguage(language);
     const probes: Array<Record<string, string>> = [];
+    if (name.length >= 4) probes.push({ name });
     if (name.length >= 4) for (const id of ids) probes.push({ name, localId: `eq:${id}` });
     for (const id of ids) probes.push({ localId: `eq:${id}` });
     if (name.length >= 4) {
@@ -682,7 +685,7 @@ export async function resolveCatalog(hints: OcrHints, preferredLanguage: string 
           if (sorted.length === 1 && current.ranked[0]?.evidence?.fullNumberMatch && current.ranked[0].evidence.nameSimilarity >= 0.9) return current;
         }
         const current = snapshot();
-        if (current.pool.length >= 2) return current;
+        if (current.ranked.length >= 2) return current;
       } catch { /* Offline catalog never blocks manual entry. */ }
     }
   }

@@ -15,6 +15,7 @@ export function visualDiagnosticReference(pool: RecognitionCandidate[] = []): Re
 }
 
 export type VisualReply = {
+  scanErrors?: string[];
   similarities: number[];
   backend: string;
   winnerIndex?: number;
@@ -53,8 +54,7 @@ function candidateHasVisualClue(candidate: RecognitionCandidate) {
 export function needsVisualFallback(candidates: RecognitionCandidate[]) {
   const plausible = candidates.filter(candidateHasVisualClue);
   if (!plausible.length || plausible.length > MAX_VISUAL_CANDIDATES) return false;
-  const [best, second] = plausible;
-  if (best.evidence?.fullNumberMatch && best.evidence.nameSimilarity >= 0.9 && (!second || best.score - second.score >= 8)) return false;
+
   // A single name/local-id candidate is still useful: the visual layer expands it to every
   // physical printing with the same Pokémon name before comparing artwork.
   return true;
@@ -110,7 +110,7 @@ function sameCandidate(a: RecognitionCandidate, b: RecognitionCandidate) {
 async function expandSameNamePrintings(candidates: RecognitionCandidate[]) {
   if (typeof window === "undefined") return candidates;
   const anchor = candidates
-    .filter(candidate => candidate.image && normalizedName(candidate.name).length >= 3)
+    .filter(candidate => candidate.image?.startsWith("https://assets.tcgdex.net/") && (candidate.evidence?.nameSimilarity ?? 0) >= 0.9 && normalizedName(candidate.name).length >= 3)
     .sort((a, b) => (b.evidence?.nameSimilarity ?? 0) - (a.evidence?.nameSimilarity ?? 0))[0];
   if (!anchor) return candidates;
 
@@ -144,7 +144,7 @@ async function expandSameNamePrintings(candidates: RecognitionCandidate[]) {
           hp: null,
           image: brief.image,
           score: Math.max(45, anchor.score - 5),
-          evidence: lightweightEvidence(1),
+          evidence: lightweightEvidence(anchor.evidence?.nameSimilarity ?? 0),
         };
         if (!expanded.some(existing => sameCandidate(existing, candidate))) expanded.push(candidate);
       }
@@ -198,12 +198,7 @@ export function applyVisualEvidence(candidates: RecognitionCandidate[], similari
     return [...visual].sort((a, b) => Number(Boolean(b.evidence?.visualMatch)) - Number(Boolean(a.evidence?.visualMatch)) || b.visualSimilarity! - a.visualSimilarity!);
   }
 
-  // Compatibility fallback for mocked/older workers.
-  const ordered = [...visual].sort((a, b) => b.visualSimilarity! - a.visualSimilarity!);
-  if (ordered.length >= 2 && ordered[0].visualSimilarity! >= 0.85 && ordered[0].visualSimilarity! - ordered[1].visualSimilarity! >= 0.08) {
-    ordered[0] = { ...ordered[0], evidence: { ...ordered[0].evidence!, visualMatch: true, strongEvidence: true } };
-  }
-  return ordered;
+  return [...visual].sort((a, b) => b.visualSimilarity! - a.visualSimilarity!);
 }
 
 // Factory keeps the worker lazy and allows behavior tests without downloading model weights.
@@ -233,8 +228,9 @@ export function createVisualFallback(createWorker: () => Worker, idleMs = 120_00
       if (!forced && Date.now() < disabledUntil) return { candidates, used: false, status: "failed", error: lastError, reason: "Nova tentativa suspensa temporariamente após falha" };
       clearTimeout(idle);
       try {
-        const expanded = forced ? candidates : await expandSameNamePrintings(candidates);
-        if (!forced && expanded.length < 2) return { candidates: expanded, used: false, status: "no-candidates", reason: "Menos de duas impressões oficiais comparáveis" };
+        const official = candidates.filter(c => c.image?.startsWith("https://assets.tcgdex.net/"));
+        const expanded = forced ? official : await expandSameNamePrintings(official);
+        if (!forced && expanded.length < 1) return { candidates: expanded, used: false, status: "no-candidates", reason: "Menos de duas impressões oficiais comparáveis" };
         onProgress?.(forced ? "🧠 Testando IA local…" : `🖼 Comparando ${expanded.length} impressões oficiais…`);
         worker ??= createWorker();
         const reply = await new Promise<VisualReply>((resolve, reject) => {
@@ -253,7 +249,7 @@ export function createVisualFallback(createWorker: () => Worker, idleMs = 120_00
           worker!.postMessage({ photo, images: expanded.map(c => c.image), diagnostic: forced, testBackend: forced ? testBackend : undefined });
         });
         if (reply.similarities.length !== expanded.length || reply.similarities.some(n => !Number.isFinite(n))) throw new Error("Comparação visual inválida");
-        let compared = forced ? expanded : applyVisualEvidence(expanded, reply.similarities, reply.winnerIndex);
+        let compared = forced ? expanded : applyVisualEvidence(expanded, reply.similarities, reply.scanErrors?.length ? undefined : reply.winnerIndex);
         if (!forced) {
           const index = compared.findIndex(candidate => candidate.evidence?.visualMatch);
           if (index >= 0 && !compared[index].collection) {
@@ -265,7 +261,8 @@ export function createVisualFallback(createWorker: () => Worker, idleMs = 120_00
         return {
           candidates: compared,
           used: true,
-          status: "compared",
+          status: reply.scanErrors?.length ? "failed" : "compared",
+          error: reply.scanErrors?.join(" | "),
           backend: reply.backend,
           similarities: reply.similarities,
           initMs: reply.initMs,

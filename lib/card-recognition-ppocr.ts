@@ -1,6 +1,6 @@
 "use client";
 
-import { buildOcrHints, type OcrHints, type RecognitionLanguage } from "./card-recognition-core";
+import { buildOcrHints, extractCardNumber, stringSimilarity, type OcrHints, type RecognitionLanguage } from "./card-recognition-core";
 
 const SDK_VERSION = "0.2.0";
 const LOADER_PATH = `/card-recognition/ppocrv6-loader.mjs?v=${SDK_VERSION}`;
@@ -212,24 +212,25 @@ async function buildTargetedInputs(file: File) {
   try {
     const width = Math.max(1, image.width);
     const height = Math.max(1, image.height);
-    const crop = async (label: string, y0: number, y1: number, scale: number, contrast: number) => {
+    const crop = async (label: string, y0: number, y1: number, scale: number, contrast: number, x0 = 0, x1 = 1) => {
       const sourceY = Math.round(height * y0);
       const sourceHeight = Math.max(1, Math.round(height * (y1 - y0)));
       const canvas = document.createElement("canvas");
-      canvas.width = Math.max(1, Math.round(width * scale));
+      canvas.width = Math.max(1, Math.round(width * (x1 - x0) * scale));
       canvas.height = Math.max(1, Math.round(sourceHeight * scale));
       const context = canvas.getContext("2d", { willReadFrequently: true });
       if (!context) throw new Error("Canvas indisponível para PP-OCRv6.");
       context.imageSmoothingEnabled = true;
       context.imageSmoothingQuality = "high";
-      context.drawImage(image, 0, sourceY, width, sourceHeight, 0, 0, canvas.width, canvas.height);
-      enhanceGray(context, canvas.width, canvas.height, contrast);
+      context.drawImage(image, width * x0, sourceY, width * (x1 - x0), sourceHeight, 0, 0, canvas.width, canvas.height);
+      if (contrast !== 1) enhanceGray(context, canvas.width, canvas.height, contrast);
       return { label, file: await canvasFile(canvas, `ppocr-${label}.png`) };
     };
 
     return [
-      await crop("top-name", 0.00, 0.40, 2.5, 1.30),
-      await crop("bottom-number", 0.52, 1.00, 3.0, 1.38),
+      await crop("top-name", 0.00, 0.20, 2, 1, 0, 0.80),
+      await crop("top-hp", 0.00, 0.20, 2, 1, 0.72, 1),
+      await crop("bottom-number", 0.80, 1.00, 2.5, 1.20),
     ];
   } finally {
     if ("close" in image && typeof image.close === "function") image.close();
@@ -275,14 +276,14 @@ export async function runPpOcr(file: File, onProgress?: (message: string) => voi
       onProgress?.("↩️ Não foi possível preparar recortes; seguindo com a carta inteira.");
     }
 
-    const inputs = [{ label: "carta inteira", file }, ...targeted];
+    const inputs = [...targeted, { label: "carta inteira", file }];
     const passes: OcrPass[] = [];
     for (let index = 0; index < inputs.length; index += 1) {
       const input = inputs[index];
       try {
         passes.push(await readPass(pipeline, input.label, input.file, index + 1, inputs.length, onProgress));
       } catch (error) {
-        if (index === 0) throw error;
+        if (inputs.length === 1) throw error;
         onProgress?.(`↩️ PP-OCRv6 não conseguiu ler ${input.label}; mantendo os outros passes.`);
       }
     }
@@ -292,14 +293,28 @@ export async function runPpOcr(file: File, onProgress?: (message: string) => voi
     const bottomPass = passes.find(pass => pass.label === "bottom-number");
     const fullLines = full?.lines ?? [];
     const fullHeight = Math.max(1, full?.result.image.height || 624);
-    const fullTop = lineText(fullLines.filter(line => centerY(line) <= fullHeight * 0.36));
-    const fullBottom = lineText(fullLines.filter(line => centerY(line) >= fullHeight * 0.55));
+    const fullTop = lineText(fullLines.filter(line => centerY(line) <= fullHeight * 0.20));
+    const fullBottom = lineText(fullLines.filter(line => centerY(line) >= fullHeight * 0.80));
     const fullMiddle = lineText(fullLines.filter(line => centerY(line) > fullHeight * 0.22 && centerY(line) < fullHeight * 0.82));
-    const top = uniqueText(lineText(topPass?.lines ?? []), fullTop, lineText(fullLines));
-    const bottom = uniqueText(lineText(bottomPass?.lines ?? []), fullBottom, lineText(fullLines));
+    const top = uniqueText(lineText(topPass?.lines ?? []), fullTop);
+    const bottom = uniqueText(lineText(bottomPass?.lines ?? []), fullBottom);
     const middle = uniqueText(fullMiddle, lineText(fullLines));
     const all = uniqueText(lineText(fullLines), lineText(topPass?.lines ?? []), lineText(bottomPass?.lines ?? []));
-    let hints = buildOcrHints(top || all, bottom || all, middle || all);
+    let hints = buildOcrHints(top, bottom, middle);
+    const nameLines = [...(topPass?.lines ?? []), ...fullLines.filter(line => centerY(line) <= fullHeight * 0.20)];
+    const numberLines = [...(bottomPass?.lines ?? []), ...fullLines.filter(line => centerY(line) >= fullHeight * 0.80)];
+    const confidence = (lines: PpLine[]) => Math.max(0, ...lines.map(line => Math.min(1, line.recognitionScore)));
+    hints.nameConfidence = confidence(nameLines.filter(line => {
+      const name = buildOcrHints(line.text, "").name;
+      return name && hints.name && stringSimilarity(name, hints.name) >= 0.95;
+    }));
+    // Only a complete number on one footer line can be strong; concatenated fragments stay weak.
+    hints.numberConfidence = confidence(numberLines.filter(line =>
+      /[0-9]\s*[/|]\s*[0-9]/.test(line.text) && extractCardNumber(line.text).cardNumber === hints.cardNumber));
+    const hpLines = passes.find(pass => pass.label === "top-hp")?.lines ?? [];
+    const hpHints = buildOcrHints(lineText(hpLines), "");
+    if (hpHints.hp) hints.hp = hpHints.hp;
+    hints.hpConfidence = confidence(hpLines.filter(line => buildOcrHints(line.text, "").hp === hints.hp));
     hints = refineLanguage(hints, all);
 
     const allLines = passes.flatMap(pass => pass.lines);

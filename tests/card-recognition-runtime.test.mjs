@@ -104,9 +104,9 @@ test('visual worker is lazy, serial, optional and released after idle', async ()
   }, 10, 100);
   assert.equal(created, 0);
   const easy = candidates.map((c, i) => ({ ...c, score: i ? 60 : 99, evidence: { ...evidence, fullNumberMatch: true, nameSimilarity: 1 } }));
-  assert.equal(needsVisualFallback(easy), false);
-  assert.equal((await visual.recognize(new Blob(), easy)).used, false);
-  assert.equal(created, 0);
+  assert.equal(needsVisualFallback(easy), true);
+  assert.equal((await visual.recognize(new Blob(), easy)).used, true);
+  assert.equal(created, 1);
   const results = await Promise.all(Array.from({ length: 20 }, () => visual.recognize(new Blob(), candidates)));
   assert.ok(results.every(result => result.used));
   assert.equal(maximum, 1);
@@ -172,7 +172,7 @@ test('partial shortlist remains private unless visual minimum and margin both pa
   assert.equal(needsVisualFallback(two), true);
   assert.ok(applyVisualEvidence(two, [0.84, 0.4]).every(c => !c.evidence.visualMatch));
   assert.ok(applyVisualEvidence(two, [0.91, 0.89]).every(c => !c.evidence.visualMatch));
-  const promoted = applyVisualEvidence(two, [0.94, 0.7]);
+  const promoted = applyVisualEvidence(two, [0.94, 0.7], 0);
   assert.equal(promoted[0].evidence.visualMatch, true);
   assert.equal(promoted[1].evidence.strongEvidence, false);
 });
@@ -267,4 +267,25 @@ test('DINOv2 CLS output works without pooler_output and excludes patch tokens', 
   assert.throws(() => extractDinoEmbedding({last_hidden_state: {dims: [2, 3, 2], data: []}}), /incompatible/);
   assert.throws(() => extractDinoEmbedding({last_hidden_state: {dims: [1, 3, 2], data: [1]}}), /length/);
   assert.throws(() => extractDinoEmbedding({pooler_output: {dims: [1, 2], data: [0, 0]}}), /invalid/);
+});
+
+test("weak digit cannot consume the request budget before Dragonair name search", async () => {
+  const previous = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async raw => {
+    const url = new URL(raw); calls.push(url);
+    if (url.pathname === "/v2/pt/cards") return { ok: true, status: 200, json: async () =>
+      [{ id: "dragonair-regression", name: "Dragonair", localId: "95", image: "https://assets.tcgdex.net/pt/sm/sm1/95" }] };
+    if (url.pathname === "/v2/pt/cards/dragonair-regression") return { ok: true, status: 200, json: async () =>
+      ({ id: "dragonair-regression", name: "Dragonair", localId: "95", image: "https://assets.tcgdex.net/pt/sm/sm1/95",
+        set: { name: "Set", cardCount: { official: 149 } } }) };
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  try {
+    const h = { ...buildOcrHints("Dragonair", "", "Fraqueza Recuo"), localId: "7", numberConfidence: .1, nameConfidence: .98 };
+    const result = await runtime.resolveCatalog(h, undefined, { requests: 0, queries: [] });
+    assert.equal(result.ranked[0].name, "Dragonair");
+    assert.equal(calls[0].searchParams.get("name"), "Dragonair");
+    assert.ok(calls.every(url => !url.searchParams.has("localId")));
+  } finally { globalThis.fetch = previous; }
 });

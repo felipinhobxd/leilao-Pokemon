@@ -76,7 +76,15 @@ export function rankRecognitionCandidates(
   candidates: Parameters<typeof legacy.rankRecognitionCandidates>[0],
   hints: OcrHints,
 ): RecognitionCandidate[] {
-  return legacy.rankRecognitionCandidates(candidates, hints);
+  const safe = catalogHints(hints);
+  return candidates.map(candidate => {
+    const evidence = legacy.candidateEvidence(candidate, safe);
+    let score = legacy.scoreRecognitionCandidate(candidate, safe);
+    if (hints.name && (hints.nameConfidence ?? 0.8) >= 0.8 && evidence.nameSimilarity < 0.55) score -= 80;
+    if (evidence.nameSimilarity >= 0.90) score = Math.max(score, 48);
+    return { ...candidate, score: Math.max(0, score), evidence };
+  }).filter(candidate => candidate.score >= 40 && candidate.evidence.strongEvidence)
+    .sort((a, b) => b.score - a.score || b.evidence.nameSimilarity - a.evidence.nameSimilarity).slice(0, 12);
 }
 
 function removeAutofillFields(result: RecognitionResult) {
@@ -110,4 +118,10 @@ export function resultFromCandidates(
     if (result.level === "low") removeAutofillFields(result);
   }
   return result;
+}
+
+/** Weak OCR is a hypothesis, never a catalog filter. Confidence is in [0, 1]. */
+export function catalogHints(hints: OcrHints): OcrHints {
+  const reliable = Boolean(hints.localId && hints.denominator && (hints.numberConfidence ?? 0.8) >= 0.8);
+  return reliable ? hints : { ...hints, localId: "", cardNumber: "", denominator: null, localIdVariants: [], denominatorVariants: [] };
 }

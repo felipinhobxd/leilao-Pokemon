@@ -44,21 +44,20 @@ function cachePut<T>(cache: Map<string, T>, key: string, value: T, limit = 128) 
   cache.set(key, value);
 }
 
-function catalogImageUrl(base: string) {
-  const url = new URL(`${base}/low.webp`);
-  if (url.protocol !== "https:" || url.hostname !== "assets.tcgdex.net") throw new Error("Unsupported catalog image");
-  return url.href;
-}
-
 async function getOfficialBlob(base: string) {
-  const url = catalogImageUrl(base);
-  const cached = officialBlobs.get(url);
-  if (cached) return { url, blob: cached };
-  const response = await fetch(url, { credentials: "omit", cache: "force-cache", signal: AbortSignal.timeout(15_000) });
-  if (!response.ok) throw new Error(`Imagem oficial indisponível: HTTP ${response.status}`);
-  const blob = await response.blob();
-  cachePut(officialBlobs, url, blob);
-  return { url, blob };
+  const url = new URL("/api/card-recognition/scan", self.location.origin);
+  url.searchParams.set("base", base);
+  const cached = officialBlobs.get(base);
+  if (cached) return { url: base, blob: cached };
+  try {
+    const response = await fetch(url.href, { credentials: "same-origin", cache: "force-cache", signal: AbortSignal.timeout(15_000) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}: ${(await response.text()).slice(0, 350)}`);
+    const blob = await response.blob();
+    cachePut(officialBlobs, base, blob);
+    return { url: base, blob };
+  } catch (error) {
+    throw new Error(`scan-fetch ${url.href}: ${errorText(error)}`);
+  }
 }
 
 async function makeFingerprint(blob: Blob): Promise<Fingerprint> {
@@ -180,7 +179,9 @@ async function compareStructurally(photo: Blob, images: string[]) {
   self.postMessage({ progress: `🖼 Comparando capa, nome e rodapé com ${images.length} impressões…` });
   const query = await makeFingerprint(photo);
   const similarities: number[] = [];
+  const scanErrors: string[] = [];
   for (const base of images) {
+    try {
     const { url, blob } = await getOfficialBlob(base);
     let fingerprint = fingerprints.get(url);
     if (!fingerprint) {
@@ -188,13 +189,14 @@ async function compareStructurally(photo: Blob, images: string[]) {
       cachePut(fingerprints, url, fingerprint);
     }
     similarities.push(structuralSimilarity(query, fingerprint));
+    } catch (error) { similarities.push(-1); scanErrors.push(`${base}: ${errorText(error)}`); }
   }
   const order = similarities.map((score, index) => ({ score, index })).sort((a, b) => b.score - a.score);
   const top = order[0];
   const second = order[1];
   const margin = top ? top.score - (second?.score ?? 0) : 0;
-  const winnerIndex = top && top.score >= 0.62 && margin >= 0.035 ? top.index : undefined;
-  return { similarities, winnerIndex, order };
+  const winnerIndex = !scanErrors.length && top && top.score >= 0.62 && margin >= 0.035 ? top.index : undefined;
+  return { similarities, winnerIndex, order, scanErrors };
 }
 
 async function embed(image: Blob) {
@@ -285,6 +287,7 @@ async function dinoSimilarities(photo: Blob, images: string[]) {
       cachePut(embeddings, key, embedding, 64);
     }
     similarities.push(cosineSimilarity(query, embedding));
+    } catch (error) { throw new Error(`dino-scan ${base}: ${errorText(error)}`); }
   }
   return similarities;
 }
@@ -308,8 +311,9 @@ async function normalCompare(photo: Blob, images: string[]) {
     };
   }
 
-  const selected = structural.order.slice(0, MAX_DINO_CANDIDATES);
+  const selected = structural.scanErrors.length ? [] : structural.order.slice(0, MAX_DINO_CANDIDATES);
   if (selected.length < 2) return {
+    scanErrors: structural.scanErrors,
     similarities: structural.similarities,
     backend: "structural-96x132",
     initMs: 0,
@@ -352,7 +356,7 @@ async function normalCompare(photo: Blob, images: string[]) {
 self.onmessage = async (event: MessageEvent<{ photo: Blob; images: string[]; diagnostic?: boolean; testBackend?: string }>) => {
   const { photo, images, diagnostic, testBackend } = event.data;
   const max = diagnostic ? 5 : MAX_NORMAL_CANDIDATES;
-  if (images.length < (diagnostic ? 1 : 2) || images.length > max) {
+  if (images.length < 1 || images.length > max) {
     self.postMessage({ error: "Invalid candidate count" });
     return;
   }

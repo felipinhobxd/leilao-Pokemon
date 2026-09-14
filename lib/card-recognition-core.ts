@@ -69,6 +69,16 @@ export function buildOcrHints(topText: string, bottomText: string, centerText = 
   };
 }
 
+// Keep the public return type intentionally broad. The legacy implementation internally
+// produces candidates with evidence populated, but consumers such as visual rescue can
+// legally enrich/reorder RecognitionCandidate objects where evidence remains optional.
+export function rankRecognitionCandidates(
+  candidates: Parameters<typeof legacy.rankRecognitionCandidates>[0],
+  hints: OcrHints,
+): RecognitionCandidate[] {
+  return legacy.rankRecognitionCandidates(candidates, hints);
+}
+
 function removeAutofillFields(result: RecognitionResult) {
   delete result.name;
   delete result.collection;

@@ -8,12 +8,17 @@ on:
       - scripts/build-card-embedding-index-milo.py
       - .github/workflows/card-recognition-milo.yml
 
+permissions:
+  contents: write
+
 jobs:
   build-milo-index:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: feat/card-recognition-v10
       - name: Show Python runtime
         run: python3 --version
       - name: Install benchmark dependencies
@@ -33,3 +38,19 @@ jobs:
           if-no-files-found: error
           compression-level: 6
           retention-days: 1
+      - name: Publish compact runtime assets to this WIP branch
+        run: |
+          mkdir -p public/card-recognition/milo
+          cp card-recognition-milo/milo-v1.onnx public/card-recognition/milo/model.onnx
+          cp card-recognition-milo/milo-index-int8.bin public/card-recognition/milo/index-int8.bin
+          cp card-recognition-milo/milo-index.meta.tsv public/card-recognition/milo/index.meta.tsv
+          cp card-recognition-milo/milo-index.stats.json public/card-recognition/milo/index.stats.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/card-recognition/milo
+          if git diff --cached --quiet; then
+            echo "Runtime assets unchanged"
+          else
+            git commit -m "chore(recognition): publish Milo runtime assets"
+            git push origin HEAD:feat/card-recognition-v10
+          fi

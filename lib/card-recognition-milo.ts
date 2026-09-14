@@ -13,6 +13,7 @@ const RETRIEVAL_K = 50;
 const DISPLAY_K = 20;
 const DETAIL_K = 8;
 const TCGDEX_BASE = "https://api.tcgdex.net/v2";
+const QUERY_AUTOCONTRAST_CUTOFF = 0.005; // 0.5% from each histogram tail, per RGB channel.
 
 type Ort = typeof import("onnxruntime-web");
 type Session = import("onnxruntime-web").InferenceSession;
@@ -92,6 +93,37 @@ async function loadSession() {
   return loaded;
 }
 
+function channelAutocontrastBounds(pixels: Uint8ClampedArray, channel: number) {
+  const histogram = new Uint32Array(256);
+  const count = pixels.length / 4;
+  for (let i = channel; i < pixels.length; i += 4) histogram[pixels[i]] += 1;
+  const trim = Math.floor(count * QUERY_AUTOCONTRAST_CUTOFF);
+  let low = 0;
+  let removed = 0;
+  while (low < 255 && removed + histogram[low] <= trim) {
+    removed += histogram[low];
+    low += 1;
+  }
+  let high = 255;
+  removed = 0;
+  while (high > low && removed + histogram[high] <= trim) {
+    removed += histogram[high];
+    high -= 1;
+  }
+  return { low, high };
+}
+
+function autocontrastRgbInPlace(pixels: Uint8ClampedArray) {
+  const bounds = [0, 1, 2].map(channel => channelAutocontrastBounds(pixels, channel));
+  for (let i = 0; i < pixels.length; i += 4) {
+    for (let channel = 0; channel < 3; channel += 1) {
+      const { low, high } = bounds[channel];
+      if (high <= low) continue;
+      pixels[i + channel] = Math.max(0, Math.min(255, Math.round((pixels[i + channel] - low) * 255 / (high - low))));
+    }
+  }
+}
+
 async function imageTensor(blob: Blob) {
   const bitmap = await createImageBitmap(blob);
   try {
@@ -103,6 +135,10 @@ async function imageTensor(blob: Blob) {
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(bitmap, 0, 0, 448, 448);
     const pixels = ctx.getImageData(0, 0, 448, 448).data;
+    // Real phone photos often carry glare, warm lighting or foil reflections. A tiny,
+    // deterministic per-channel histogram trim makes the query closer to clean catalog
+    // scans without using OCR, metadata or any card-specific tuning.
+    autocontrastRgbInPlace(pixels);
     const plane = 448 * 448;
     const data = new Float32Array(plane * 3);
     const mean = [0.485, 0.456, 0.406];
@@ -292,5 +328,6 @@ export const miloRuntime = {
   indexQuantization: "int8/127",
   retrievalK: RETRIEVAL_K,
   browserCache: CACHE_NAME,
+  queryPhotometricNormalization: "autocontrast-0.5%-per-channel",
   discoveryDependsOnOcr: false,
 };

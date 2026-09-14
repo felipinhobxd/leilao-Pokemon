@@ -6,7 +6,7 @@ import { searchMiloVisual, shutdownMiloRecognition, miloRuntime, type MiloVisual
 import { preserveCandidateCollectorWidth, preserveResultCollectorWidth } from "./card-recognition-format";
 import type { RecognitionCandidate, RecognitionResult } from "./card-recognition-core";
 
-const CACHE_PREFIX = "leilao:card-recognition:v10:";
+const CACHE_PREFIX = "leilao:card-recognition:v10-milo-always-v1:";
 const memory = new Map<string, RecognitionResult>();
 let tail: Promise<unknown> = Promise.resolve();
 
@@ -143,7 +143,7 @@ function promoteVisualWinner(base: RecognitionResult, global: MiloVisualResult, 
   };
 
   // Retrieval similarity is not a probability. One visual opinion never becomes IDENTIFICADA.
-  // High confidence still requires an independent collector-number/catalog agreement.
+  // High confidence still requires independent collector-number/catalog agreement.
   if (exactNumber || (catalogAgreement && nameAgreement)) {
     result.level = "high";
     result.confidence = exactNumber && catalogAgreement ? 94 : 89;
@@ -152,6 +152,31 @@ function promoteVisualWinner(base: RecognitionResult, global: MiloVisualResult, 
     result.confidence = Math.max(60, Math.min(79, base.confidence || 68));
   }
   return { result, independent };
+}
+
+function preserveExactBaseWithVisualCheck(base: RecognitionResult, global: MiloVisualResult) {
+  const baseTop = base.candidates[0];
+  const visualTop = global.winner ?? global.candidates[0];
+  const candidates = uniqueCandidates([...(visualTop ? [visualTop] : []), ...global.candidates, ...base.candidates]);
+
+  if (!visualTop || sameCard(baseTop, visualTop)) {
+    const result: RecognitionResult = { ...base, candidates };
+    result.level = "high";
+    result.confidence = Math.min(94, Math.max(88, base.confidence));
+    return { result, independent: visualTop ? ["collector-number", "catalog-set", "ocr-name", "milo-visual-retrieval"] : ["collector-number", "catalog-set", "ocr-name"] };
+  }
+
+  // OCR/catalog and the independent global visual retriever disagree. Do not silently accept
+  // either side as a high-confidence exact print. Keep both visible for manual confirmation.
+  const result: RecognitionResult = { ...base, candidates };
+  result.level = "medium";
+  result.confidence = 72;
+  delete result.name;
+  delete result.collection;
+  delete result.cardNumber;
+  delete result.language;
+  delete result.variant;
+  return { result, independent: ["collector-number", "catalog-set", "ocr-name", "milo-conflict"] };
 }
 
 async function perform(
@@ -164,28 +189,29 @@ async function perform(
   const hash = await hashFile(file);
   if (!bypassCache) {
     const hit = cached(hash);
-    if (hit) { onProgress?.("Resultado reutilizado do cache v10"); return hit; }
+    if (hit) { onProgress?.("Resultado reutilizado do cache v10/Milo"); return hit; }
   }
 
+  onProgress?.("🧠 Reconhecimento v10 ativo · normalizando a carta para a IA Milo…");
   // selectedLanguage is intentionally not forwarded here. A default UI value is not evidence.
   // Detected OCR language may localize TCGdex only after the image has produced its own Top-K.
   const normalization = await normalizeCardPhoto(file, onProgress);
   onProgress?.("🔎 OCR + catálogo sobre a carta retificada…");
   const base = await v9.recognizePokemonCard(normalization.file, undefined, onProgress, { bypassCache: true });
 
+  // Milo now runs for every non-cached recognition. Previously an OCR/catalog early return could
+  // skip the 19.5k-card visual index completely, making v10 appear active while actually behaving
+  // like v9 for a large class of photos.
+  const detectedLanguage = base.hints.language ?? undefined;
+  const global = await searchMiloVisual(normalization.blob, detectedLanguage, base.hints, onProgress);
+
   if (exactCatalogDecision(base)) {
-    const final = withMetadata({ ...base }, normalization, undefined, started, ["collector-number", "catalog-set", "ocr-name"]);
-    final.level = "high";
-    final.decisionStatus = "IDENTIFICADA";
-    final.confidence = Math.min(92, Math.max(86, base.confidence));
+    const checked = preserveExactBaseWithVisualCheck(base, global);
+    const final = withMetadata(checked.result, normalization, global, started, checked.independent);
     save(hash, final);
     return final;
   }
 
-  const detectedLanguage = base.hints.language ?? undefined;
-  // Candidate discovery is image-only. OCR hints are applied only after the neural Top-K exists,
-  // when the shortlist is enriched/re-ranked with printed metadata.
-  const global = await searchMiloVisual(normalization.blob, detectedLanguage, base.hints, onProgress);
   if (global.winner) {
     const fused = promoteVisualWinner(base, global, global.winner);
     const final = withMetadata(fused.result, normalization, global, started, fused.independent);
@@ -248,7 +274,8 @@ export const resolveCatalog = v9.resolveCatalog;
 
 export const cardRecognitionRuntime = {
   version: 10,
-  cascade: ["four-corner-normalization", "v9-ocr-catalog", "ocr-independent-milo-exact-print-retrieval", "metadata-rerank", "v9-original-regression-fallback"],
+  cache: "v10-milo-always-v1",
+  cascade: ["four-corner-normalization", "v9-ocr-catalog", "always-on-ocr-independent-milo-exact-print-retrieval", "metadata-rerank", "v9-original-regression-fallback"],
   confidence: "evidence-score-not-calibrated-probability",
   requiresIndependentEvidenceForIdentified: true,
   uiLanguageIsNotRecognitionEvidence: true,

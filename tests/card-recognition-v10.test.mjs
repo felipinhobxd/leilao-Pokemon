@@ -4,12 +4,16 @@ import fs from "node:fs";
 import { summarizeRecognitionBenchmark, evaluateRecognitionSample } from "../lib/card-recognition-benchmark.ts";
 
 const v10 = fs.readFileSync(new URL("../lib/card-recognition-browser-v10.ts", import.meta.url), "utf8");
-const milo = fs.readFileSync(new URL("../lib/card-recognition-milo.ts", import.meta.url), "utf8");
+const memory = fs.readFileSync(new URL("../lib/card-recognition-memory.ts", import.meta.url), "utf8");
+const visual = fs.readFileSync(new URL("../lib/card-recognition-visual.ts", import.meta.url), "utf8");
+const visualWorker = fs.readFileSync(new URL("../lib/card-recognition-visual.worker.ts", import.meta.url), "utf8");
 const normalize = fs.readFileSync(new URL("../lib/card-recognition-normalize.ts", import.meta.url), "utf8");
 const cornelius = fs.readFileSync(new URL("../lib/card-recognition-cornelius.ts", import.meta.url), "utf8");
 const ppocr = fs.readFileSync(new URL("../lib/card-recognition-ppocr.ts", import.meta.url), "utf8");
 const wizard = fs.readFileSync(new URL("../app/auctions/new/bulk-wizard.tsx", import.meta.url), "utf8");
 const debugUi = fs.readFileSync(new URL("../app/auctions/new/recognition-debug.tsx", import.meta.url), "utf8");
+const memoryRoute = fs.readFileSync(new URL("../app/api/card-recognition/memory/route.ts", import.meta.url), "utf8");
+const migration = fs.readFileSync(new URL("../supabase/migrations/20260914163500_card_recognition_memory.sql", import.meta.url), "utf8");
 const tsconfig = JSON.parse(fs.readFileSync(new URL("../tsconfig.json", import.meta.url), "utf8"));
 const gitignore = fs.readFileSync(new URL("../.gitignore", import.meta.url), "utf8");
 
@@ -26,14 +30,15 @@ function result(candidates, overrides = {}) {
   };
 }
 
-test("v10 is the active recognizer but main/business flow remains imported through the stable alias", () => {
+test("v11 is the active recognizer but business flow remains imported through the stable alias", () => {
   assert.equal(tsconfig.compilerOptions.paths["@/lib/card-recognition-browser"][0], "./lib/card-recognition-browser-v10.ts");
+  assert.match(v10, /version: 11/);
   assert.match(v10, /import \* as v9 from "\.\/card-recognition-browser-v9"/);
   assert.match(wizard, /from "@\/lib\/card-recognition-browser"/);
   assert.match(wizard, /mergeRecognitionFields/);
 });
 
-test("default UI language is not evidence and v10 does not forward it to inference", () => {
+test("default UI language is not evidence and v11 does not forward it to inference", () => {
   assert.match(wizard, /language: "pt-BR"/);
   assert.match(v10, /_selectedLanguage\?: string/);
   assert.match(v10, /v9\.recognizePokemonCard\(normalization\.file, undefined/);
@@ -42,23 +47,22 @@ test("default UI language is not evidence and v10 does not forward it to inferen
   assert.match(v10, /uiLanguageIsNotRecognitionEvidence: true/);
 });
 
-test("Milo runs before any exact OCR/catalog return and searches independently from OCR", () => {
-  const visualCall = v10.indexOf("const global = await searchMiloVisual(normalization.blob");
-  const exactDecision = v10.indexOf("if (exactCatalogDecision(base))", visualCall);
-  assert.ok(visualCall > 0 && exactDecision > visualCall, "Milo must run before accepting an exact OCR/catalog decision");
-  assert.match(v10, /always-on-ocr-independent-milo-exact-print-retrieval/);
-  assert.match(milo, /discoveryDependsOnOcr: false/);
-  assert.match(milo, /function topMatches\(index: LoadedIndex, query: Float32Array\)/);
-  assert.match(milo, /const matches = topMatches\(index, encoded\.embedding\)/);
-  assert.match(milo, /const matches = topMatches\(index, encoded\.embedding\);\s*let candidates = shortlist\(index, matches, language\);\s*const detailIndexes = chooseDetailIndexes\(candidates, hints\)/s);
-  assert.doesNotMatch(milo.slice(milo.indexOf("function topMatches"), milo.indexOf("function emptyEvidence")), /name|ocr|hint/i);
+test("Milo is removed and exact-print confirmation uses official scans plus DINOv2 tie-breaking", () => {
+  assert.doesNotMatch(v10, /Milo|milo|searchMiloVisual|card-recognition-milo/);
+  assert.match(v10, /recognizeVisually\(normalization\.blob, base\.candidates, onProgress\)/);
+  assert.match(v10, /official-scan-structural-exact-print-comparison/);
+  assert.match(v10, /dinov2-base-local-tiebreaker-on-webgpu/);
+  assert.match(visualWorker, /onnx-community\/dinov2-base-ONNX/);
+  assert.match(visualWorker, /structuralSimilarity/);
+  assert.match(visualWorker, /artwork \* 0\.39/);
+  assert.match(visual, /expandSameNamePrintings/);
 });
 
-test("v10 always reruns PP-OCRv6 instead of reusing a final recognition result", () => {
-  assert.match(v10, /CACHE_PREFIX = "leilao:card-recognition:v10-cornelius-ppocrv6-medium-multipass-milo-v2:"/);
+test("v11 always reruns PP-OCRv6 instead of reusing a final recognition result", () => {
   assert.match(v10, /recognitionResultCacheReuse: false/);
+  assert.match(v10, /model-assets-only-no-final-result-cache/);
   assert.doesNotMatch(v10, /Resultado reutilizado do cache neural/);
-  assert.match(v10, /PP-OCRv6 Medium multi-pass/);
+  assert.match(v10, /PP-OCRv6 Medium/);
 });
 
 test("PP-OCRv6 Medium performs full-card and targeted name/number passes", () => {
@@ -71,7 +75,7 @@ test("PP-OCRv6 Medium performs full-card and targeted name/number passes", () =>
   assert.match(ppocr, /inference: "local-browser"/);
 });
 
-test("uncertain Latin OCR searches pt-BR first without treating the UI selection as evidence", () => {
+test("uncertain Latin OCR searches pt-BR first without treating UI selection as evidence", () => {
   assert.match(v10, /const catalogLanguage = pp\.hints\.language \?\? "pt-BR"/);
   assert.match(v10, /pt-br-first-catalog-validation-when-language-uncertain/);
   assert.match(ppocr, /language: "ja"/);
@@ -79,7 +83,27 @@ test("uncertain Latin OCR searches pt-BR first without treating the UI selection
   assert.match(ppocr, /language: "pt-BR"/);
 });
 
-test("Cornelius and PP-OCRv6 are local-first optional stages with safe fallbacks", () => {
+test("confirmed memory stores tiny fingerprints and never duplicates card images", () => {
+  assert.match(memory, /const DESCRIPTOR_BYTES = 36/);
+  assert.match(memory, /action: "bootstrap"/);
+  assert.match(memory, /fingerprintRecognitionExample/);
+  assert.match(memory, /reuse-existing-card-images-object/);
+  assert.match(memory, /confirmed-example-memory-no-gradient-training/);
+  assert.match(memoryRoute, /from\("cards"\)/);
+  assert.match(memoryRoute, /imageShaFromUrl/);
+  assert.match(memoryRoute, /BOOTSTRAP_LIMIT = 24/);
+  assert.match(migration, /card_recognition_examples/);
+  assert.match(migration, /revoke all on table public\.card_recognition_examples from anon, authenticated/);
+});
+
+test("unconfirmed predictions cannot self-train the memory", () => {
+  assert.match(v10, /selfTrainingFromUnconfirmedPredictions: false/);
+  assert.match(v10, /Memory never replaces OCR/);
+  assert.match(v10, /memory\.veryStrong && remembered && sameCard/);
+  assert.doesNotMatch(v10, /rememberConfirmedCard/);
+});
+
+test("Cornelius and PP-OCRv6 are local-first stages with safe fallbacks", () => {
   assert.match(v10, /normalizeCardWithCornelius\(file, onProgress\)/);
   assert.match(v10, /return normalizeCardPhoto\(file, onProgress\)/);
   assert.match(cornelius, /executionProviders: \["wasm"\]/);
@@ -88,23 +112,12 @@ test("Cornelius and PP-OCRv6 are local-first optional stages with safe fallbacks
   assert.match(ppocr, /inference: "local-browser"/);
 });
 
-test("debug UI tests and reports the actual v10 Milo retriever instead of only legacy DINO", () => {
-  assert.match(debugUi, /Testar IA v10\/Milo/);
-  assert.match(debugUi, /searchMiloVisual\(normalized\.blob/);
-  assert.match(debugUi, /impressõesNoIndice/);
+test("debug UI reports exact visual comparison and confirmed memory, not Milo", () => {
+  assert.match(debugUi, /Testar comparação visual exata/);
+  assert.match(debugUi, /recognizeVisually\(normalized\.blob/);
+  assert.match(debugUi, /memoriaConfirmada/);
   assert.match(debugUi, /Runtime: reconhecimento v\{cardRecognitionRuntime\.version\}/);
-  assert.match(debugUi, /dinoLegacy/);
-  assert.doesNotMatch(debugUi, /recognizeVisually/);
-});
-
-test("Milo normalizes real-photo lighting before embedding without using card metadata", () => {
-  assert.match(milo, /QUERY_AUTOCONTRAST_CUTOFF = 0\.005/);
-  assert.match(milo, /autocontrastRgbInPlace\(pixels\)/);
-  assert.match(milo, /queryPhotometricNormalization: "autocontrast-0\.5%-per-channel"/);
-  const start = milo.indexOf("function autocontrastRgbInPlace");
-  const end = milo.indexOf("async function imageTensor", start);
-  assert.ok(start >= 0 && end > start);
-  assert.doesNotMatch(milo.slice(start, end), /name|localId|ocr|hint|cardNumber/i);
+  assert.doesNotMatch(debugUi, /Milo|searchMiloVisual|miloRuntime/);
 });
 
 test("normalization estimates four edges/corners and applies a real projective homography", () => {
@@ -120,11 +133,11 @@ test("normalization estimates four edges/corners and applies a real projective h
   assert.match(cornelius, /warp\(source: HTMLCanvasElement, quad: CardQuad\)/);
 });
 
-test("IDENTIFICADA requires independent evidence instead of raw visual similarity", () => {
+test("IDENTIFICADA requires independent evidence rather than raw memory or visual similarity", () => {
   assert.match(v10, /requiresIndependentEvidenceForIdentified: true/);
-  assert.match(v10, /if \(exactNumber \|\| \(catalogAgreement && nameAgreement\)\)/);
+  assert.match(v10, /exactNumber \|\| \(catalogAgreement && nameAgreement\)/);
+  assert.match(v10, /memory\?\.veryStrong && memoryAgreement && nameAgreement/);
   assert.match(v10, /result\.level = "medium"/);
-  assert.match(v10, /confidenceKind/);
   assert.match(v10, /evidence-score-not-calibrated-probability/);
 });
 

@@ -254,7 +254,8 @@ export function memoryMatchCandidate(match: MemoryRow): RecognitionCandidate {
       languageMatch: false,
       hpMatch: false,
       strongEvidence: false,
-      visualMatch: true,
+      // A remembered photo is supporting evidence, not an official-scan visual confirmation.
+      visualMatch: false,
     },
   };
 }

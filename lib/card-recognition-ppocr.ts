@@ -32,6 +32,12 @@ type PpGlobal = typeof globalThis & {
   __LEILAO_PPOCRV6_ERROR__?: string;
 };
 
+type OcrPass = {
+  label: string;
+  result: PpResult;
+  lines: PpLine[];
+};
+
 export type PpOcrOutcome = {
   status: "ok" | "unavailable" | "failed";
   hints?: OcrHints;
@@ -94,7 +100,7 @@ function loadSdk() {
 function getPipeline() {
   pipelinePromise ??= loadSdk().then(async sdk => {
     const pipeline = sdk.createOCR({
-      model: { det: "small", rec: "small" },
+      model: { det: "medium", rec: "medium" },
       backend: "wasm",
       execution: "main",
       allowFallback: false,
@@ -102,8 +108,8 @@ function getPipeline() {
       onProgress: (event: { phase?: string; component?: string; progress?: number }) => {
         const percent = typeof event.progress === "number" ? ` ${Math.round(event.progress * 100)}%` : "";
         const component = event.component ? ` ${event.component}` : "";
-        if (event.phase === "download") progressSink?.(`📥 PP-OCRv6${component}${percent}`);
-        else if (event.phase === "load") progressSink?.(`🧠 Carregando PP-OCRv6${component}${percent}`);
+        if (event.phase === "download") progressSink?.(`📥 PP-OCRv6 Medium${component}${percent}`);
+        else if (event.phase === "load") progressSink?.(`🧠 Carregando PP-OCRv6 Medium${component}${percent}`);
       },
     });
     await pipeline.load();
@@ -122,7 +128,7 @@ function centerY(line: PpLine) {
 
 function cleanLines(lines: readonly PpLine[]) {
   return lines
-    .filter(line => String(line.text ?? "").trim() && Number(line.recognitionScore ?? 0) >= 0.15)
+    .filter(line => String(line.text ?? "").trim() && Number(line.recognitionScore ?? 0) >= 0.08)
     .sort((a, b) => centerY(a) - centerY(b));
 }
 
@@ -141,19 +147,19 @@ function refineLanguage(hints: OcrHints, text: string): OcrHints {
 
   const scores: Array<{ language: Exclude<RecognitionLanguage, "ja">; score: number }> = [
     { language: "pt-BR", score: vocabularyScore(text, [
-      ["fraqueza", 9], ["recuo", 9], ["baralho", 8], ["procure", 6], ["jogue", 6], ["voce", 7],
-      ["mao", 5], ["jogador", 5], ["adversario", 7], ["coloque", 5], ["compre", 5], ["proximo", 4],
-      ["descartar", 6], ["resistencia", 3], ["dano", 3], ["ataque", 2],
-    ]) + ((text.match(/[ãõç]/gi)?.length ?? 0) * 4) },
+      ["fraqueza", 10], ["recuo", 10], ["baralho", 9], ["procure", 7], ["jogue", 7], ["voce", 8],
+      ["mao", 6], ["jogador", 6], ["adversario", 8], ["coloque", 6], ["compre", 6], ["proximo", 5],
+      ["descartar", 7], ["resistencia", 4], ["dano", 4], ["ataque", 3], ["turno", 3], ["basico", 3],
+    ]) + ((text.match(/[ãõçáéíóúâêô]/gi)?.length ?? 0) * 5) },
     { language: "en", score: vocabularyScore(text, [
-      ["weakness", 9], ["retreat", 9], ["deck", 8], ["search", 6], ["discard", 7], ["your", 5],
-      ["opponent", 7], ["draw", 5], ["choose", 5], ["hand", 5], ["damage", 4], ["attach", 5], ["shuffle", 6],
-      ["during", 3], ["this", 2], ["pokemon", 1],
+      ["weakness", 10], ["retreat", 10], ["deck", 9], ["search", 7], ["discard", 8], ["your", 6],
+      ["opponent", 8], ["draw", 6], ["choose", 6], ["hand", 6], ["damage", 5], ["attach", 6], ["shuffle", 7],
+      ["during", 4], ["this", 3], ["basic", 3], ["pokemon", 1],
     ]) },
     { language: "es", score: vocabularyScore(text, [
-      ["debilidad", 9], ["retirada", 9], ["baraja", 8], ["busca", 6], ["descarta", 7], ["jugador", 5],
-      ["rival", 6], ["elige", 6], ["roba", 6], ["mano", 5], ["puedes", 5], ["dano", 4], ["resistencia", 3],
-    ]) + ((text.match(/[ñ¿¡]/gi)?.length ?? 0) * 5) },
+      ["debilidad", 10], ["retirada", 10], ["baraja", 9], ["busca", 7], ["descarta", 8], ["jugador", 6],
+      ["rival", 7], ["elige", 7], ["roba", 7], ["mano", 6], ["puedes", 6], ["dano", 5], ["resistencia", 4],
+    ]) + ((text.match(/[ñ¿¡]/gi)?.length ?? 0) * 6) },
   ];
   scores.sort((a, b) => b.score - a.score);
 
@@ -166,33 +172,150 @@ function refineLanguage(hints: OcrHints, text: string): OcrHints {
   return hints;
 }
 
+async function decodeImage(file: File): Promise<ImageBitmap | HTMLImageElement> {
+  if (typeof createImageBitmap === "function") return createImageBitmap(file, { imageOrientation: "from-image" });
+  const url = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    image.decoding = "async";
+    image.src = url;
+    await image.decode();
+    return image;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function enhanceGray(context: CanvasRenderingContext2D, width: number, height: number, contrast: number) {
+  const image = context.getImageData(0, 0, width, height);
+  for (let index = 0; index < image.data.length; index += 4) {
+    const gray = image.data[index] * 0.299 + image.data[index + 1] * 0.587 + image.data[index + 2] * 0.114;
+    const value = Math.max(0, Math.min(255, Math.round((gray - 128) * contrast + 128)));
+    image.data[index] = value;
+    image.data[index + 1] = value;
+    image.data[index + 2] = value;
+  }
+  context.putImageData(image, 0, 0);
+}
+
+function canvasFile(canvas: HTMLCanvasElement, name: string) {
+  return new Promise<File>((resolve, reject) => {
+    canvas.toBlob(blob => {
+      if (!blob) return reject(new Error("Não foi possível preparar a região para PP-OCRv6."));
+      resolve(new File([blob], name, { type: "image/png" }));
+    }, "image/png");
+  });
+}
+
+async function buildTargetedInputs(file: File) {
+  const image = await decodeImage(file);
+  try {
+    const width = Math.max(1, image.width);
+    const height = Math.max(1, image.height);
+    const crop = async (label: string, y0: number, y1: number, scale: number, contrast: number) => {
+      const sourceY = Math.round(height * y0);
+      const sourceHeight = Math.max(1, Math.round(height * (y1 - y0)));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(width * scale));
+      canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) throw new Error("Canvas indisponível para PP-OCRv6.");
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = "high";
+      context.drawImage(image, 0, sourceY, width, sourceHeight, 0, 0, canvas.width, canvas.height);
+      enhanceGray(context, canvas.width, canvas.height, contrast);
+      return { label, file: await canvasFile(canvas, `ppocr-${label}.png`) };
+    };
+
+    return [
+      await crop("top-name", 0.00, 0.40, 2.5, 1.30),
+      await crop("bottom-number", 0.52, 1.00, 3.0, 1.38),
+    ];
+  } finally {
+    if ("close" in image && typeof image.close === "function") image.close();
+  }
+}
+
+function lineText(lines: readonly PpLine[]) {
+  return lines.map(line => line.text.trim()).filter(Boolean).join("\n");
+}
+
+function uniqueText(...texts: Array<string | undefined>) {
+  const seen = new Set<string>();
+  const values: string[] = [];
+  for (const text of texts) {
+    for (const raw of String(text ?? "").split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line) continue;
+      const key = normalizedLanguageText(line) || line;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      values.push(line);
+    }
+  }
+  return values.join("\n");
+}
+
+async function readPass(pipeline: PpPipeline, label: string, input: File, index: number, total: number, onProgress?: (message: string) => void): Promise<OcrPass> {
+  onProgress?.(`🔤 PP-OCRv6 Medium ${index}/${total} · ${label}…`);
+  const result = await pipeline.ocr(input);
+  return { label, result, lines: cleanLines(result.lines) };
+}
+
 export async function runPpOcr(file: File, onProgress?: (message: string) => void): Promise<PpOcrOutcome> {
   const started = performance.now();
   progressSink = onProgress;
   try {
-    onProgress?.("🔤 PP-OCRv6 Small · lendo nome, número e idioma localmente…");
+    onProgress?.("🔤 PP-OCRv6 Medium · leitura de alta precisão em múltiplas regiões…");
     const pipeline = await getPipeline();
-    const result = await pipeline.ocr(file);
-    const lines = cleanLines(result.lines);
-    const height = Math.max(1, result.image.height || 624);
-    const top = lines.filter(line => centerY(line) <= height * 0.34).map(line => line.text).join("\n");
-    const bottom = lines.filter(line => centerY(line) >= height * 0.58).map(line => line.text).join("\n");
-    const middle = lines.filter(line => centerY(line) > height * 0.25 && centerY(line) < height * 0.78).map(line => line.text).join("\n");
-    const all = lines.map(line => line.text).join("\n");
+    let targeted: Awaited<ReturnType<typeof buildTargetedInputs>> = [];
+    try {
+      targeted = await buildTargetedInputs(file);
+    } catch {
+      onProgress?.("↩️ Não foi possível preparar recortes; seguindo com a carta inteira.");
+    }
+
+    const inputs = [{ label: "carta inteira", file }, ...targeted];
+    const passes: OcrPass[] = [];
+    for (let index = 0; index < inputs.length; index += 1) {
+      const input = inputs[index];
+      try {
+        passes.push(await readPass(pipeline, input.label, input.file, index + 1, inputs.length, onProgress));
+      } catch (error) {
+        if (index === 0) throw error;
+        onProgress?.(`↩️ PP-OCRv6 não conseguiu ler ${input.label}; mantendo os outros passes.`);
+      }
+    }
+
+    const full = passes.find(pass => pass.label === "carta inteira");
+    const topPass = passes.find(pass => pass.label === "top-name");
+    const bottomPass = passes.find(pass => pass.label === "bottom-number");
+    const fullLines = full?.lines ?? [];
+    const fullHeight = Math.max(1, full?.result.image.height || 624);
+    const fullTop = lineText(fullLines.filter(line => centerY(line) <= fullHeight * 0.36));
+    const fullBottom = lineText(fullLines.filter(line => centerY(line) >= fullHeight * 0.55));
+    const fullMiddle = lineText(fullLines.filter(line => centerY(line) > fullHeight * 0.22 && centerY(line) < fullHeight * 0.82));
+    const top = uniqueText(lineText(topPass?.lines ?? []), fullTop, lineText(fullLines));
+    const bottom = uniqueText(lineText(bottomPass?.lines ?? []), fullBottom, lineText(fullLines));
+    const middle = uniqueText(fullMiddle, lineText(fullLines));
+    const all = uniqueText(lineText(fullLines), lineText(topPass?.lines ?? []), lineText(bottomPass?.lines ?? []));
     let hints = buildOcrHints(top || all, bottom || all, middle || all);
     hints = refineLanguage(hints, all);
-    const averageConfidence = lines.length
-      ? Math.round(lines.reduce((sum, line) => sum + Math.max(0, Math.min(1, Number(line.recognitionScore || 0))), 0) / lines.length * 100)
+
+    const allLines = passes.flatMap(pass => pass.lines);
+    const averageConfidence = allLines.length
+      ? Math.round(allLines.reduce((sum, line) => sum + Math.max(0, Math.min(1, Number(line.recognitionScore || 0))), 0) / allLines.length * 100)
       : 0;
+    const runtime = full?.result.runtime ?? passes[0]?.result.runtime;
     return {
-      status: lines.length ? "ok" : "unavailable",
+      status: allLines.length ? "ok" : "unavailable",
       hints,
       text: all,
-      lineCount: lines.length,
+      lineCount: allLines.length,
       averageConfidence,
       elapsedMs: Math.round(performance.now() - started),
-      backend: `ppocrv6/${result.runtime.actualBackend}/${result.runtime.execution}`,
-      error: lines.length ? undefined : "PP-OCRv6 não encontrou texto legível.",
+      backend: runtime ? `ppocrv6-medium-multipass/${runtime.actualBackend}/${runtime.execution}` : "ppocrv6-medium-multipass",
+      error: allLines.length ? undefined : "PP-OCRv6 não encontrou texto legível.",
     };
   } catch (error) {
     return {
@@ -216,7 +339,8 @@ export async function shutdownPpOcr() {
 
 export const ppOcrRuntime = {
   sdk: `web-sdk-pp-ocrv6@${SDK_VERSION}`,
-  model: "PP-OCRv6 Small det+rec",
+  model: "PP-OCRv6 Medium det+rec",
+  strategy: "full-card+top-name+bottom-number",
   backend: "wasm/cpu",
   execution: "main-thread",
   inference: "local-browser",

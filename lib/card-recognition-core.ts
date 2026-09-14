@@ -1,10 +1,10 @@
 // Compatibility wrapper around the proven recognition core. It keeps the existing
 // scoring/parser implementation intact while tightening two high-impact real-photo cases:
 // slash-less collector numbers from OCR and overconfident name-only matches.
-export * from "./card-recognition-core-legacy";
+export * from "./card-recognition-core-legacy.ts";
 
-import * as legacy from "./card-recognition-core-legacy";
-import type { OcrHints, RecognitionCandidate, RecognitionResult } from "./card-recognition-core-legacy";
+import * as legacy from "./card-recognition-core-legacy.ts";
+import type { OcrHints, RecognitionCandidate, RecognitionResult } from "./card-recognition-core-legacy.ts";
 
 const LOOSE_NUMBER_RE = /(?<![\p{L}\p{N}])([A-Z]{0,3}\s*[0-9OQILlS]{1,4})\s*(?:[-:·•]|\s{1,5})\s*([A-Z]{0,3}\s*[0-9OQILlS]{2,4})(?![\p{L}\p{N}])/giu;
 

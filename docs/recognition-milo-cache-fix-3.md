@@ -1,0 +1,1 @@
+Milo assets are cache-busted as one versioned set so model/index/metadata/stats cannot be mixed across generations.

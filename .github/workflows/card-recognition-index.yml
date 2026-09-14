@@ -4,7 +4,7 @@ on:
   push:
     branches: [feat/card-recognition-v10]
     paths:
-      - scripts/build-card-visual-index.mjs
+      - scripts/build-card-visual-index-v2.mjs
       - .github/workflows/card-recognition-index.yml
   workflow_dispatch:
 
@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 jobs:
-  build-index:
+  build-index-v2:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -22,16 +22,16 @@ jobs:
           node-version: 24
       - name: Install image decoder only for the offline index job
         run: npm install --no-save --package-lock=false --ignore-scripts=false sharp@0.34.5
-      - name: Build compact physical-card fingerprints
+      - name: Build richer compact physical-card fingerprints v2
         env:
           CARD_INDEX_CONCURRENCY: 6
-        run: node scripts/build-card-visual-index.mjs --output card-recognition-index
+        run: node scripts/build-card-visual-index-v2.mjs --output card-recognition-index-v2
       - name: Show size budget
-        run: cat card-recognition-index/index-v1.stats.json
+        run: cat card-recognition-index-v2/index-v2.stats.json
       - uses: actions/upload-artifact@v4
         with:
-          name: card-recognition-index-v1
-          path: card-recognition-index/
+          name: card-recognition-index-v2
+          path: card-recognition-index-v2/
           if-no-files-found: error
           compression-level: 9
           retention-days: 7

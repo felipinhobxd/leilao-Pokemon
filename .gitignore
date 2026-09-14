@@ -9,3 +9,5 @@ out
 *.tsbuildinfo
 sessao/
 bot/sessao/
+benchmarks/card-recognition/private/
+benchmarks/card-recognition/results.local.json

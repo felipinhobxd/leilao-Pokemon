@@ -22,10 +22,13 @@ import { needsVisualFallback, recognizeVisually, shutdownVisualRecognition, type
 const TESSERACT_VERSION = "7.0.0";
 const TESSERACT_SCRIPT = `https://cdn.jsdelivr.net/npm/tesseract.js@${TESSERACT_VERSION}/dist/tesseract.min.js`;
 const TCGDEX_BASE = "https://api.tcgdex.net/v2";
-const SESSION_CACHE_PREFIX = "leilao:card-recognition:v6:";
+const SESSION_CACHE_PREFIX = "leilao:card-recognition:v7:";
+const SET_INDEX_CACHE_PREFIX = "leilao:tcgdex:sets:v1:";
 const CATALOG_TTL_MS = 30 * 60_000;
+const SET_INDEX_TTL_MS = 24 * 60 * 60_000;
 const MAX_CATALOG_DETAILS = 4;
 const MAX_CATALOG_REQUESTS = 8;
+const MAX_DIRECT_SET_LOOKUPS = 6;
 const DETECTION_WIDTH = 300;
 const OCR_MAX_WIDTH = 1500;
 const OCR_MIN_LINE_HEIGHT = 180;
@@ -47,7 +50,14 @@ declare global {
   }
 }
 
-type TcgSet = { id: string; name: string; cardCount?: { official?: number; total?: number } };
+type TcgSet = {
+  id: string;
+  name: string;
+  logo?: string | null;
+  symbol?: string | null;
+  cardCount?: { official?: number; total?: number };
+};
+type TcgSetBrief = TcgSet;
 type TcgCard = {
   id: string;
   localId: string | number;
@@ -63,6 +73,8 @@ type CacheEntry = { expires: number; value: unknown };
 type CardBox = { x: number; y: number; width: number; height: number; score: number; fallback: boolean };
 type OcrRead = { text: string; confidence: number };
 type NumberRead = OcrRead & ReturnType<typeof extractCardNumber>;
+type SetIndexSource = "memory" | "persistent" | "network" | "stale";
+type PersistedSetIndex = { savedAt: number; sets: TcgSetBrief[] };
 
 type RecognitionDebug = {
   file: { name: string; width: number; height: number };
@@ -72,6 +84,8 @@ type RecognitionDebug = {
   languageReads: OcrRead[];
   hints: OcrHints;
   catalogQueries: string[];
+  catalogStrategy: "set+localId" | "set-index+search" | "search";
+  setCandidates: string[];
   candidates: RecognitionCandidate[];
   elapsedMs: number;
 };
@@ -478,9 +492,79 @@ async function fetchCatalog<T>(url: string, stats: CatalogStats): Promise<T> {
   return value;
 }
 
+function validSetBrief(value: unknown): value is TcgSetBrief {
+  if (!value || typeof value !== "object") return false;
+  const set = value as TcgSetBrief;
+  return typeof set.id === "string" && typeof set.name === "string" && Boolean(set.cardCount);
+}
+
+function readPersistentSetIndex(code: string): PersistedSetIndex | null {
+  if (typeof localStorage === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(`${SET_INDEX_CACHE_PREFIX}${code}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PersistedSetIndex;
+    if (!Number.isFinite(parsed.savedAt) || !Array.isArray(parsed.sets)) return null;
+    const sets = parsed.sets.filter(validSetBrief);
+    return sets.length ? { savedAt: parsed.savedAt, sets } : null;
+  } catch { return null; }
+}
+
+function savePersistentSetIndex(code: string, sets: TcgSetBrief[]) {
+  if (typeof localStorage === "undefined") return;
+  try { localStorage.setItem(`${SET_INDEX_CACHE_PREFIX}${code}`, JSON.stringify({ savedAt: Date.now(), sets } satisfies PersistedSetIndex)); }
+  catch { /* Persistent cache is optional. */ }
+}
+
+async function loadSetIndex(code: string, stats: CatalogStats): Promise<{ sets: TcgSetBrief[]; source: SetIndexSource }> {
+  const url = `${TCGDEX_BASE}/${code}/sets`;
+  const memory = catalogCache.get(url);
+  if (memory && memory.expires > Date.now() && Array.isArray(memory.value)) {
+    return { sets: (memory.value as unknown[]).filter(validSetBrief), source: "memory" };
+  }
+
+  const stored = readPersistentSetIndex(code);
+  if (stored && Date.now() - stored.savedAt < SET_INDEX_TTL_MS) {
+    catalogCache.set(url, { expires: Date.now() + CATALOG_TTL_MS, value: stored.sets });
+    return { sets: stored.sets, source: "persistent" };
+  }
+
+  try {
+    const sets = (await fetchCatalog<unknown[]>(url, stats)).filter(validSetBrief);
+    if (sets.length) savePersistentSetIndex(code, sets);
+    return { sets, source: "network" };
+  } catch (error) {
+    if (stored?.sets.length) return { sets: stored.sets, source: "stale" };
+    throw error;
+  }
+}
+
+function isPocketAsset(value: string | null | undefined) {
+  return Boolean(value?.includes("/tcgp/"));
+}
+
+function isPhysicalSet(set: TcgSetBrief) {
+  return !isPocketAsset(set.logo) && !isPocketAsset(set.symbol);
+}
+
+function denominatorValues(hints: OcrHints) {
+  return [...new Set([...(hints.denominatorVariants ?? []), hints.denominator].filter((value): value is number => Number.isInteger(value) && value > 0))];
+}
+
+function matchingSetsForDenominator(sets: TcgSetBrief[], hints: OcrHints) {
+  const denominators = denominatorValues(hints);
+  if (!denominators.length) return [];
+  const physical = sets.filter(isPhysicalSet);
+  const official = physical.filter(set => denominators.includes(Number(set.cardCount?.official ?? 0)));
+  if (official.length) return official;
+  // total includes secret/hidden cards and is only a fallback when OCR also has a usable name.
+  if (hints.name.trim().length < 4) return [];
+  return physical.filter(set => denominators.includes(Number(set.cardCount?.total ?? 0)));
+}
+
 function candidateFromCard(card: TcgCard, language: RecognitionLanguage): Omit<RecognitionCandidate, "score" | "evidence"> | null {
   const set = card.set;
-  if (!set?.name) return null;
+  if (!set?.name || isPocketAsset(card.image) || isPocketAsset(set.logo) || isPocketAsset(set.symbol)) return null;
   const denominator = Number(set.cardCount?.official ?? set.cardCount?.total ?? 0) || null;
   const localId = String(card.localId);
   return {
@@ -509,14 +593,66 @@ async function searchBriefs(code: string, params: URLSearchParams, stats: Catalo
 
 export async function resolveCatalog(hints: OcrHints, preferredLanguage: string | undefined, stats: CatalogStats) {
   const candidates = new Map<string, Omit<RecognitionCandidate, "score" | "evidence">>();
-  const snapshot = () => ({ ranked: rankRecognitionCandidates([...candidates.values()], hints),
-    pool: visualCandidatePool([...candidates.values()], hints), before: candidates.size });
+  let strategy: "set+localId" | "set-index+search" | "search" = "search";
+  let setCandidates: string[] = [];
+  let setIndexSource: SetIndexSource | undefined;
+  const snapshot = () => ({
+    ranked: rankRecognitionCandidates([...candidates.values()], hints),
+    pool: visualCandidatePool([...candidates.values()], hints),
+    before: candidates.size,
+    strategy,
+    setCandidates,
+    setIndexSource,
+  });
   if (!hints.localId && hints.name.replace(/[^\p{L}]/gu, "").length < 4) return snapshot();
+
   const trusted = hints.language != null && hints.languageConfidence >= 55;
   const languages = trusted ? [hints.language!] : uniqueLanguages(hints, preferredLanguage).slice(0, 2);
-  const ids = [...new Set([...(hints.localIdVariants ?? []), hints.localId])].filter(Boolean).slice(0, 2);
+  const ids = [...new Set([...(hints.localIdVariants ?? []), hints.localId])].filter(Boolean).slice(0, 3);
   const name = hints.name.trim();
   const attempted = new Set<string>();
+
+  // Fast deterministic path: the printed denominator identifies candidate sets, then
+  // set + localId maps directly to one concrete TCGdex card. This mirrors a manual lookup.
+  if (ids.length && denominatorValues(hints).length) {
+    for (const language of languages) {
+      if (stats.requests >= MAX_CATALOG_REQUESTS) break;
+      const code = tcgLanguage(language);
+      try {
+        const index = await loadSetIndex(code, stats);
+        const matching = matchingSetsForDenominator(index.sets, hints);
+        if (!matching.length) continue;
+        setIndexSource = index.source;
+        setCandidates = matching.map(set => set.id);
+
+        if (matching.length > MAX_DIRECT_SET_LOOKUPS && name.length >= 4) {
+          strategy = "set-index+search";
+          break;
+        }
+
+        strategy = "set+localId";
+        for (const set of matching.slice(0, MAX_DIRECT_SET_LOOKUPS)) {
+          let found = false;
+          for (const id of ids) {
+            if (stats.requests >= MAX_CATALOG_REQUESTS) { stats.exhausted = true; return snapshot(); }
+            try {
+              const card = await fetchCatalog<TcgCard>(`${TCGDEX_BASE}/${code}/sets/${encodeURIComponent(set.id)}/${encodeURIComponent(id)}`, stats);
+              const candidate = candidateFromCard(card, language);
+              if (candidate) {
+                candidates.set(`${language}:${candidate.id}`, candidate);
+                found = true;
+              }
+            } catch { /* 404 means that set does not contain this localId variant. */ }
+            if (found) break;
+          }
+        }
+        if (candidates.size) return snapshot();
+        strategy = "set-index+search";
+      } catch { /* Cached/generic lookup below remains available. */ }
+    }
+  }
+
+  if (strategy !== "set-index+search") strategy = "search";
   for (const language of languages) {
     const code = tcgLanguage(language);
     const probes: Array<Record<string, string>> = [];
@@ -630,7 +766,7 @@ async function performRecognition(file: File, preferredLanguage?: string, onProg
   const easy = best?.evidence?.fullNumberMatch && best.evidence.nameSimilarity >= 0.9 && best.score - (run.ranked[1]?.score ?? 0) >= 8;
   let visual: VisualOutcome = { candidates: pool, used: false,
     status: easy ? "not-needed" : !run.hints.localId && !run.hints.name ? "insufficient-clues" : "no-candidates",
-    reason: easy ? "OCR inequívoco" : !run.hints.localId && !run.hints.name ? "Pistas insuficientes" : "Menos de dois candidatos visuais plausíveis" };
+    reason: easy ? "Banco + OCR inequívocos" : !run.hints.localId && !run.hints.name ? "Pistas insuficientes" : "Menos de dois candidatos visuais plausíveis" };
   if (!easy && needsVisualFallback(pool)) {
     const normalized = document.createElement("canvas");
     normalized.width = 224; normalized.height = 312;
@@ -653,10 +789,24 @@ async function performRecognition(file: File, preferredLanguage?: string, onProg
     Object.assign(result, { level: "medium", confidence: 60, name: winner.name, collection: winner.collection, cardNumber: winner.cardNumber });
   }
   if (!run.hints.language || run.hints.languageConfidence < 55) delete result.language;
-  Object.assign(result, { visualUsed: visual.used, visualStatus: visual.status, visualBackend: visual.backend,
-    visualError: visual.error, visualReason: visual.reason, visualCandidateCount: pool.length,
-    visualInitMs: visual.initMs, visualSimilarities: visual.similarities, visualCandidatePool: pool,
-    catalogCandidatesBefore: run.catalog.before, catalogCandidatesAfter: run.ranked.length, catalogBudgetExhausted: stats.exhausted ?? false });
+  Object.assign(result, {
+    visualUsed: visual.used,
+    visualStatus: visual.status,
+    visualBackend: visual.backend,
+    visualError: visual.error,
+    visualReason: visual.reason,
+    visualCandidateCount: pool.length,
+    visualInitMs: visual.initMs,
+    visualSimilarities: visual.similarities,
+    visualCandidatePool: pool,
+    catalogCandidatesBefore: run.catalog.before,
+    catalogCandidatesAfter: run.ranked.length,
+    catalogBudgetExhausted: stats.exhausted ?? false,
+    catalogStrategy: run.catalog.strategy,
+    catalogSetCandidates: run.catalog.setCandidates,
+    catalogSetIndexSource: run.catalog.setIndexSource,
+    catalogQueries: [...run.stats.queries],
+  });
   saveSessionRecognition(hash, result);
   pushDebug({
     file: { name: file.name, width: source.width, height: source.height },
@@ -666,6 +816,8 @@ async function performRecognition(file: File, preferredLanguage?: string, onProg
     languageReads: run.language.reads,
     hints: run.hints,
     catalogQueries: run.stats.queries,
+    catalogStrategy: run.catalog.strategy,
+    setCandidates: run.catalog.setCandidates,
     candidates: run.ranked,
     elapsedMs,
   });
@@ -701,5 +853,7 @@ export const cardRecognitionRuntime = {
   detectionWidth: DETECTION_WIDTH,
   maxCatalogDetailsPerSearch: MAX_CATALOG_DETAILS,
   maxCatalogRequests: MAX_CATALOG_REQUESTS,
-  cacheVersion: 6,
+  setIndexTtlMs: SET_INDEX_TTL_MS,
+  maxDirectSetLookups: MAX_DIRECT_SET_LOOKUPS,
+  cacheVersion: 7,
 };

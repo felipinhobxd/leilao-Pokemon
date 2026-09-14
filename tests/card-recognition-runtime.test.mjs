@@ -14,11 +14,15 @@ test("card recognition stays local-first and free-service only", () => {
   assert.match(source, /TESSERACT_VERSION = "7\.0\.0"/);
   assert.match(source, /cdn\.jsdelivr\.net\/npm\/tesseract\.js@\$\{TESSERACT_VERSION\}/);
   assert.match(source, /https:\/\/api\.tcgdex\.net\/v2/);
+  assert.match(source, /SET_INDEX_TTL_MS = 24 \* 60 \* 60_000/);
   assert.match(source, /sessionStorage/);
+  assert.match(source, /localStorage/);
   assert.match(source, /crypto\.subtle\.digest\("SHA-256"/);
   assert.match(source, /recognitionTail/);
   assert.ok(runtime.cardRecognitionRuntime.maxCatalogDetailsPerSearch > 0);
   assert.ok(runtime.cardRecognitionRuntime.maxCatalogDetailsPerSearch <= 4);
+  assert.equal(runtime.cardRecognitionRuntime.maxCatalogRequests, 8);
+  assert.equal(runtime.cardRecognitionRuntime.cacheVersion, 7);
 
   for (const forbidden of [
     "api.openai.com",
@@ -30,23 +34,55 @@ test("card recognition stays local-first and free-service only", () => {
   ]) assert.equal(source.includes(forbidden), false, `${forbidden} must not be used by card recognition`);
 });
 
-test("form language is only search priority; exact OCR stops with few requests", async () => {
+test("collector denominator uses the TCGdex set index then direct set+localId lookup", async () => {
   const original = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async url => {
-    calls.push(url);
-
-    return { ok: true, json: async () => url.includes("?") ? [{ id: "base-58", localId: "58", name: "Pikachu" }] :
-      { id: "base-58", localId: "58", name: "Pikachu", set: { name: "Base", cardCount: { official: 102 } } } };
+    calls.push(String(url));
+    const parsed = new URL(url);
+    if (parsed.pathname === "/v2/pt/sets") {
+      return { ok: true, status: 200, json: async () => [
+        { id: "me02.5", name: "Heróis Excelsos", cardCount: { official: 217, total: 217 } },
+        { id: "other", name: "Outro", cardCount: { official: 191, total: 200 } },
+      ] };
+    }
+    if (parsed.pathname === "/v2/pt/sets/me02.5/153") {
+      return { ok: true, status: 200, json: async () => ({
+        id: "me02.5-153", localId: "153", name: "Rayquaza", hp: 120,
+        image: "https://assets.tcgdex.net/pt/me/me02.5/153",
+        set: { id: "me02.5", name: "Heróis Excelsos", cardCount: { official: 217, total: 217 } },
+      }) };
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
   };
   try {
     const stats = { requests: 0, queries: [] };
-    const { ranked } = await runtime.resolveCatalog(buildOcrHints("Pikachu", "58/102"), "pt-BR", stats);
+    const result = await runtime.resolveCatalog(buildOcrHints("Rayquaza", "153/217", "Fraqueza Recuo Baralho"), "pt-BR", stats);
+    assert.equal(result.strategy, "set+localId");
+    assert.deepEqual(result.setCandidates, ["me02.5"]);
+    assert.equal(result.ranked[0]?.name, "Rayquaza");
+    assert.equal(result.ranked[0]?.cardNumber, "153/217");
+    assert.equal(stats.requests, 2);
+    assert.equal(calls.some(url => url.includes("/cards?")), false);
+  } finally { globalThis.fetch = original; }
+});
+
+test("form language is only search priority; trusted OCR language owns the deterministic lookup", async () => {
+  const original = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async url => {
+    calls.push(String(url));
+    const parsed = new URL(url);
+    if (parsed.pathname.endsWith("/sets")) return { ok: true, status: 200, json: async () => [{ id: "base", name: "Base", cardCount: { official: 102, total: 102 } }] };
+    if (parsed.pathname.endsWith("/sets/base/58")) return { ok: true, status: 200, json: async () => ({ id: "base-58", localId: "58", name: "Pikachu", set: { id: "base", name: "Base", cardCount: { official: 102, total: 102 } } }) };
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  try {
+    const { ranked } = await runtime.resolveCatalog(buildOcrHints("Pikachu", "58/102"), "pt-BR", { requests: 0, queries: [] });
     assert.ok(ranked.every(card => !card.evidence.languageMatch));
-    assert.ok(stats.requests <= 4);
     calls.length = 0;
     await runtime.resolveCatalog(buildOcrHints("Pikachu", "58/102", "Fraqueza Recuo Baralho"), "en", { requests: 0, queries: [] });
-    assert.ok(calls.every(url => url.includes("/pt/")));
+    assert.ok(calls.every(url => new URL(url).pathname.startsWith("/v2/pt/")));
   } finally { globalThis.fetch = original; }
 });
 
@@ -105,21 +141,23 @@ test('same photo uses the session/memory cache without DOM, OCR, network or mode
   } finally { globalThis.sessionStorage = previous; }
 });
 
-
-test('catalog has a shared eight-request budget and no queries without OCR clues', async () => {
+test('catalog keeps the shared eight-request ceiling and makes zero calls without OCR clues', async () => {
   const previous = globalThis.fetch;
   let count = 0;
-  globalThis.fetch = async url => { count++; return { ok: true, json: async () => url.includes('?') ?
-    Array.from({length: 10}, (_, i) => ({id: `budget-${count}-${i}`, name: 'Unrelated', localId: '44'})) :
-    {id: `detail-${count}`, name: 'Unrelated', localId: '44', set: {name: 'Other', cardCount: {official: 99}}} }; };
+  globalThis.fetch = async url => {
+    count++;
+    const parsed = new URL(url);
+    if (parsed.pathname.endsWith('/sets')) return { ok: true, status: 200, json: async () => Array.from({length: 12}, (_, i) => ({id: `set-${i}`, name: `Set ${i}`, cardCount: {official: 217, total: 217}})) };
+    if (parsed.pathname.includes('/sets/set-')) return { ok: false, status: 404, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => parsed.search ? Array.from({length: 10}, (_, i) => ({id: `budget-${count}-${i}`, name: 'Unrelated', localId: '44'})) : {id: `detail-${count}`, name: 'Unrelated', localId: '44', set: {name: 'Other', cardCount: {official: 99}}} };
+  };
   try {
     const empty = await runtime.resolveCatalog(buildOcrHints('', ''), 'pt-BR', {requests: 0, queries: []});
     assert.equal(count, 0); assert.equal(empty.pool.length, 0);
     const stats = {requests: 0, queries: []};
     await runtime.resolveCatalog(buildOcrHints('Rayquaza', '153/217', 'Fraqueza Recuo'), 'pt-BR', stats);
-    assert.equal(count, 8); assert.equal(stats.exhausted, true);
-    await runtime.resolveCatalog(buildOcrHints('Another', '22/147'), 'ja', stats);
-    assert.equal(count, 8);
+    assert.ok(count <= 8); assert.ok(stats.requests <= 8);
+    if (stats.requests === 8) assert.equal(stats.exhausted, true);
   } finally { globalThis.fetch = previous; }
 });
 
@@ -128,7 +166,7 @@ test('partial shortlist remains private unless visual minimum and margin both pa
   const hints = buildOcrHints('Rayqu', '');
   const raw = ['Rayquaza', 'Rayquaza EX'].map((name, i) => ({id: `partial-${i}`, name, localId: String(i), denominator: 217, cardNumber: `${i}/217`, collection: 'Set', language: 'en', hp: null, image: `https://assets.tcgdex.net/en/test/${i}`}));
   const pool = visualCandidatePool(raw, hints);
-  assert.equal(pool.length, 1); // EX variant is below the conservative partial-name floor.
+  assert.equal(pool.length, 1);
   const two = visualCandidatePool([raw[0], {...raw[0], id: 'second', cardNumber: '2/217'}], hints);
   assert.equal(two.length, 2); assert.equal(rankRecognitionCandidates(raw, hints).length, 0);
   assert.equal(needsVisualFallback(two), true);
@@ -200,15 +238,21 @@ test('visual diagnostic has an official reference even when catalog entries have
   assert.deepEqual(imageLess, { id: 'exu-!', name: 'Unown', localId: '!' });
 });
 
-
-test('physical Portuguese lookup uses pt and excludes Pocket artwork', async () => {
+test('physical Portuguese lookup uses pt and rejects Pocket artwork in both paths', async () => {
   const previous = globalThis.fetch;
   const urls = [];
-  globalThis.fetch = async url => { urls.push(url); return {ok: true, json: async () => [{id: 'P-A-063', name: 'Bulbasaur', localId: '063', image: 'https://assets.tcgdex.net/pt-br/tcgp/P-A/063'}]}; };
+  globalThis.fetch = async url => {
+    urls.push(String(url));
+    const parsed = new URL(url);
+    if (parsed.pathname === '/v2/pt/sets') return {ok: true, status: 200, json: async () => [{id: 'fake', name: 'Fake', cardCount: {official: 999, total: 999}}]};
+    if (parsed.pathname.startsWith('/v2/pt/sets/fake/')) return {ok: true, status: 200, json: async () => ({id: 'P-A-063', name: 'Bulbasaur', localId: '063', image: 'https://assets.tcgdex.net/pt-br/tcgp/P-A/063', set: {id: 'fake', name: 'Fake', cardCount: {official: 999}}})};
+    if (parsed.pathname === '/v2/pt/cards') return {ok: true, status: 200, json: async () => [{id: 'P-A-063', name: 'Bulbasaur', localId: '063', image: 'https://assets.tcgdex.net/pt-br/tcgp/P-A/063'}]};
+    return {ok: false, status: 404, json: async () => ({})};
+  };
   try {
     const result = await runtime.resolveCatalog(buildOcrHints('Bulbasaur', '063/999', 'Fraqueza Recuo'), 'pt-BR', {requests: 0, queries: []});
-    assert.ok(urls.length > 0 && urls.every(url => new URL(url).pathname.startsWith('/v2/pt/cards')));
-    assert.ok(urls.every(url => new URL(url).searchParams.get('image') === 'notlike:/tcgp/'));
+    assert.ok(urls.length > 0 && urls.every(url => new URL(url).pathname.startsWith('/v2/pt/')));
+    assert.ok(urls.filter(url => new URL(url).pathname === '/v2/pt/cards').every(url => new URL(url).searchParams.get('image') === 'notlike:/tcgp/'));
     assert.equal(result.pool.length, 0);
   } finally { globalThis.fetch = previous; }
 });

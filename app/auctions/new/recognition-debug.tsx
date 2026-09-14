@@ -32,8 +32,10 @@ export default function RecognitionDebug({ file, result, busy }: { file: File; r
     <pre aria-live="polite" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 }}>{message}</pre>
     <details><summary>Detalhes do reconhecimento e opções do teste</summary>
     <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 }}>{JSON.stringify({
-      OCR: { nome: result?.hints.name ?? "", numero: result?.hints.cardNumber ?? "", idioma: result?.hints.language ?? null },
-      catalogo: { requests: result?.catalogRequests, antesDoFiltro: result?.catalogCandidatesBefore, depoisDoFiltro: result?.catalogCandidatesAfter, limiteAtingido: result?.catalogBudgetExhausted, cache: result?.source === "cache" },
+      OCR: { nome: result?.hints.name ?? "", numero: result?.hints.cardNumber ?? "", localId: result?.hints.localId ?? "", denominador: result?.hints.denominator ?? null, idioma: result?.hints.language ?? null },
+      catalogo: { estrategia: result?.catalogStrategy, setsCandidatos: result?.catalogSetCandidates, origemIndiceSets: result?.catalogSetIndexSource,
+        requests: result?.catalogRequests, consultas: result?.catalogQueries, antesDoFiltro: result?.catalogCandidatesBefore, depoisDoFiltro: result?.catalogCandidatesAfter,
+        limiteAtingido: result?.catalogBudgetExhausted, cache: result?.source === "cache" },
       visual: { acionada: result?.visualUsed ?? false, estado: result?.visualStatus ?? "aguardando", motivo: result?.visualReason,
         backend: result?.visualBackend, erro: result?.visualError, candidatos: result?.visualCandidateCount, similaridades: result?.visualSimilarities, inicializacaoMs: result?.visualInitMs },
     }, null, 2)}</pre>

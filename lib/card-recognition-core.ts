@@ -68,6 +68,10 @@ export type RecognitionResult = {
   catalogCandidatesBefore?: number;
   catalogCandidatesAfter?: number;
   catalogBudgetExhausted?: boolean;
+  catalogStrategy?: "set+localId" | "set-index+search" | "search";
+  catalogSetCandidates?: string[];
+  catalogSetIndexSource?: "memory" | "persistent" | "network" | "stale";
+  catalogQueries?: string[];
 };
 
 export type ManualFieldMap = Partial<Record<RecognizableField, boolean>>;
@@ -441,6 +445,7 @@ export function resultFromCandidates(hints: OcrHints, candidates: RecognitionCan
   if (!best) return { confidence: 0, level: "low", candidates: [], hints, source, elapsedMs, catalogRequests };
 
   const evidence = best.evidence ?? candidateEvidence(best, hints);
+  const runnerEvidence = runnerUp?.evidence ?? (runnerUp ? candidateEvidence(runnerUp, hints) : undefined);
   const separation = best.score - (runnerUp?.score ?? 0);
   let confidence = Math.min(98, Math.round(best.score * 0.9 + Math.min(8, Math.max(0, separation))));
 
@@ -450,8 +455,11 @@ export function resultFromCandidates(hints: OcrHints, candidates: RecognitionCan
   else if (evidence.nameSimilarity >= 0.98 && evidence.denominatorMatch) confidence = Math.max(confidence, 91);
   else if (evidence.nameSimilarity >= 0.98 && evidence.languageMatch) confidence = Math.max(confidence, 84);
 
-  // Two nearly-equal candidates must remain reviewable rather than looking certain.
-  if (runnerUp && separation < 7 && runnerUp.score >= 60) confidence = Math.min(confidence, 79);
+  // Two nearly-equal candidates must remain reviewable. This also covers the common
+  // case where two different sets share the same printed collector number.
+  if (runnerUp && separation < 7 && (runnerUp.score >= 60 || (evidence.fullNumberMatch && runnerEvidence?.fullNumberMatch))) {
+    confidence = Math.min(confidence, 79);
+  }
 
   const level = recognitionLevel(confidence);
   if (level === "low") return { confidence, level, candidates, hints, source, elapsedMs, catalogRequests };

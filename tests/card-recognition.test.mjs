@@ -92,6 +92,17 @@ test("ambiguous candidates stay reviewable instead of becoming certain", () => {
   assert.ok(result.candidates.length >= 2);
 });
 
+test("same collector number in two sets remains reviewable when the name was unreadable", () => {
+  const hints = buildOcrHints("", "58/102", "");
+  const ranked = rankRecognitionCandidates([
+    { id: "a", name: "Pikachu", collection: "Set A", cardNumber: "58/102", localId: "58", denominator: 102, language: "en", hp: 40, image: null },
+    { id: "b", name: "Raichu", collection: "Set B", cardNumber: "58/102", localId: "58", denominator: 102, language: "en", hp: 80, image: null },
+  ], hints);
+  const result = resultFromCandidates(hints, ranked, 200, 3);
+  assert.equal(result.level, "medium");
+  assert.ok(result.confidence <= 79);
+});
+
 test("manual corrections are never overwritten by later automatic recognition", () => {
   const current = { name: "Nome corrigido", collection: "Coleção manual", cardNumber: "35/64", language: "pt-BR", variant: "Normal" };
   const result = {

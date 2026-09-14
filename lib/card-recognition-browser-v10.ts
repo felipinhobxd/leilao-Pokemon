@@ -13,7 +13,7 @@ import { searchMiloVisual, shutdownMiloRecognition, miloRuntime, type MiloVisual
 import { preserveCandidateCollectorWidth, preserveResultCollectorWidth } from "./card-recognition-format";
 import { resultFromCandidates, type RecognitionCandidate, type RecognitionResult } from "./card-recognition-core";
 
-const CACHE_PREFIX = "leilao:card-recognition:v10-cornelius-ppocrv6-milo-v1:";
+const CACHE_PREFIX = "leilao:card-recognition:v10-cornelius-ppocrv6-medium-multipass-milo-v2:";
 const memory = new Map<string, RecognitionResult>();
 let tail: Promise<unknown> = Promise.resolve();
 
@@ -48,22 +48,10 @@ async function hashFile(file: File) {
   return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function cached(hash: string): V10RecognitionResult | null {
-  const inMemory = memory.get(hash) as V10RecognitionResult | undefined;
-  if (inMemory) return { ...inMemory, source: "cache", elapsedMs: 0, catalogRequests: 0 };
-  try {
-    const raw = sessionStorage.getItem(`${CACHE_PREFIX}${hash}`);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as V10RecognitionResult;
-    memory.set(hash, parsed);
-    return { ...parsed, source: "cache", elapsedMs: 0, catalogRequests: 0 };
-  } catch { return null; }
-}
-
 function save(hash: string, result: V10RecognitionResult) {
   if (memory.size >= 64) memory.delete(memory.keys().next().value!);
   memory.set(hash, result);
-  try { sessionStorage.setItem(`${CACHE_PREFIX}${hash}`, JSON.stringify(result)); } catch { /* optional cache */ }
+  try { sessionStorage.setItem(`${CACHE_PREFIX}${hash}`, JSON.stringify(result)); } catch { /* optional diagnostic cache */ }
 }
 
 function normalizedText(value: string | undefined) {
@@ -236,8 +224,9 @@ async function recognizeWithPpOcr(file: File, onProgress?: (message: string) => 
   if (pp.status !== "ok" || !pp.hints || (!pp.hints.name && !pp.hints.localId)) return { pp };
   const stats = { requests: 0, queries: [] as string[], exhausted: false };
   try {
-    onProgress?.("📚 Conferindo PP-OCRv6 no catálogo TCGdex…");
-    const catalog = await v9.resolveCatalog(pp.hints, pp.hints.language ?? undefined, stats);
+    const catalogLanguage = pp.hints.language ?? "pt-BR";
+    onProgress?.(`📚 Conferindo PP-OCRv6 no TCGdex · prioridade ${catalogLanguage}…`);
+    const catalog = await v9.resolveCatalog(pp.hints, catalogLanguage, stats);
     const result = resultFromCandidates(pp.hints, catalog.ranked, pp.elapsedMs, stats.requests, "ocr");
     result.catalogCandidatesBefore = catalog.before;
     result.catalogCandidatesAfter = catalog.ranked.length;
@@ -258,16 +247,14 @@ async function perform(
   file: File,
   _selectedLanguage?: string,
   onProgress?: (message: string) => void,
-  bypassCache = false,
+  _bypassCache = false,
 ): Promise<V10RecognitionResult> {
   const started = performance.now();
   const hash = await hashFile(file);
-  if (!bypassCache) {
-    const hit = cached(hash);
-    if (hit) { onProgress?.("Resultado reutilizado do cache neural"); return hit; }
-  }
 
-  onProgress?.("🧠 Reconhecimento neural · Cornelius + PP-OCRv6 Small + Milo…");
+  // Deliberately do not reuse final recognition results: every recognition request must
+  // run PP-OCRv6 again. Model files remain cached by the SDK/IndexedDB.
+  onProgress?.("🧠 Reconhecimento neural · Cornelius + PP-OCRv6 Medium multi-pass + Milo…");
   const normalization = await normalizeBest(file, onProgress);
 
   const ppAttempt = await recognizeWithPpOcr(normalization.file, onProgress);
@@ -294,7 +281,7 @@ async function perform(
   if (exactCatalogDecision(base)) {
     const checked = preserveExactBaseWithVisualCheck(base, global);
     const evidence = [...checked.independent];
-    if (ppSelected) evidence.push("ppocrv6-small");
+    if (ppSelected) evidence.push("ppocrv6-medium-multipass");
     if (ocrAgreement) evidence.push("ocr-cross-check");
     if (normalization.method === "cornelius") evidence.push("cornelius-corners");
     const final = withMetadata(checked.result, normalization, ppAttempt.pp, global, started, evidence);
@@ -305,7 +292,7 @@ async function perform(
   if (global.winner) {
     const fused = promoteVisualWinner(base, global, global.winner);
     const evidence = [...fused.independent];
-    if (ppSelected) evidence.push("ppocrv6-small");
+    if (ppSelected) evidence.push("ppocrv6-medium-multipass");
     if (ocrAgreement) evidence.push("ocr-cross-check");
     if (normalization.method === "cornelius") evidence.push("cornelius-corners");
     const final = withMetadata(fused.result, normalization, ppAttempt.pp, global, started, evidence);
@@ -337,7 +324,7 @@ async function perform(
   }
 
   const evidence = exactCatalogDecision(result) ? ["collector-number", "catalog-set", "ocr-name"] : [];
-  if (ppSelected) evidence.push("ppocrv6-small");
+  if (ppSelected) evidence.push("ppocrv6-medium-multipass");
   if (ocrAgreement) evidence.push("ocr-cross-check");
   if (normalization.method === "cornelius") evidence.push("cornelius-corners");
   const final = withMetadata(result, normalization, ppAttempt.pp, global, started, evidence);
@@ -373,11 +360,12 @@ export const resolveCatalog = v9.resolveCatalog;
 
 export const cardRecognitionRuntime = {
   version: 10,
-  engine: "cornelius+ppocrv6-small+milo",
-  cache: "v10-cornelius-ppocrv6-milo-v1",
+  engine: "cornelius+ppocrv6-medium-multipass+milo",
+  cache: "diagnostic-only-v10-ppocrv6-medium-multipass-v2",
   cascade: [
     "cornelius-neural-corner-normalization",
-    "ppocrv6-small-primary-ocr",
+    "ppocrv6-medium-full-card+top-name+bottom-number",
+    "pt-br-first-catalog-validation-when-language-uncertain",
     "tcgdex-catalog-validation",
     "v9-tesseract-regression-safety-net",
     "always-on-ocr-independent-milo-exact-print-retrieval",
@@ -387,6 +375,7 @@ export const cardRecognitionRuntime = {
   confidence: "evidence-score-not-calibrated-probability",
   requiresIndependentEvidenceForIdentified: true,
   uiLanguageIsNotRecognitionEvidence: true,
+  recognitionResultCacheReuse: false,
   cornelius: corneliusRuntime,
   neuralOcr: ppOcrRuntime,
   normalizationFallback: cardNormalizationRuntime,

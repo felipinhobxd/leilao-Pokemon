@@ -13,6 +13,7 @@ export type OcrHints = {
   text: string;
   nameConfidence?: number;
   numberConfidence?: number;
+  denominatorConfidence?: number;
   hpConfidence?: number;
   localIdVariants?: string[];
   denominatorVariants?: number[];

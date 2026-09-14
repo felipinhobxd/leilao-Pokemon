@@ -123,5 +123,7 @@ export function resultFromCandidates(
 /** Weak OCR is a hypothesis, never a catalog filter. Confidence is in [0, 1]. */
 export function catalogHints(hints: OcrHints): OcrHints {
   const reliable = Boolean(hints.localId && hints.denominator && (hints.numberConfidence ?? 0.8) >= 0.8);
-  return reliable ? hints : { ...hints, localId: "", cardNumber: "", denominator: null, localIdVariants: [], denominatorVariants: [] };
+  return reliable ? hints : { ...hints, localId: "", cardNumber: "",
+    denominator: (hints.denominatorConfidence ?? 0) >= 0.8 ? hints.denominator : null,
+    localIdVariants: [], denominatorVariants: (hints.denominatorConfidence ?? 0) >= 0.8 ? hints.denominatorVariants : [] };
 }

@@ -311,6 +311,7 @@ export async function runPpOcr(file: File, onProgress?: (message: string) => voi
     // Only a complete number on one footer line can be strong; concatenated fragments stay weak.
     hints.numberConfidence = confidence(numberLines.filter(line =>
       /[0-9]\s*[/|]\s*[0-9]/.test(line.text) && extractCardNumber(line.text).cardNumber === hints.cardNumber));
+    hints.denominatorConfidence = hints.numberConfidence;
     const hpLines = passes.find(pass => pass.label === "top-hp")?.lines ?? [];
     const hpHints = buildOcrHints(lineText(hpLines), "");
     if (hpHints.hp) hints.hp = hpHints.hp;

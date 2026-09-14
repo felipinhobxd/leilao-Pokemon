@@ -9,6 +9,7 @@ export function rankEvidence(candidates: RecognitionCandidate[], hints: OcrHints
     const e = candidateEvidence(candidate, safe);
     const nameStrength = hints.nameConfidence ?? (hints.name ? 0.7 : 0);
     const nameConflict = nameStrength >= 0.8 && e.nameSimilarity < 0.55;
+    const numberConflict = Boolean(safe.localId && safe.denominator && !e.fullNumberMatch);
     const visual = candidate.visualSimilarity;
     const visualConflict = typeof visual === "number" && visual >= 0 && visual < 0.52;
     const confirmed = memory.some(m => m.language === candidate.language && m.name === candidate.name &&
@@ -16,14 +17,15 @@ export function rankEvidence(candidates: RecognitionCandidate[], hints: OcrHints
     const weights = {
       name: e.nameSimilarity >= 0.9 ? 60 * nameStrength : e.nameSimilarity >= 0.72 ? 25 * nameStrength : 0,
       number: e.fullNumberMatch ? 45 : 0,
+      denominator: e.denominatorMatch ? 10 * (hints.denominatorConfidence ?? hints.numberConfidence ?? 0.8) : 0,
       hp: e.hpMatch ? 5 * (hints.hpConfidence ?? 0.5) : 0,
       language: e.languageMatch ? 5 * hints.languageConfidence / 100 : 0,
       visual: candidate.evidence?.visualMatch ? 50 : typeof visual === "number" && visual >= 0 ? Math.max(0, visual - 0.5) * 20 : 0,
       memory: confirmed ? 6 : 0,
-      contradictions: (nameConflict ? -120 : 0) + (visualConflict ? -65 : 0),
+      contradictions: (nameConflict ? -120 : 0) + (numberConflict ? -45 : 0) + (visualConflict ? -65 : 0),
     };
     return { ...candidate, evidence: { ...e, visualMatch: Boolean(candidate.evidence?.visualMatch) },
-      score: Object.values(weights).reduce((a, b) => a + b, 0), weights, nameConflict, visualConflict };
+      score: Object.values(weights).reduce((a, b) => a + b, 0), weights, nameConflict, numberConflict, visualConflict };
   }).sort((a, b) => b.score - a.score);
 }
 
@@ -33,7 +35,7 @@ export function decideRecognition(base: RecognitionResult, candidates: Recogniti
   const nameStrong = Boolean(best && (base.hints.nameConfidence ?? 0.7) >= 0.8 && best.evidence.nameSimilarity >= 0.9);
   const visualStrong = Boolean(best && visualStatus === "compared" && best.evidence.visualMatch && (best.visualSimilarity ?? 0) >= 0.78);
   const numberStrong = Boolean(best?.evidence.fullNumberMatch);
-  const conflict = Boolean(best && (best.nameConflict || best.visualConflict));
+  const conflict = Boolean(best && (best.nameConflict || best.numberConflict || best.visualConflict));
   const separated = Boolean(best && (!second || best.score - second.score >= 8));
   const status: Decision = !best || best.score <= 0 ? "SEM RESULTADO"
     : conflict ? "REVISAR"

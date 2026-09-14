@@ -104,3 +104,9 @@ test("a weak structural score cannot be promoted by a worker winner flag", () =>
   const d = { ...dragon, visualSimilarity: .63, evidence: { visualMatch: true } };
   assert.notEqual(decideRecognition(base(hints), [d], "compared").status, "IDENTIFICADA");
 });
+
+test("conflicting reliable number forces review despite name and visual agreement", () => {
+  const h = { ...hints, numberConfidence: .99 };
+  const d = { ...dragon, visualSimilarity: .95, evidence: { visualMatch: true } };
+  assert.equal(decideRecognition(base(h), [d], "compared").status, "REVISAR");
+});

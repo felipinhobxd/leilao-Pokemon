@@ -5,10 +5,12 @@ import fs from "node:fs";
 const fusion = fs.readFileSync(new URL("../lib/card-recognition-browser-v9.ts", import.meta.url), "utf8");
 const rescue = fs.readFileSync(new URL("../lib/card-recognition-rescue.ts", import.meta.url), "utf8");
 const legacy = fs.readFileSync(new URL("../lib/card-recognition-browser-v7.ts", import.meta.url), "utf8");
+const v10 = fs.readFileSync(new URL("../lib/card-recognition-browser-v10.ts", import.meta.url), "utf8");
 const tsconfig = JSON.parse(fs.readFileSync(new URL("../tsconfig.json", import.meta.url), "utf8"));
 
-test("runtime routes card recognition through a regression-safe three-stage fusion", () => {
-  assert.equal(tsconfig.compilerOptions.paths["@/lib/card-recognition-browser"][0], "./lib/card-recognition-browser-v9.ts");
+test("v9 remains a regression-safe internal fallback behind the v10 public alias", () => {
+  assert.equal(tsconfig.compilerOptions.paths["@/lib/card-recognition-browser"][0], "./lib/card-recognition-browser-v10.ts");
+  assert.match(v10, /import \* as v9 from "\.\/card-recognition-browser-v9"/);
   assert.match(fusion, /reconhecimento principal/);
   assert.match(fusion, /reconhecedor anterior/);
   assert.match(fusion, /resgate por foto inteira/);

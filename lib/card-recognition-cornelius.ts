@@ -163,7 +163,7 @@ export async function detectCorneliusQuad(source: HTMLCanvasElement): Promise<Co
     const cornerName = session.outputNames[0];
     const presenceName = session.outputNames[1];
     const sharpnessName = session.outputNames[2];
-    const raw = Array.from(outputs[cornerName].data, value => Number(value)).slice(0, 8);
+    const raw = Array.from(outputs[cornerName].data as ArrayLike<unknown>, value => Number(value)).slice(0, 8);
     if (raw.length !== 8 || raw.some(value => !Number.isFinite(value))) throw new Error("Saída de cantos Cornelius inválida.");
     const rawPoints: Array<[number, number]> = [];
     for (let i = 0; i < raw.length; i += 2) rawPoints.push([Math.max(0, Math.min(1, raw[i])), Math.max(0, Math.min(1, raw[i + 1]))]);

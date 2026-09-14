@@ -54,18 +54,36 @@ test("Milo runs before any exact OCR/catalog return and searches independently f
   assert.doesNotMatch(milo.slice(milo.indexOf("function topMatches"), milo.indexOf("function emptyEvidence")), /name|ocr|hint/i);
 });
 
-test("v10 invalidates old result cache after adding Cornelius and PP-OCRv6", () => {
-  assert.match(v10, /CACHE_PREFIX = "leilao:card-recognition:v10-cornelius-ppocrv6-milo-v1:"/);
-  assert.match(v10, /cache: "v10-cornelius-ppocrv6-milo-v1"/);
+test("v10 always reruns PP-OCRv6 instead of reusing a final recognition result", () => {
+  assert.match(v10, /CACHE_PREFIX = "leilao:card-recognition:v10-cornelius-ppocrv6-medium-multipass-milo-v2:"/);
+  assert.match(v10, /recognitionResultCacheReuse: false/);
+  assert.doesNotMatch(v10, /Resultado reutilizado do cache neural/);
+  assert.match(v10, /PP-OCRv6 Medium multi-pass/);
+});
+
+test("PP-OCRv6 Medium performs full-card and targeted name/number passes", () => {
+  assert.match(v10, /runPpOcr\(file, onProgress\)/);
+  assert.match(ppocr, /model: \{ det: "medium", rec: "medium" \}/);
+  assert.match(ppocr, /backend: "wasm"/);
+  assert.match(ppocr, /"top-name"/);
+  assert.match(ppocr, /"bottom-number"/);
+  assert.match(ppocr, /full-card\+top-name\+bottom-number/);
+  assert.match(ppocr, /inference: "local-browser"/);
+});
+
+test("uncertain Latin OCR searches pt-BR first without treating the UI selection as evidence", () => {
+  assert.match(v10, /const catalogLanguage = pp\.hints\.language \?\? "pt-BR"/);
+  assert.match(v10, /pt-br-first-catalog-validation-when-language-uncertain/);
+  assert.match(ppocr, /language: "ja"/);
+  assert.match(ppocr, /language: "en"/);
+  assert.match(ppocr, /language: "pt-BR"/);
 });
 
 test("Cornelius and PP-OCRv6 are local-first optional stages with safe fallbacks", () => {
   assert.match(v10, /normalizeCardWithCornelius\(file, onProgress\)/);
   assert.match(v10, /return normalizeCardPhoto\(file, onProgress\)/);
-  assert.match(v10, /runPpOcr\(file, onProgress\)/);
   assert.match(cornelius, /executionProviders: \["wasm"\]/);
   assert.match(cornelius, /inference: "local-browser"/);
-  assert.match(ppocr, /model: \{ det: "small", rec: "small" \}/);
   assert.match(ppocr, /backend: "wasm"/);
   assert.match(ppocr, /inference: "local-browser"/);
 });

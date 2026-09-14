@@ -279,6 +279,7 @@ async function dinoSimilarities(photo: Blob, images: string[]) {
   const query = await embed(photo);
   const similarities: number[] = [];
   for (const base of images) {
+    try {
     const { url, blob } = await getOfficialBlob(base);
     const key = `${activeModel}:${url}`;
     let embedding = embeddings.get(key);

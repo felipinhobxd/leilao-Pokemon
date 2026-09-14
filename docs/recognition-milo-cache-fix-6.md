@@ -1,0 +1,1 @@
+All Milo runtime files share one asset version identifier.

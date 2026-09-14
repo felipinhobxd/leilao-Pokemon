@@ -5,6 +5,7 @@ import type { RecognitionCandidate, RecognitionLanguage } from "./card-recogniti
 
 const DESCRIPTOR_BYTES = 36;
 const MAX_MATCHES = 3;
+const BOOTSTRAP_CONCURRENCY = 3;
 
 type MemoryRow = {
   id: string;
@@ -20,6 +21,16 @@ type MemoryRow = {
   similarity: number;
 };
 
+type BootstrapExample = {
+  imageSha256: string;
+  imageUrl: string;
+  name: string;
+  collection: string;
+  cardNumber: string;
+  language: RecognitionLanguage;
+  variant: string;
+};
+
 export type RecognitionMemoryOutcome = {
   status: "matched" | "no-match" | "unavailable" | "failed";
   fingerprint: string;
@@ -29,6 +40,8 @@ export type RecognitionMemoryOutcome = {
   elapsedMs: number;
   error?: string;
 };
+
+let bootstrapPromise: Promise<number> | null = null;
 
 function bytesToHex(bytes: Uint8Array) {
   return Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("");
@@ -131,23 +144,75 @@ async function authenticatedRequest(body: Record<string, unknown>) {
   });
 }
 
+async function rememberExample(example: BootstrapExample) {
+  try {
+    const response = await fetch(example.imageUrl, { cache: "force-cache", credentials: "omit" });
+    if (!response.ok) return false;
+    const fingerprint = await fingerprintRecognitionExample(await response.blob());
+    return rememberConfirmedCard({ fingerprint, ...example });
+  } catch {
+    return false;
+  }
+}
+
+async function bootstrapConfirmedCards(onProgress?: (message: string) => void) {
+  if (bootstrapPromise) return bootstrapPromise;
+  bootstrapPromise = (async () => {
+    const response = await authenticatedRequest({ action: "bootstrap" });
+    if (!response?.ok) return 0;
+    const payload = await response.json() as { examples?: BootstrapExample[] };
+    const examples = Array.isArray(payload.examples) ? payload.examples : [];
+    if (!examples.length) return 0;
+    onProgress?.(`🧠 Aprendendo com ${examples.length} carta(s) já confirmada(s)…`);
+    let learned = 0;
+    let cursor = 0;
+    await Promise.all(Array.from({ length: Math.min(BOOTSTRAP_CONCURRENCY, examples.length) }, async () => {
+      while (true) {
+        const index = cursor++;
+        if (index >= examples.length) return;
+        if (await rememberExample(examples[index])) learned += 1;
+      }
+    }));
+    return learned;
+  })().catch(() => 0);
+  return bootstrapPromise;
+}
+
+async function searchFingerprint(fingerprint: string) {
+  const response = await authenticatedRequest({ action: "search", fingerprint, limit: MAX_MATCHES });
+  if (!response) return null;
+  const payload = await response.json() as { matches?: MemoryRow[]; confident?: boolean; veryStrong?: boolean; error?: string };
+  if (!response.ok) throw new Error(payload.error || "Memória de reconhecimento indisponível.");
+  return {
+    matches: Array.isArray(payload.matches) ? payload.matches.slice(0, MAX_MATCHES) : [],
+    confident: Boolean(payload.confident),
+    veryStrong: Boolean(payload.veryStrong),
+  };
+}
+
 export async function lookupRecognitionMemory(blob: Blob, onProgress?: (message: string) => void): Promise<RecognitionMemoryOutcome> {
   const started = performance.now();
   let fingerprint = "";
   try {
     fingerprint = await fingerprintRecognitionExample(blob);
     onProgress?.("🧠 Consultando memória de cartas já confirmadas…");
-    const response = await authenticatedRequest({ action: "search", fingerprint, limit: MAX_MATCHES });
-    if (!response) return { status: "unavailable", fingerprint, matches: [], confident: false, veryStrong: false, elapsedMs: Math.round(performance.now() - started) };
-    const payload = await response.json() as { matches?: MemoryRow[]; confident?: boolean; veryStrong?: boolean; error?: string };
-    if (!response.ok) throw new Error(payload.error || "Memória de reconhecimento indisponível.");
-    const matches = Array.isArray(payload.matches) ? payload.matches.slice(0, MAX_MATCHES) : [];
+    let result = await searchFingerprint(fingerprint);
+    if (!result) return { status: "unavailable", fingerprint, matches: [], confident: false, veryStrong: false, elapsedMs: Math.round(performance.now() - started) };
+
+    // Import accepted cards lazily. Images remain in the existing card-images bucket; only
+    // the 36-byte visual descriptor and final labels are stored in the memory table.
+    const bootstrap = bootstrapConfirmedCards(onProgress);
+    if (!result.matches.length) {
+      const learned = await bootstrap;
+      if (learned) result = (await searchFingerprint(fingerprint)) ?? result;
+    }
+
     return {
-      status: matches.length ? "matched" : "no-match",
+      status: result.matches.length ? "matched" : "no-match",
       fingerprint,
-      matches,
-      confident: Boolean(payload.confident),
-      veryStrong: Boolean(payload.veryStrong),
+      matches: result.matches,
+      confident: result.confident,
+      veryStrong: result.veryStrong,
       elapsedMs: Math.round(performance.now() - started),
     };
   } catch (error) {
@@ -207,14 +272,13 @@ export async function rememberConfirmedCard(input: {
 }) {
   if (!/^[a-f0-9]{72}$/.test(input.fingerprint) || !/^[a-f0-9]{64}$/.test(input.imageSha256)) return false;
   const response = await authenticatedRequest({ action: "learn", ...input });
-  if (!response) return false;
-  if (!response.ok) return false;
-  return true;
+  return Boolean(response?.ok);
 }
 
 export const recognitionMemoryRuntime = {
   descriptor: "36-byte-artwork+broad+whole-dhash+rgb-histogram",
   storage: "supabase-confirmed-examples-metadata-only",
   imageStorage: "reuse-existing-card-images-object",
+  bootstrap: "accepted-cards-lazy-import-24-per-session",
   learning: "confirmed-example-memory-no-gradient-training",
 };

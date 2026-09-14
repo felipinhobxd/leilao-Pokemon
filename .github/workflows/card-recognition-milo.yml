@@ -1,6 +1,7 @@
 name: Card Recognition Milo Benchmark Assets
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - feat/card-recognition-v10

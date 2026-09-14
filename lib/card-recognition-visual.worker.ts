@@ -1,11 +1,13 @@
-// Exact-print matcher. Cheap structural comparison runs first; DINOv2 is only a tie-breaker.
+// Exact-print matcher. High-resolution structural matching runs first; a stronger DINOv2 model
+// is used only as a local tie-breaker on capable WebGPU hardware. WASM keeps the small model.
 import { pipeline, env, RawImage, type ImageFeatureExtractionPipeline } from "@huggingface/transformers";
 
 import { extractDinoEmbedding, cosineSimilarity } from "./card-recognition-embedding";
 
-const MODEL = "onnx-community/dinov2-small-ONNX";
-const MATCH_WIDTH = 48;
-const MATCH_HEIGHT = 66;
+const MODEL_SMALL = "onnx-community/dinov2-small-ONNX";
+const MODEL_STRONG = "onnx-community/dinov2-base-ONNX";
+const MATCH_WIDTH = 96;
+const MATCH_HEIGHT = 132;
 const MAX_NORMAL_CANDIDATES = 100;
 const MAX_DINO_CANDIDATES = 5;
 
@@ -14,6 +16,7 @@ if (env.backends.onnx.wasm) env.backends.onnx.wasm.numThreads = 1;
 
 let extractor: ImageFeatureExtractionPipeline | null = null;
 let backend = "";
+let activeModel = "";
 let initMs = 0;
 let embeddingDimension = 0;
 let embeddingOutput = "";
@@ -29,9 +32,14 @@ type Fingerprint = {
   histogram: Float32Array;
 };
 
-type BackendOption = { device: "webgpu" | "wasm"; dtype: "q4" | "int8" };
+type BackendOption = {
+  device: "webgpu" | "wasm";
+  dtype: "q4" | "int8";
+  model: string;
+  label: string;
+};
 
-function cachePut<T>(cache: Map<string, T>, key: string, value: T, limit = 96) {
+function cachePut<T>(cache: Map<string, T>, key: string, value: T, limit = 128) {
   if (cache.size >= limit) cache.delete(cache.keys().next().value!);
   cache.set(key, value);
 }
@@ -59,6 +67,8 @@ async function makeFingerprint(blob: Blob): Promise<Fingerprint> {
   try {
     const context = canvas.getContext("2d", { willReadFrequently: true });
     if (!context) throw new Error("Canvas visual indisponível");
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "high";
     context.drawImage(bitmap, 0, 0, MATCH_WIDTH, MATCH_HEIGHT);
     const data = context.getImageData(0, 0, MATCH_WIDTH, MATCH_HEIGHT).data;
     const gray = new Float32Array(MATCH_WIDTH * MATCH_HEIGHT);
@@ -96,7 +106,7 @@ function shiftedNcc(
   y0: number,
   x1: number,
   y1: number,
-  maxShift = 2,
+  maxShift = 3,
 ) {
   let best = -1;
   for (let dy = -maxShift; dy <= maxShift; dy += 1) {
@@ -114,7 +124,7 @@ function shiftedNcc(
           n += 1; sumA += a; sumB += b; sumAA += a * a; sumBB += b * b; sumAB += a * b;
         }
       }
-      if (n < 64) continue;
+      if (n < 128) continue;
       const numerator = n * sumAB - sumA * sumB;
       const denominator = Math.sqrt(Math.max(1e-10, (n * sumAA - sumA * sumA) * (n * sumBB - sumB * sumB)));
       best = Math.max(best, numerator / denominator);
@@ -123,10 +133,10 @@ function shiftedNcc(
   return Math.max(0, Math.min(1, (best + 1) / 2));
 }
 
-function shiftedEdgeCosine(left: Float32Array, right: Float32Array, maxShift = 2) {
+function shiftedEdgeCosine(left: Float32Array, right: Float32Array, maxShift = 3) {
   let best = 0;
-  const x0 = 4; const x1 = MATCH_WIDTH - 4;
-  const y0 = 10; const y1 = Math.round(MATCH_HEIGHT * 0.68);
+  const x0 = 7; const x1 = MATCH_WIDTH - 7;
+  const y0 = 15; const y1 = Math.round(MATCH_HEIGHT * 0.72);
   for (let dy = -maxShift; dy <= maxShift; dy += 1) {
     for (let dx = -maxShift; dx <= maxShift; dx += 1) {
       let dot = 0; let aa = 0; let bb = 0;
@@ -154,15 +164,20 @@ function histogramIntersection(left: Float32Array, right: Float32Array) {
 }
 
 function structuralSimilarity(photo: Fingerprint, official: Fingerprint) {
-  const artwork = shiftedNcc(photo.gray, official.gray, 4, 10, MATCH_WIDTH - 4, Math.round(MATCH_HEIGHT * 0.67), 2);
-  const whole = shiftedNcc(photo.gray, official.gray, 2, 2, MATCH_WIDTH - 2, MATCH_HEIGHT - 2, 2);
-  const edges = shiftedEdgeCosine(photo.edge, official.edge, 2);
+  // Card printings differ most in the artwork and footer/set-number area. Header/name and
+  // whole-card structure remain useful but get lower weight so glare/text do not dominate.
+  const header = shiftedNcc(photo.gray, official.gray, 7, 2, MATCH_WIDTH - 7, Math.round(MATCH_HEIGHT * 0.16), 3);
+  const artwork = shiftedNcc(photo.gray, official.gray, 7, Math.round(MATCH_HEIGHT * 0.10), MATCH_WIDTH - 7, Math.round(MATCH_HEIGHT * 0.58), 3);
+  const footer = shiftedNcc(photo.gray, official.gray, 4, Math.round(MATCH_HEIGHT * 0.80), MATCH_WIDTH - 4, MATCH_HEIGHT - 2, 3);
+  const whole = shiftedNcc(photo.gray, official.gray, 3, 2, MATCH_WIDTH - 3, MATCH_HEIGHT - 2, 3);
+  const edges = shiftedEdgeCosine(photo.edge, official.edge, 3);
   const color = histogramIntersection(photo.histogram, official.histogram);
-  return Math.max(0, Math.min(1, artwork * 0.52 + whole * 0.23 + edges * 0.20 + color * 0.05));
+  return Math.max(0, Math.min(1,
+    artwork * 0.39 + footer * 0.19 + header * 0.11 + whole * 0.12 + edges * 0.15 + color * 0.04));
 }
 
 async function compareStructurally(photo: Blob, images: string[]) {
-  self.postMessage({ progress: `🖼 Comparando arte e estrutura com ${images.length} impressões…` });
+  self.postMessage({ progress: `🖼 Comparando capa, nome e rodapé com ${images.length} impressões…` });
   const query = await makeFingerprint(photo);
   const similarities: number[] = [];
   for (const base of images) {
@@ -178,7 +193,7 @@ async function compareStructurally(photo: Blob, images: string[]) {
   const top = order[0];
   const second = order[1];
   const margin = top ? top.score - (second?.score ?? 0) : 0;
-  const winnerIndex = top && top.score >= 0.58 && margin >= 0.05 ? top.index : undefined;
+  const winnerIndex = top && top.score >= 0.62 && margin >= 0.035 ? top.index : undefined;
   return { similarities, winnerIndex, order };
 }
 
@@ -211,47 +226,63 @@ async function embed(image: Blob) {
 
 function backendOptions(testBackend?: string) {
   const options: BackendOption[] = [];
-  if ("gpu" in navigator) options.push({ device: "webgpu", dtype: "q4" });
-  options.push({ device: "wasm", dtype: "q4" }, { device: "wasm", dtype: "int8" });
-  return testBackend && testBackend !== "auto"
-    ? options.filter(option => `${option.device}/${option.dtype}` === testBackend)
-    : options;
+  // RX 570-class hardware benefits from WebGPU when the browser exposes it. Use the larger
+  // base model there, but never force it onto CPU/WASM where it would be unnecessarily heavy.
+  if ("gpu" in navigator) {
+    options.push({ device: "webgpu", dtype: "q4", model: MODEL_STRONG, label: "webgpu/q4 · dinov2-base" });
+    options.push({ device: "webgpu", dtype: "q4", model: MODEL_SMALL, label: "webgpu/q4 · dinov2-small" });
+  }
+  options.push(
+    { device: "wasm", dtype: "q4", model: MODEL_SMALL, label: "wasm/q4 · dinov2-small" },
+    { device: "wasm", dtype: "int8", model: MODEL_SMALL, label: "wasm/int8 · dinov2-small" },
+  );
+  if (!testBackend || testBackend === "auto") return options;
+  const requested = testBackend.split(" · ")[0];
+  return options.filter(option => `${option.device}/${option.dtype}` === requested);
 }
 
 async function ensureExtractor(testBackend?: string) {
-  if (extractor && testBackend && testBackend !== "auto" && backend !== testBackend) {
-    await extractor.dispose(); extractor = null; embeddings.clear();
+  const options = backendOptions(testBackend);
+  if (!options.length) throw new Error(`${testBackend}: backend não disponível neste navegador`);
+  if (extractor && testBackend && testBackend !== "auto" && !backend.startsWith(testBackend)) {
+    await extractor.dispose(); extractor = null; embeddings.clear(); activeModel = "";
   }
   if (extractor) return;
   const errors: string[] = [];
-  const options = backendOptions(testBackend);
-  if (!options.length) throw new Error(`${testBackend}: backend não disponível neste navegador`);
   for (const option of options) {
     try {
       const started = performance.now();
-      self.postMessage({ progress: "🧠 Preparando IA local pela primeira vez ou recuperando o cache…" });
-      extractor = await pipeline("image-feature-extraction", MODEL, { ...option, progress_callback: () => {} });
+      self.postMessage({ progress: option.model === MODEL_STRONG
+        ? "🧠 Carregando IA visual local reforçada (WebGPU)…"
+        : "🧠 Preparando IA visual local leve…" });
+      extractor = await pipeline("image-feature-extraction", option.model, {
+        device: option.device,
+        dtype: option.dtype,
+        progress_callback: () => {},
+      });
       initMs = Math.round(performance.now() - started);
-      backend = `${option.device}/${option.dtype}`;
+      backend = option.label;
+      activeModel = option.model;
       return;
     } catch (error) {
-      errors.push(`${option.device}/${option.dtype}: ${errorText(error)}`);
-      await extractor?.dispose(); extractor = null; embeddings.clear();
+      errors.push(`${option.label}: ${errorText(error)}`);
+      await extractor?.dispose(); extractor = null; embeddings.clear(); activeModel = "";
     }
   }
   throw new Error(errors.join(" | ") || "Modelo quantizado indisponível");
 }
 
 async function dinoSimilarities(photo: Blob, images: string[]) {
-  self.postMessage({ progress: "🧠 Desempate local por embeddings…" });
+  self.postMessage({ progress: `🧠 Desempate local por ${activeModel.includes("base") ? "DINOv2-base" : "DINOv2-small"}…` });
   const query = await embed(photo);
   const similarities: number[] = [];
   for (const base of images) {
     const { url, blob } = await getOfficialBlob(base);
-    let embedding = embeddings.get(url);
+    const key = `${activeModel}:${url}`;
+    let embedding = embeddings.get(key);
     if (!embedding) {
       embedding = await embed(blob);
-      cachePut(embeddings, url, embedding, 64);
+      cachePut(embeddings, key, embedding, 64);
     }
     similarities.push(cosineSimilarity(query, embedding));
   }
@@ -270,20 +301,20 @@ async function normalCompare(photo: Blob, images: string[]) {
     return {
       similarities: structural.similarities,
       winnerIndex: structural.winnerIndex,
-      backend: "structural",
+      backend: "structural-96x132",
       initMs: 0,
       embeddingDimension: 0,
-      embeddingOutput: "structural/artwork+ncc+edges+histogram",
+      embeddingOutput: "structural/header+artwork+footer+ncc+edges+histogram",
     };
   }
 
   const selected = structural.order.slice(0, MAX_DINO_CANDIDATES);
   if (selected.length < 2) return {
     similarities: structural.similarities,
-    backend: "structural",
+    backend: "structural-96x132",
     initMs: 0,
     embeddingDimension: 0,
-    embeddingOutput: "structural/artwork+ncc+edges+histogram",
+    embeddingOutput: "structural/header+artwork+footer+ncc+edges+histogram",
   };
 
   try {
@@ -294,27 +325,26 @@ async function normalCompare(photo: Blob, images: string[]) {
     const dinoTop = dinoOrder[0];
     const structuralMargin = structuralTop.score - (selected[1]?.score ?? 0);
     const dinoMargin = dinoTop.score - (dinoOrder[1]?.score ?? 0);
-    // DINOv2 is semantic, not print-identification AI. It may confirm the structural winner,
-    // but it is never allowed to override a different artwork winner.
-    const winnerIndex = dinoTop.index === 0 && structuralTop.score >= 0.50 && structuralMargin >= 0.015 && dinoMargin >= 0.01
+    // Neural embeddings are a confirmation signal, never permission to replace a different
+    // exact-art structural winner. This avoids "same Pokémon, wrong printing" errors.
+    const winnerIndex = dinoTop.index === 0 && structuralTop.score >= 0.52 && structuralMargin >= 0.012 && dinoMargin >= 0.008
       ? structuralTop.index
       : undefined;
     return {
       similarities: structural.similarities,
       winnerIndex,
-      backend: `${backend}+structural`,
+      backend: `${backend}+structural-96x132`,
       initMs,
       embeddingDimension,
       embeddingOutput,
     };
   } catch (error) {
-    // Exact-art matching remains useful even when model download/WebGPU/WASM fails.
     return {
       similarities: structural.similarities,
-      backend: `structural (DINO indisponível: ${errorText(error)})`,
+      backend: `structural-96x132 (IA indisponível: ${errorText(error)})`,
       initMs: 0,
       embeddingDimension: 0,
-      embeddingOutput: "structural/artwork+ncc+edges+histogram",
+      embeddingOutput: "structural/header+artwork+footer+ncc+edges+histogram",
     };
   }
 }

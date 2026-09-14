@@ -1,0 +1,1 @@
+Model, index, metadata and stats URLs now carry the same cache-busting version.

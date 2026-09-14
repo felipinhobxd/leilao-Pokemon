@@ -42,6 +42,14 @@
 .recognition-candidates>span{grid-column:1/-1;color:var(--muted);font-size:.82rem;font-weight:700}
 .recognition-candidates button{display:grid;justify-items:start;text-align:left;gap:3px;min-width:0;min-height:58px}
 .recognition-candidates button strong,.recognition-candidates button small{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.recognition-inspector{display:grid;gap:12px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--surface-raised)}
+.recognition-large-preview{display:grid;gap:7px;justify-items:start}
+.recognition-large-preview img{display:block;width:min(100%,420px);max-height:620px;object-fit:contain;border:1px solid var(--line);border-radius:12px;background:var(--thumb-bg);box-shadow:var(--shadow)}
+.recognition-large-preview small{max-width:620px;color:var(--muted);line-height:1.4}
+.recognition-breakdown{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.recognition-breakdown>div{display:grid;gap:4px;min-width:0;padding:9px 10px;border:1px solid var(--line);border-radius:9px;background:var(--surface-soft)}
+.recognition-breakdown span{font-size:.76rem;color:var(--muted);font-weight:700}
+.recognition-breakdown strong{overflow-wrap:anywhere}
 .value-row{display:grid;grid-template-columns:minmax(160px,1.4fr) repeat(6,minmax(100px,1fr));gap:10px;align-items:end;padding:12px}
 .value-row>div:first-child{display:grid;gap:4px}
 .value-row>div:first-child span{font-size:.82rem;color:var(--muted)}
@@ -71,6 +79,7 @@
   .value-row{grid-template-columns:repeat(3,minmax(0,1fr))}
   .review-summary,.queue-summary{grid-template-columns:repeat(2,minmax(0,1fr))}
   .recognition-candidates{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .recognition-breakdown{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 
 @media(max-width:700px){
@@ -83,6 +92,8 @@
   .recognition-box{grid-template-columns:1fr}
   .recognition-box>button{width:100%}
   .recognition-candidates{grid-template-columns:1fr}
+  .recognition-breakdown{grid-template-columns:1fr 1fr}
+  .recognition-large-preview img{width:min(100%,320px);max-height:470px}
   .bulk-bar{display:grid;grid-template-columns:minmax(0,1fr) auto}
   .bulk-bar label{min-width:0}
   .review-summary,.queue-summary{grid-template-columns:1fr 1fr}
@@ -94,7 +105,7 @@
 @media(max-width:480px){
   .bulk-bar{grid-template-columns:1fr}
   .bulk-bar button{width:100%}
-  .review-summary,.queue-summary{grid-template-columns:1fr}
+  .review-summary,.queue-summary,.recognition-breakdown{grid-template-columns:1fr}
   .wizard-footer{flex-wrap:wrap}
   .wizard-footer>a,.wizard-footer>button{flex:1 1 145px;min-width:0}
   .wizard-footer button:last-child{min-inline-size:0}

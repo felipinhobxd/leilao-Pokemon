@@ -1,0 +1,13 @@
+[
+  {
+    "fixtureId": "card-001",
+    "cardId": "me03-066",
+    "name": "Fletchling",
+    "set": "Equilíbrio Perfeito",
+    "cardNumber": "066/88",
+    "language": "pt-BR",
+    "variant": null,
+    "image": "private/card-001.jpg",
+    "publishable": false
+  }
+]

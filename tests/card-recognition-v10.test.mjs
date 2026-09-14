@@ -7,6 +7,7 @@ const v10 = fs.readFileSync(new URL("../lib/card-recognition-browser-v10.ts", im
 const milo = fs.readFileSync(new URL("../lib/card-recognition-milo.ts", import.meta.url), "utf8");
 const normalize = fs.readFileSync(new URL("../lib/card-recognition-normalize.ts", import.meta.url), "utf8");
 const wizard = fs.readFileSync(new URL("../app/auctions/new/bulk-wizard.tsx", import.meta.url), "utf8");
+const debugUi = fs.readFileSync(new URL("../app/auctions/new/recognition-debug.tsx", import.meta.url), "utf8");
 const tsconfig = JSON.parse(fs.readFileSync(new URL("../tsconfig.json", import.meta.url), "utf8"));
 const gitignore = fs.readFileSync(new URL("../.gitignore", import.meta.url), "utf8");
 
@@ -38,16 +39,31 @@ test("default UI language is not evidence and v10 does not forward it to inferen
   assert.doesNotMatch(v10, /v9\.recognizePokemonCard\([^\n]+selectedLanguage/);
 });
 
-test("OCR can be completely wrong without blocking Milo image-only retrieval", () => {
-  const visualCall = v10.indexOf("searchMiloVisual(normalization.blob");
-  const exactExit = v10.indexOf("exactCatalogDecision(base)");
-  assert.ok(visualCall > exactExit && visualCall > 0);
+test("Milo runs before any exact OCR/catalog return and searches independently from OCR", () => {
+  const visualCall = v10.indexOf("const global = await searchMiloVisual(normalization.blob");
+  const exactDecision = v10.indexOf("if (exactCatalogDecision(base))", visualCall);
+  assert.ok(visualCall > 0 && exactDecision > visualCall, "Milo must run before accepting an exact OCR/catalog decision");
+  assert.match(v10, /Milo now runs for every non-cached recognition/);
+  assert.match(v10, /always-on-ocr-independent-milo-exact-print-retrieval/);
   assert.match(milo, /discoveryDependsOnOcr: false/);
   assert.match(milo, /function topMatches\(index: LoadedIndex, query: Float32Array\)/);
   assert.match(milo, /const matches = topMatches\(index, encoded\.embedding\)/);
-  // Candidate discovery is embedding -> global index. OCR hints only enter after Top-K exists.
   assert.match(milo, /const matches = topMatches\(index, encoded\.embedding\);\s*let candidates = shortlist\(index, matches, language\);\s*const detailIndexes = chooseDetailIndexes\(candidates, hints\)/s);
   assert.doesNotMatch(milo.slice(milo.indexOf("function topMatches"), milo.indexOf("function emptyEvidence")), /name|ocr|hint/i);
+});
+
+test("v10 invalidates old result cache after making Milo mandatory", () => {
+  assert.match(v10, /CACHE_PREFIX = "leilao:card-recognition:v10-milo-always-v1:"/);
+  assert.match(v10, /cache: "v10-milo-always-v1"/);
+});
+
+test("debug UI tests and reports the actual v10 Milo retriever instead of only legacy DINO", () => {
+  assert.match(debugUi, /Testar IA v10\/Milo/);
+  assert.match(debugUi, /searchMiloVisual\(normalized\.blob/);
+  assert.match(debugUi, /impressõesNoIndice/);
+  assert.match(debugUi, /Runtime: reconhecimento v\{cardRecognitionRuntime\.version\}/);
+  assert.match(debugUi, /dinoLegacy/);
+  assert.doesNotMatch(debugUi, /recognizeVisually/);
 });
 
 test("Milo normalizes real-photo lighting before embedding without using card metadata", () => {

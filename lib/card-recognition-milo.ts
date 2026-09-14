@@ -3,11 +3,18 @@
 import { candidateEvidence, type OcrHints, type RecognitionCandidate, type RecognitionLanguage } from "./card-recognition-core";
 import { preserveCandidateCollectorWidth } from "./card-recognition-format";
 
-const MODEL_URL = "/card-recognition/milo/model.onnx";
-const INDEX_URL = "/card-recognition/milo/index-int8.bin";
-const META_URL = "/card-recognition/milo/index.meta.tsv";
-const CACHE_NAME = "leilao-card-recognition-milo-v1";
+const ASSET_VERSION = "milo-v1-19501x128-20260914";
+const ASSET_BASE = "/card-recognition/milo";
+const MODEL_PATH = `${ASSET_BASE}/model.onnx`;
+const INDEX_PATH = `${ASSET_BASE}/index-int8.bin`;
+const META_PATH = `${ASSET_BASE}/index.meta.tsv`;
+const STATS_PATH = `${ASSET_BASE}/index.stats.json`;
+const CACHE_NAME = `leilao-card-recognition-${ASSET_VERSION}`;
+const LEGACY_CACHE_NAMES = ["leilao-card-recognition-milo-v1"];
 const DIMENSIONS = 128;
+const EXPECTED_CARDS = 19_501;
+const EXPECTED_INDEX_BYTES = EXPECTED_CARDS * DIMENSIONS;
+const EXPECTED_MODEL_BYTES = 5_191_100;
 const INT8_SCALE = 127;
 const RETRIEVAL_K = 50;
 const DISPLAY_K = 20;
@@ -20,6 +27,14 @@ type Session = import("onnxruntime-web").InferenceSession;
 type Entry = { id: string; image: string; localId: string; name: string };
 type LoadedIndex = { entries: Entry[]; vectors: Int8Array };
 type MiloCandidate = RecognitionCandidate & { retrievalRank?: number; retrievalCosine?: number };
+type MiloStats = {
+  version?: number;
+  cardsIndexed?: number;
+  embeddingDimension?: number;
+  int8IndexBytes?: number;
+  modelBytes?: number;
+  int8Scale?: number;
+};
 
 export type MiloVisualResult = {
   status: "unavailable" | "searched" | "compared" | "failed";
@@ -38,13 +53,35 @@ let indexPromise: Promise<LoadedIndex> | null = null;
 let sessionIdle: ReturnType<typeof setTimeout> | undefined;
 const details = new Map<string, Promise<MiloCandidate | null>>();
 
-async function cachedFetch(url: string) {
-  if (typeof caches === "undefined") return fetch(url, { cache: "force-cache" });
-  const cache = await caches.open(CACHE_NAME);
-  const hit = await cache.match(url);
-  if (hit) return hit;
-  const response = await fetch(url, { cache: "force-cache" });
-  if (response.ok) await cache.put(url, response.clone());
+function versionedAssetUrl(path: string, retryToken?: string) {
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}v=${encodeURIComponent(ASSET_VERSION)}${retryToken ? `&retry=${encodeURIComponent(retryToken)}` : ""}`;
+}
+
+async function deleteNamedCache(name: string) {
+  if (typeof caches === "undefined") return;
+  try { await caches.delete(name); } catch { /* Cache Storage is an optimization only. */ }
+}
+
+async function clearMiloAssetCaches() {
+  await Promise.all([CACHE_NAME, ...LEGACY_CACHE_NAMES].map(deleteNamedCache));
+}
+
+async function fetchAsset(path: string, bypassCache = false, retryToken?: string) {
+  const url = versionedAssetUrl(path, retryToken);
+  if (!bypassCache && typeof caches !== "undefined") {
+    const cache = await caches.open(CACHE_NAME);
+    const hit = await cache.match(url);
+    if (hit) return hit;
+  }
+
+  // Do not delegate asset generation consistency to the browser's HTTP cache. The Cache
+  // Storage entry above is keyed by ASSET_VERSION, while the network fetch itself is fresh.
+  const response = await fetch(url, { cache: "no-store", credentials: "same-origin" });
+  if (response.ok && !bypassCache && typeof caches !== "undefined") {
+    const cache = await caches.open(CACHE_NAME);
+    await cache.put(url, response.clone());
+  }
   return response;
 }
 
@@ -55,27 +92,94 @@ function parseMeta(text: string) {
   }).filter(entry => entry.id && entry.image);
 }
 
+function validateStats(stats: MiloStats) {
+  const cards = Number(stats.cardsIndexed ?? 0);
+  const dimensions = Number(stats.embeddingDimension ?? 0);
+  const bytes = Number(stats.int8IndexBytes ?? 0);
+  const modelBytes = Number(stats.modelBytes ?? 0);
+  const expectedBytes = cards * dimensions;
+  if (cards !== EXPECTED_CARDS || dimensions !== DIMENSIONS || bytes !== expectedBytes || bytes !== EXPECTED_INDEX_BYTES) {
+    throw new Error(`Manifesto Milo incompatível: cards=${cards}, dimensão=${dimensions}, bytes=${bytes}, esperado=${EXPECTED_CARDS}x${DIMENSIONS}=${EXPECTED_INDEX_BYTES}.`);
+  }
+  if (modelBytes && modelBytes !== EXPECTED_MODEL_BYTES) {
+    throw new Error(`Modelo Milo incompatível com o manifesto: bytes=${modelBytes}, esperado=${EXPECTED_MODEL_BYTES}.`);
+  }
+  if (stats.int8Scale != null && Number(stats.int8Scale) !== INT8_SCALE) {
+    throw new Error(`Escala Milo incompatível: ${stats.int8Scale}, esperado=${INT8_SCALE}.`);
+  }
+  return { cards, dimensions, bytes };
+}
+
+async function loadIndexAttempt(bypassCache: boolean, retryToken?: string) {
+  const [statsResponse, metaResponse, indexResponse] = await Promise.all([
+    fetchAsset(STATS_PATH, bypassCache, retryToken),
+    fetchAsset(META_PATH, bypassCache, retryToken),
+    fetchAsset(INDEX_PATH, bypassCache, retryToken),
+  ]);
+  if (!statsResponse.ok || !metaResponse.ok || !indexResponse.ok) {
+    throw new Error(`Assets Milo indisponíveis: stats=${statsResponse.status}, meta=${metaResponse.status}, index=${indexResponse.status}.`);
+  }
+
+  const [statsRaw, meta, buffer] = await Promise.all([
+    statsResponse.json() as Promise<MiloStats>,
+    metaResponse.text(),
+    indexResponse.arrayBuffer(),
+  ]);
+  const manifest = validateStats(statsRaw);
+  const entries = parseMeta(meta);
+  const vectors = new Int8Array(buffer);
+  const expectedBytes = entries.length * manifest.dimensions;
+  if (entries.length !== manifest.cards || vectors.byteLength !== manifest.bytes || vectors.byteLength !== expectedBytes) {
+    throw new Error(
+      `Índice Milo incompatível: meta=${entries.length}, bytes=${vectors.byteLength}, dimensão=${manifest.dimensions}, ` +
+      `esperado=${manifest.cards} cards/${manifest.bytes} bytes.`,
+    );
+  }
+  return { entries, vectors } satisfies LoadedIndex;
+}
+
 async function loadIndex() {
   indexPromise ??= (async () => {
-    const [metaResponse, indexResponse] = await Promise.all([cachedFetch(META_URL), cachedFetch(INDEX_URL)]);
-    if (!metaResponse.ok || !indexResponse.ok) throw new Error("Índice neural Milo ainda não está disponível.");
-    const [meta, buffer] = await Promise.all([metaResponse.text(), indexResponse.arrayBuffer()]);
-    const entries = parseMeta(meta);
-    const vectors = new Int8Array(buffer);
-    if (!entries.length || vectors.length !== entries.length * DIMENSIONS) throw new Error("Índice Milo incompatível com os metadados.");
-    return { entries, vectors };
+    // Remove the old unversioned cache once. It can contain meta/index files from different
+    // generations and was the source of the real-browser "incompatível" failure.
+    await Promise.all(LEGACY_CACHE_NAMES.map(deleteNamedCache));
+    try {
+      return await loadIndexAttempt(false);
+    } catch (firstError) {
+      // Self-heal once: remove only Milo caches and bypass both Cache Storage and HTTP cache.
+      await clearMiloAssetCaches();
+      try {
+        return await loadIndexAttempt(true, `${Date.now()}`);
+      } catch (secondError) {
+        const first = firstError instanceof Error ? firstError.message : String(firstError);
+        const second = secondError instanceof Error ? secondError.message : String(secondError);
+        throw new Error(`Falha ao carregar o índice Milo após atualização automática. 1ª tentativa: ${first} 2ª tentativa: ${second}`);
+      }
+    }
   })().catch(error => { indexPromise = null; throw error; });
   return indexPromise;
+}
+
+async function loadModelBytes() {
+  let response = await fetchAsset(MODEL_PATH);
+  let model = response.ok ? await response.arrayBuffer() : null;
+  if (!response.ok || !model || model.byteLength !== EXPECTED_MODEL_BYTES) {
+    await clearMiloAssetCaches();
+    response = await fetchAsset(MODEL_PATH, true, `${Date.now()}`);
+    model = response.ok ? await response.arrayBuffer() : null;
+  }
+  if (!response.ok || !model) throw new Error(`Modelo Milo indisponível: HTTP ${response.status}.`);
+  if (model.byteLength !== EXPECTED_MODEL_BYTES) {
+    throw new Error(`Modelo Milo incompatível: bytes=${model.byteLength}, esperado=${EXPECTED_MODEL_BYTES}.`);
+  }
+  return model;
 }
 
 async function loadSession() {
   clearTimeout(sessionIdle);
   sessionPromise ??= (async () => {
-    const ort = await (ortPromise ??= import("onnxruntime-web"));
+    const [ort, model] = await Promise.all([ortPromise ??= import("onnxruntime-web"), loadModelBytes()]);
     ort.env.wasm.numThreads = 1;
-    const response = await cachedFetch(MODEL_URL);
-    if (!response.ok) throw new Error("Modelo Milo ainda não está disponível.");
-    const model = await response.arrayBuffer();
     if (typeof navigator !== "undefined" && "gpu" in navigator) {
       try {
         const session = await ort.InferenceSession.create(model.slice(0), { executionProviders: ["webgpu"] });
@@ -324,6 +428,8 @@ export function shutdownMiloRecognition() {
 export const miloRuntime = {
   model: "HanClinto/milo v1.0.0",
   modelLicense: "AGPL-3.0",
+  assetVersion: ASSET_VERSION,
+  expectedCards: EXPECTED_CARDS,
   dimensions: DIMENSIONS,
   indexQuantization: "int8/127",
   retrievalK: RETRIEVAL_K,

@@ -2,7 +2,7 @@
 
 import * as v9 from "./card-recognition-browser-v9";
 import { normalizeCardPhoto, cardNormalizationRuntime, type CardNormalization } from "./card-recognition-normalize";
-import { searchGlobalVisual, shutdownGlobalVisualRecognition, globalVisualRuntime, type GlobalVisualResult } from "./card-recognition-global";
+import { searchMiloVisual, shutdownMiloRecognition, miloRuntime, type MiloVisualResult } from "./card-recognition-milo";
 import { preserveCandidateCollectorWidth, preserveResultCollectorWidth } from "./card-recognition-format";
 import type { RecognitionCandidate, RecognitionResult } from "./card-recognition-core";
 
@@ -16,7 +16,7 @@ export type V10RecognitionResult = RecognitionResult & {
   confidenceKind?: "evidence-score-not-calibrated-probability";
   normalization?: { method: CardNormalization["method"]; confidence: number; rotation: number };
   globalVisual?: {
-    status: GlobalVisualResult["status"];
+    status: MiloVisualResult["status"];
     indexCandidates: number;
     elapsedMs: number;
     catalogRequests: number;
@@ -96,7 +96,7 @@ function uniqueCandidates(values: RecognitionCandidate[]) {
 function withMetadata(
   rawResult: RecognitionResult,
   normalization: CardNormalization,
-  global: GlobalVisualResult | undefined,
+  global: MiloVisualResult | undefined,
   started: number,
   evidence: string[],
 ): V10RecognitionResult {
@@ -120,13 +120,13 @@ function withMetadata(
   return value;
 }
 
-function promoteVisualWinner(base: RecognitionResult, global: GlobalVisualResult, winnerRaw: RecognitionCandidate) {
+function promoteVisualWinner(base: RecognitionResult, global: MiloVisualResult, winnerRaw: RecognitionCandidate) {
   const winner = preserveCandidateCollectorWidth(winnerRaw);
   const baseTop = base.candidates[0];
   const exactNumber = numberAgrees(base, winner);
   const catalogAgreement = sameCard(baseTop, winner);
   const nameAgreement = Boolean(base.hints.name && normalizedText(base.hints.name) === normalizedText(winner.name));
-  const independent = ["global-visual"];
+  const independent = ["milo-visual-retrieval"];
   if (exactNumber) independent.push("collector-number");
   if (catalogAgreement) independent.push("catalog-id");
   if (nameAgreement) independent.push("ocr-name");
@@ -142,8 +142,8 @@ function promoteVisualWinner(base: RecognitionResult, global: GlobalVisualResult
     variant: winner.variant ?? base.variant,
   };
 
-  // One visual opinion cannot become fake certainty. IDENTIFICADA needs an independent
-  // printed-number/catalog agreement; otherwise the visual result remains a suggestion.
+  // Retrieval similarity is not a probability. One visual opinion never becomes IDENTIFICADA.
+  // High confidence still requires an independent collector-number/catalog agreement.
   if (exactNumber || (catalogAgreement && nameAgreement)) {
     result.level = "high";
     result.confidence = exactNumber && catalogAgreement ? 94 : 89;
@@ -168,7 +168,7 @@ async function perform(
   }
 
   // selectedLanguage is intentionally not forwarded here. A default UI value is not evidence.
-  // Detected OCR language is allowed to influence catalog localization only after it is observed.
+  // Detected OCR language may localize TCGdex only after the image has produced its own Top-K.
   const normalization = await normalizeCardPhoto(file, onProgress);
   onProgress?.("🔎 OCR + catálogo sobre a carta retificada…");
   const base = await v9.recognizePokemonCard(normalization.file, undefined, onProgress, { bypassCache: true });
@@ -177,14 +177,15 @@ async function perform(
     const final = withMetadata({ ...base }, normalization, undefined, started, ["collector-number", "catalog-set", "ocr-name"]);
     final.level = "high";
     final.decisionStatus = "IDENTIFICADA";
-    // Existing 99s were heuristic percentages. v10 deliberately caps an uncalibrated score.
     final.confidence = Math.min(92, Math.max(86, base.confidence));
     save(hash, final);
     return final;
   }
 
   const detectedLanguage = base.hints.language ?? undefined;
-  const global = await searchGlobalVisual(normalization.blob, detectedLanguage, onProgress);
+  // Candidate discovery is image-only. OCR hints are applied only after the neural Top-K exists,
+  // when the shortlist is enriched/re-ranked with printed metadata.
+  const global = await searchMiloVisual(normalization.blob, detectedLanguage, base.hints, onProgress);
   if (global.winner) {
     const fused = promoteVisualWinner(base, global, global.winner);
     const final = withMetadata(fused.result, normalization, global, started, fused.independent);
@@ -192,14 +193,11 @@ async function perform(
     return final;
   }
 
-  // A global shortlist is valuable even without a decisive visual winner: show it instead of
-  // inventing a single card. OCR candidates remain first only when they carry stronger evidence.
   let candidates = base.candidates;
-  if (global.candidates.length) candidates = uniqueCandidates([...base.candidates, ...global.candidates]);
+  if (global.candidates.length) candidates = uniqueCandidates([...global.candidates, ...base.candidates]);
   let result: RecognitionResult = { ...base, candidates };
 
   if (base.level === "high") {
-    // High without the exact-print rule above is not calibrated enough to autofill in v10.
     result.level = "medium";
     result.confidence = Math.min(79, base.confidence);
     delete result.name;
@@ -210,8 +208,6 @@ async function perform(
   }
 
   if (result.level === "low" && global.status !== "compared") {
-    // Regression safety net: if normalization + global retrieval are inconclusive, try the
-    // untouched original through v9 once. It remains fallback, not a voting peer.
     onProgress?.("↩️ Última tentativa: pipeline anterior na foto original…");
     try {
       const legacy = await v9.recognizePokemonCard(file, undefined, onProgress, { bypassCache: true });
@@ -244,7 +240,7 @@ export function recognizePokemonCard(
 
 export async function shutdownCardRecognition() {
   await tail;
-  shutdownGlobalVisualRecognition();
+  shutdownMiloRecognition();
   await v9.shutdownCardRecognition();
 }
 
@@ -252,10 +248,10 @@ export const resolveCatalog = v9.resolveCatalog;
 
 export const cardRecognitionRuntime = {
   version: 10,
-  cascade: ["four-corner-normalization", "v9-ocr-catalog", "ocr-independent-global-visual", "v9-original-regression-fallback"],
+  cascade: ["four-corner-normalization", "v9-ocr-catalog", "ocr-independent-milo-exact-print-retrieval", "metadata-rerank", "v9-original-regression-fallback"],
   confidence: "evidence-score-not-calibrated-probability",
   requiresIndependentEvidenceForIdentified: true,
   uiLanguageIsNotRecognitionEvidence: true,
   normalization: cardNormalizationRuntime,
-  globalVisual: globalVisualRuntime,
+  globalVisual: miloRuntime,
 };

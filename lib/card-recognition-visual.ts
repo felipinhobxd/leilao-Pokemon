@@ -1,7 +1,7 @@
 import type { RecognitionCandidate, RecognitionLanguage } from "./card-recognition-core";
 
 const TCGDEX_BASE = "https://api.tcgdex.net/v2";
-const MAX_VISUAL_CANDIDATES = 20;
+const MAX_VISUAL_CANDIDATES = 100;
 const VISUAL_CATALOG_TIMEOUT_MS = 8_000;
 
 // Fixed diagnostic fixture documented by TCGdex; never enters recognition/ranking.
@@ -126,7 +126,7 @@ async function expandSameNamePrintings(candidates: RecognitionCandidate[]) {
         name: anchor.name,
         image: "notlike:/tcgp/",
         "pagination:page": "1",
-        "pagination:itemsPerPage": "25",
+        "pagination:itemsPerPage": "100",
       });
       const briefs = await visualFetch<TcgBrief[]>(`${TCGDEX_BASE}/${code}/cards?${params.toString()}`);
       for (const brief of briefs) {

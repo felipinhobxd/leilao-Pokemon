@@ -10,8 +10,8 @@ export function visualDiagnosticReference(pool: RecognitionCandidate[] = []): Re
   };
 }
 
-export type VisualReply = { similarities: number[]; backend: string; initMs?: number };
-export type VisualOutcome = { candidates: RecognitionCandidate[]; used: boolean; status: "not-needed" | "no-candidates" | "insufficient-clues" | "compared" | "failed"; reason?: string; error?: string; backend?: string; similarities?: number[]; initMs?: number };
+export type VisualReply = { similarities: number[]; backend: string; initMs?: number; embeddingDimension?: number; embeddingOutput?: string };
+export type VisualOutcome = { candidates: RecognitionCandidate[]; used: boolean; status: "not-needed" | "no-candidates" | "insufficient-clues" | "compared" | "failed"; reason?: string; error?: string; backend?: string; similarities?: number[]; initMs?: number; embeddingDimension?: number; embeddingOutput?: string };
 export type VisualTestBackend = "auto" | "webgpu/q4" | "wasm/q4" | "wasm/int8";
 export function recognitionDebugEnabled() {
   return typeof window !== "undefined" &&
@@ -75,7 +75,7 @@ export function createVisualFallback(createWorker: () => Worker, idleMs = 120_00
           worker!.postMessage({ photo, images: candidates.map(c => c.image), diagnostic: forced, testBackend: forced ? testBackend : undefined });
         });
         if (reply.similarities.length !== candidates.length || reply.similarities.some(n => !Number.isFinite(n))) throw new Error("Embedding/cosseno inválido");
-        return { candidates: forced ? candidates : applyVisualEvidence(candidates, reply.similarities), used: true, status: "compared", backend: reply.backend, similarities: reply.similarities, initMs: reply.initMs, reason: "Comparação concluída; similaridade não é probabilidade" };
+        return { candidates: forced ? candidates : applyVisualEvidence(candidates, reply.similarities), used: true, status: "compared", backend: reply.backend, similarities: reply.similarities, initMs: reply.initMs, embeddingDimension: reply.embeddingDimension, embeddingOutput: reply.embeddingOutput, reason: "Comparação concluída; similaridade não é probabilidade" };
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
         dispose();

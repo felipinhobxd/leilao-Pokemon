@@ -46,7 +46,7 @@ test("form language is only search priority; exact OCR stops with few requests",
     assert.ok(stats.requests <= 4);
     calls.length = 0;
     await runtime.resolveCatalog(buildOcrHints("Pikachu", "58/102", "Fraqueza Recuo Baralho"), "en", { requests: 0, queries: [] });
-    assert.ok(calls.every(url => url.includes("/pt-br/")));
+    assert.ok(calls.every(url => url.includes("/pt/")));
   } finally { globalThis.fetch = original; }
 });
 
@@ -198,4 +198,29 @@ test('visual diagnostic has an official reference even when catalog entries have
   const existing = { ...candidates[0] };
   assert.equal(visualDiagnosticReference([imageLess, existing]), existing);
   assert.deepEqual(imageLess, { id: 'exu-!', name: 'Unown', localId: '!' });
+});
+
+
+test('physical Portuguese lookup uses pt and excludes Pocket artwork', async () => {
+  const previous = globalThis.fetch;
+  const urls = [];
+  globalThis.fetch = async url => { urls.push(url); return {ok: true, json: async () => [{id: 'P-A-063', name: 'Bulbasaur', localId: '063', image: 'https://assets.tcgdex.net/pt-br/tcgp/P-A/063'}]}; };
+  try {
+    const result = await runtime.resolveCatalog(buildOcrHints('Bulbasaur', '063/999', 'Fraqueza Recuo'), 'pt-BR', {requests: 0, queries: []});
+    assert.ok(urls.length > 0 && urls.every(url => new URL(url).pathname.startsWith('/v2/pt/cards')));
+    assert.ok(urls.every(url => new URL(url).searchParams.get('image') === 'notlike:/tcgp/'));
+    assert.equal(result.pool.length, 0);
+  } finally { globalThis.fetch = previous; }
+});
+
+test('DINOv2 CLS output works without pooler_output and excludes patch tokens', async () => {
+  const {extractDinoEmbedding, cosineSimilarity} = await import('../lib/card-recognition-embedding.ts');
+  const cls = extractDinoEmbedding({last_hidden_state: {dims: [1, 3, 2], data: new Float32Array([3, 4, 900, 900, -900, -900])}});
+  assert.deepEqual(cls.values, [0.6, 0.8]);
+  assert.equal(cls.output, 'last_hidden_state/CLS');
+  const pooled = extractDinoEmbedding({pooler_output: {dims: [1, 2], data: new Float32Array([3, 4])}});
+  assert.ok(Math.abs(cosineSimilarity(cls.values, pooled.values) - 1) < 1e-6);
+  assert.throws(() => extractDinoEmbedding({last_hidden_state: {dims: [2, 3, 2], data: []}}), /incompatible/);
+  assert.throws(() => extractDinoEmbedding({last_hidden_state: {dims: [1, 3, 2], data: [1]}}), /length/);
+  assert.throws(() => extractDinoEmbedding({pooler_output: {dims: [1, 2], data: [0, 0]}}), /invalid/);
 });

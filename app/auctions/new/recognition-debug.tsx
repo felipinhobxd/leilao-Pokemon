@@ -16,6 +16,7 @@ export default function RecognitionDebug({ file, result, busy }: { file: File; r
       const outcome = await recognizeVisually(file, [reference], setMessage, backend);
       setMessage(JSON.stringify({ teste: outcome.used ? "PASS" : "FAIL", backend: outcome.backend,
         erro: outcome.error, modelo: "onnx-community/dinov2-small-ONNX", inicializacaoMs: outcome.initMs,
+        dimensaoEmbedding: outcome.embeddingDimension, saidaModelo: outcome.embeddingOutput,
         similaridades: outcome.similarities, referencia: reference.image, consultasSomenteDoTeste: 0,
         observacao: "Testa embeddings e cosseno; não identifica nem altera a carta." }, null, 2));
     } catch (error) { setMessage(`FAIL: ${error instanceof Error ? error.message : String(error)}`); }

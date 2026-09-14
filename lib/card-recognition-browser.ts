@@ -22,7 +22,7 @@ import { needsVisualFallback, recognizeVisually, shutdownVisualRecognition, type
 const TESSERACT_VERSION = "7.0.0";
 const TESSERACT_SCRIPT = `https://cdn.jsdelivr.net/npm/tesseract.js@${TESSERACT_VERSION}/dist/tesseract.min.js`;
 const TCGDEX_BASE = "https://api.tcgdex.net/v2";
-const SESSION_CACHE_PREFIX = "leilao:card-recognition:v5:";
+const SESSION_CACHE_PREFIX = "leilao:card-recognition:v6:";
 const CATALOG_TTL_MS = 30 * 60_000;
 const MAX_CATALOG_DETAILS = 4;
 const MAX_CATALOG_REQUESTS = 8;
@@ -84,7 +84,7 @@ let japaneseWorkerPromise: Promise<TesseractWorker> | null = null;
 let recognitionTail: Promise<unknown> = Promise.resolve();
 
 function tcgLanguage(language: RecognitionLanguage) {
-  return language === "pt-BR" ? "pt-br" : language;
+  return language === "pt-BR" ? "pt" : language;
 }
 
 function uniqueLanguages(hints: OcrHints, preferred?: string): RecognitionLanguage[] {
@@ -529,8 +529,8 @@ export async function resolveCatalog(hints: OcrHints, preferredLanguage: string 
     for (const probe of probes) {
       if (stats.requests >= MAX_CATALOG_REQUESTS) { stats.exhausted = true; return snapshot(); }
       try {
-        const briefs = await searchBriefs(code, new URLSearchParams({ ...probe, "pagination:page": "1", "pagination:itemsPerPage": "10" }), stats);
-        const sorted = [...briefs].sort((a, b) => briefScore(b, hints) - briefScore(a, hints)).slice(0, MAX_CATALOG_DETAILS);
+        const briefs = await searchBriefs(code, new URLSearchParams({ ...probe, image: "notlike:/tcgp/", "pagination:page": "1", "pagination:itemsPerPage": "10" }), stats);
+        const sorted = briefs.filter(brief => !brief.image?.includes("/tcgp/")).sort((a, b) => briefScore(b, hints) - briefScore(a, hints)).slice(0, MAX_CATALOG_DETAILS);
         for (const brief of sorted) {
           const key = `${language}:${brief.id}`;
           if (attempted.has(key)) continue;
@@ -701,5 +701,5 @@ export const cardRecognitionRuntime = {
   detectionWidth: DETECTION_WIDTH,
   maxCatalogDetailsPerSearch: MAX_CATALOG_DETAILS,
   maxCatalogRequests: MAX_CATALOG_REQUESTS,
-  cacheVersion: 5,
+  cacheVersion: 6,
 };

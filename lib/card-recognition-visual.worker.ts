@@ -1,12 +1,16 @@
 // This module is fetched only after OCR yields 2–5 plausible candidates.
 import { pipeline, env, RawImage, type ImageFeatureExtractionPipeline } from "@huggingface/transformers";
 
+import { extractDinoEmbedding, cosineSimilarity } from "./card-recognition-embedding";
+
 const MODEL = "onnx-community/dinov2-small-ONNX";
 env.allowLocalModels = false;
 if (env.backends.onnx.wasm) env.backends.onnx.wasm.numThreads = 1;
 let extractor: ImageFeatureExtractionPipeline | null = null;
 let backend = "";
 let initMs = 0;
+let embeddingDimension = 0;
+let embeddingOutput = "";
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error)).slice(0, 500);
 const embeddings = new Map<string, number[]>();
 
@@ -23,21 +27,16 @@ async function embed(image: Blob) {
   try {
     const outputs = await extractor!.model(inputs);
     try {
-      const pooled = outputs.pooler_output;
-      if (!pooled) throw new Error("DINOv2 pooled output missing");
-      return Array.from(pooled.data, Number);
+      const embedding = extractDinoEmbedding(outputs);
+      embeddingDimension = embedding.values.length;
+      embeddingOutput = embedding.output;
+      return embedding.values;
     } finally {
       for (const tensor of Object.values(outputs)) (tensor as { dispose?: () => void })?.dispose?.();
     }
   } finally {
     for (const tensor of Object.values(inputs)) (tensor as { dispose?: () => void })?.dispose?.();
   }
-}
-function cosine(a: number[], b: number[]) {
-  if (a.length !== b.length || !a.length) throw new Error("Invalid embedding");
-  let dot = 0, aa = 0, bb = 0;
-  for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; aa += a[i] ** 2; bb += b[i] ** 2; }
-  return dot / (Math.sqrt(aa * bb) || 1);
 }
 async function compare(photo: Blob, images: string[]) {
   self.postMessage({ progress: "🧠 Comparando localmente…" });
@@ -55,9 +54,9 @@ async function compare(photo: Blob, images: string[]) {
       if (embeddings.size >= 64) embeddings.delete(embeddings.keys().next().value!);
       embeddings.set(url.href, embedding);
     }
-    similarities.push(cosine(query, embedding));
+    similarities.push(cosineSimilarity(query, embedding));
   }
-  return { similarities, backend, initMs };
+  return { similarities, backend, initMs, embeddingDimension, embeddingOutput };
 }
 self.onmessage = async (event: MessageEvent<{ photo: Blob; images: string[]; diagnostic?: boolean; testBackend?: string }>) => {
   const { photo, images, diagnostic, testBackend } = event.data;

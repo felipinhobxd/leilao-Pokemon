@@ -1,0 +1,1 @@
+The browser must never combine Milo assets from different generations.

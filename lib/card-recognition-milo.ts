@@ -3,23 +3,28 @@
 import { candidateEvidence, type OcrHints, type RecognitionCandidate, type RecognitionLanguage } from "./card-recognition-core";
 import { preserveCandidateCollectorWidth } from "./card-recognition-format";
 
-const MODEL_URL = "/card-recognition/milo/model.onnx";
-const INDEX_URL = "/card-recognition/milo/index-int8.bin";
-const META_URL = "/card-recognition/milo/index.meta.tsv";
-const CACHE_NAME = "leilao-card-recognition-milo-v1";
+const MILO_ASSET_VERSION = "20260914-19501-v2";
+function withAssetVersion(path: string) { return `${path}?v=${MILO_ASSET_VERSION}`; }
+const MODEL_URL = withAssetVersion("/card-recognition/milo/model.onnx");
+const INDEX_URL = withAssetVersion("/card-recognition/milo/index-int8.bin");
+const META_URL = withAssetVersion("/card-recognition/milo/index.meta.tsv");
+const STATS_URL = withAssetVersion("/card-recognition/milo/index.stats.json");
+const CACHE_NAME = `leilao-card-recognition-milo-${MILO_ASSET_VERSION}`;
+const LEGACY_CACHE_NAMES = ["leilao-card-recognition-milo-v1"];
 const DIMENSIONS = 128;
 const INT8_SCALE = 127;
 const RETRIEVAL_K = 50;
 const DISPLAY_K = 20;
 const DETAIL_K = 8;
 const TCGDEX_BASE = "https://api.tcgdex.net/v2";
-const QUERY_AUTOCONTRAST_CUTOFF = 0.005; // 0.5% from each histogram tail, per RGB channel.
+const QUERY_AUTOCONTRAST_CUTOFF = 0.005;
 
 type Ort = typeof import("onnxruntime-web");
 type Session = import("onnxruntime-web").InferenceSession;
 type Entry = { id: string; image: string; localId: string; name: string };
 type LoadedIndex = { entries: Entry[]; vectors: Int8Array };
 type MiloCandidate = RecognitionCandidate & { retrievalRank?: number; retrievalCosine?: number };
+type IndexStats = { cardsIndexed?: number; embeddingDimension?: number; int8IndexBytes?: number; metadataBytes?: number; modelBytes?: number };
 
 export type MiloVisualResult = {
   status: "unavailable" | "searched" | "compared" | "failed";
@@ -36,14 +41,25 @@ let ortPromise: Promise<Ort> | null = null;
 let sessionPromise: Promise<{ ort: Ort; session: Session; backend: string }> | null = null;
 let indexPromise: Promise<LoadedIndex> | null = null;
 let sessionIdle: ReturnType<typeof setTimeout> | undefined;
+let legacyCachesCleared = false;
 const details = new Map<string, Promise<MiloCandidate | null>>();
 
-async function cachedFetch(url: string) {
-  if (typeof caches === "undefined") return fetch(url, { cache: "force-cache" });
+async function clearLegacyCaches() {
+  if (legacyCachesCleared || typeof caches === "undefined") return;
+  legacyCachesCleared = true;
+  await Promise.allSettled(LEGACY_CACHE_NAMES.map(name => caches.delete(name)));
+}
+
+async function cachedFetch(url: string, refresh = false) {
+  await clearLegacyCaches();
+  if (typeof caches === "undefined") return fetch(url, { cache: refresh ? "reload" : "force-cache" });
   const cache = await caches.open(CACHE_NAME);
-  const hit = await cache.match(url);
-  if (hit) return hit;
-  const response = await fetch(url, { cache: "force-cache" });
+  if (refresh) await cache.delete(url);
+  if (!refresh) {
+    const hit = await cache.match(url);
+    if (hit) return hit;
+  }
+  const response = await fetch(url, { cache: refresh ? "reload" : "force-cache" });
   if (response.ok) await cache.put(url, response.clone());
   return response;
 }
@@ -55,16 +71,38 @@ function parseMeta(text: string) {
   }).filter(entry => entry.id && entry.image);
 }
 
+async function loadIndexSnapshot(refresh: boolean) {
+  const [metaResponse, indexResponse, statsResponse] = await Promise.all([
+    cachedFetch(META_URL, refresh), cachedFetch(INDEX_URL, refresh), cachedFetch(STATS_URL, refresh),
+  ]);
+  if (!metaResponse.ok || !indexResponse.ok || !statsResponse.ok) throw new Error("Índice neural Milo ainda não está disponível.");
+  const [meta, buffer, stats] = await Promise.all([
+    metaResponse.text(), indexResponse.arrayBuffer(), statsResponse.json() as Promise<IndexStats>,
+  ]);
+  const entries = parseMeta(meta);
+  const vectors = new Int8Array(buffer);
+  const expectedCards = Number(stats.cardsIndexed ?? 0);
+  const expectedDimensions = Number(stats.embeddingDimension ?? DIMENSIONS);
+  const expectedIndexBytes = Number(stats.int8IndexBytes ?? 0);
+  const compatible = entries.length > 0
+    && expectedDimensions === DIMENSIONS
+    && (!expectedCards || entries.length === expectedCards)
+    && (!expectedIndexBytes || vectors.byteLength === expectedIndexBytes)
+    && vectors.length === entries.length * DIMENSIONS;
+  if (!compatible) {
+    throw new Error(`Índice Milo incompatível com os metadados (meta=${entries.length}, vetores=${vectors.length}, esperado=${expectedCards || "?"}x${DIMENSIONS}).`);
+  }
+  return { entries, vectors } satisfies LoadedIndex;
+}
+
 async function loadIndex() {
-  indexPromise ??= (async () => {
-    const [metaResponse, indexResponse] = await Promise.all([cachedFetch(META_URL), cachedFetch(INDEX_URL)]);
-    if (!metaResponse.ok || !indexResponse.ok) throw new Error("Índice neural Milo ainda não está disponível.");
-    const [meta, buffer] = await Promise.all([metaResponse.text(), indexResponse.arrayBuffer()]);
-    const entries = parseMeta(meta);
-    const vectors = new Int8Array(buffer);
-    if (!entries.length || vectors.length !== entries.length * DIMENSIONS) throw new Error("Índice Milo incompatível com os metadados.");
-    return { entries, vectors };
-  })().catch(error => { indexPromise = null; throw error; });
+  indexPromise ??= loadIndexSnapshot(false).catch(async firstError => {
+    // Mixed/stale Cache Storage was possible with the original unversioned assets.
+    // Clear this generation and force one network/disk reload before giving up.
+    if (typeof caches !== "undefined") await caches.delete(CACHE_NAME);
+    try { return await loadIndexSnapshot(true); }
+    catch { throw firstError; }
+  }).catch(error => { indexPromise = null; throw error; });
   return indexPromise;
 }
 
@@ -100,16 +138,10 @@ function channelAutocontrastBounds(pixels: Uint8ClampedArray, channel: number) {
   const trim = Math.floor(count * QUERY_AUTOCONTRAST_CUTOFF);
   let low = 0;
   let removed = 0;
-  while (low < 255 && removed + histogram[low] <= trim) {
-    removed += histogram[low];
-    low += 1;
-  }
+  while (low < 255 && removed + histogram[low] <= trim) { removed += histogram[low]; low += 1; }
   let high = 255;
   removed = 0;
-  while (high > low && removed + histogram[high] <= trim) {
-    removed += histogram[high];
-    high -= 1;
-  }
+  while (high > low && removed + histogram[high] <= trim) { removed += histogram[high]; high -= 1; }
   return { low, high };
 }
 
@@ -135,9 +167,6 @@ async function imageTensor(blob: Blob) {
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(bitmap, 0, 0, 448, 448);
     const pixels = ctx.getImageData(0, 0, 448, 448).data;
-    // Real phone photos often carry glare, warm lighting or foil reflections. A tiny,
-    // deterministic per-channel histogram trim makes the query closer to clean catalog
-    // scans without using OCR, metadata or any card-specific tuning.
     autocontrastRgbInPlace(pixels);
     const plane = 448 * 448;
     const data = new Float32Array(plane * 3);
@@ -324,6 +353,7 @@ export function shutdownMiloRecognition() {
 export const miloRuntime = {
   model: "HanClinto/milo v1.0.0",
   modelLicense: "AGPL-3.0",
+  assetVersion: MILO_ASSET_VERSION,
   dimensions: DIMENSIONS,
   indexQuantization: "int8/127",
   retrievalK: RETRIEVAL_K,

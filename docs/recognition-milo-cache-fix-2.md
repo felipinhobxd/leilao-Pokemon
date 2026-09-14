@@ -1,0 +1,1 @@
+Expected published Milo runtime shape: 19,501 metadata entries and 19,501 × 128 int8 vector values. Runtime validation now reports observed counts and self-heals stale browser Cache Storage before failing.

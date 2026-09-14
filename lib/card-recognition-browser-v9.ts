@@ -48,20 +48,47 @@ function sameIdentity(left: RecognitionResult, right: RecognitionResult) {
   return Boolean(leftName && rightName && leftName === rightName && left.collection && right.collection && normalized(left.collection) === normalized(right.collection));
 }
 
+function evidenceOf(result: RecognitionResult) {
+  return result.candidates?.[0]?.evidence;
+}
+
+function decisive(result: RecognitionResult) {
+  const evidence = evidenceOf(result);
+  if (!evidence) return false;
+  if (evidence.fullNumberMatch && evidence.nameSimilarity >= 0.86) return true;
+  if (evidence.visualMatch && evidence.nameSimilarity >= 0.78) return true;
+  return false;
+}
+
 function resultQuality(result: RecognitionResult) {
-  const level = result.level === "high" ? 300 : result.level === "medium" ? 200 : 100;
-  const complete = Number(Boolean(result.name)) * 12 + Number(Boolean(result.cardNumber)) * 18 + Number(Boolean(result.collection)) * 16 + Number(Boolean(result.language)) * 5;
-  const evidence = result.candidates?.[0]?.evidence;
-  const evidenceBonus = Number(Boolean(evidence?.fullNumberMatch)) * 35 + Number(Boolean(evidence?.visualMatch)) * 30 + Math.round((evidence?.nameSimilarity ?? 0) * 20);
-  return level + result.confidence + complete + evidenceBonus;
+  const evidence = evidenceOf(result);
+  const level = result.level === "high" ? 75 : result.level === "medium" ? 45 : 10;
+  const complete = Number(Boolean(result.name)) * 12 + Number(Boolean(result.cardNumber)) * 20 + Number(Boolean(result.collection)) * 18 + Number(Boolean(result.language)) * 5;
+  const evidenceBonus = Number(Boolean(evidence?.fullNumberMatch)) * 90
+    + Number(Boolean(evidence?.visualMatch)) * 85
+    + Number(Boolean(evidence?.localIdMatch)) * 30
+    + Number(Boolean(evidence?.denominatorMatch)) * 18
+    + Math.round((evidence?.nameSimilarity ?? 0) * 45);
+  return level + Math.min(100, result.confidence) + complete + evidenceBonus + (decisive(result) ? 120 : 0);
 }
 
 function choose(results: RecognitionResult[]) {
-  const ordered = [...results].sort((a, b) => resultQuality(b) - resultQuality(a));
-  const best = { ...ordered[0] };
-  const agreeing = ordered.filter(result => result !== ordered[0] && sameIdentity(best, result));
-  if (best.level === "medium" && agreeing.length) {
-    best.confidence = Math.min(85, Math.max(best.confidence, ...agreeing.map(result => result.confidence)) + 4);
+  const scored = results.map(result => {
+    const agreement = results.filter(other => other !== result && sameIdentity(result, other)).length;
+    return { result, score: resultQuality(result) + agreement * 150, agreement };
+  }).sort((a, b) => b.score - a.score || b.agreement - a.agreement);
+
+  const winner = scored[0];
+  const best = { ...winner.result };
+  if (winner.agreement > 0) {
+    const agreeing = results.filter(result => result !== winner.result && sameIdentity(best, result));
+    const agreedConfidence = Math.max(best.confidence, ...agreeing.map(result => result.confidence));
+    if (best.level === "low") {
+      best.confidence = Math.max(60, Math.min(79, agreedConfidence + 7));
+      best.level = "medium";
+    } else if (best.level === "medium") {
+      best.confidence = Math.min(85, Math.max(60, agreedConfidence + 5));
+    }
   }
   return best;
 }
@@ -87,7 +114,9 @@ async function performFusion(
   onProgress?.("🔎 Estratégia 1/3 · reconhecimento principal");
   const primary = await current.recognizePokemonCard(file, preferredLanguage, onProgress, { bypassCache });
   results.push(primary);
-  if (primary.level === "high") {
+  // Only stop early when both the printed number and name (or exact visual print) agree.
+  // A generic 'high' score alone is not enough to suppress the regression safety net.
+  if (decisive(primary)) {
     save(hash, primary);
     return primary;
   }
@@ -96,7 +125,7 @@ async function performFusion(
   try {
     const legacy = await previous.recognizePokemonCard(file, preferredLanguage, onProgress, { bypassCache });
     results.push(legacy);
-    if (legacy.level === "high") {
+    if (decisive(legacy) && (primary.level === "low" || sameIdentity(primary, legacy))) {
       const final = { ...legacy, elapsedMs: Math.round(performance.now() - started) };
       save(hash, final);
       return final;

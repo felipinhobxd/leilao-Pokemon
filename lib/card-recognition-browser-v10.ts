@@ -2,19 +2,36 @@
 
 import * as v9 from "./card-recognition-browser-v9";
 import { normalizeCardPhoto, cardNormalizationRuntime, type CardNormalization } from "./card-recognition-normalize";
+import {
+  normalizeCardWithCornelius,
+  shutdownCorneliusRecognition,
+  corneliusRuntime,
+  type CorneliusNormalization,
+} from "./card-recognition-cornelius";
+import { runPpOcr, shutdownPpOcr, ppOcrRuntime, type PpOcrOutcome } from "./card-recognition-ppocr";
 import { searchMiloVisual, shutdownMiloRecognition, miloRuntime, type MiloVisualResult } from "./card-recognition-milo";
 import { preserveCandidateCollectorWidth, preserveResultCollectorWidth } from "./card-recognition-format";
-import type { RecognitionCandidate, RecognitionResult } from "./card-recognition-core";
+import { resultFromCandidates, type RecognitionCandidate, type RecognitionResult } from "./card-recognition-core";
 
-const CACHE_PREFIX = "leilao:card-recognition:v10-milo-always-v1:";
+const CACHE_PREFIX = "leilao:card-recognition:v10-cornelius-ppocrv6-milo-v1:";
 const memory = new Map<string, RecognitionResult>();
 let tail: Promise<unknown> = Promise.resolve();
+
+type Normalization = CardNormalization | CorneliusNormalization;
 
 export type RecognitionDecision = "IDENTIFICADA" | "PROVÁVEL" | "INCERTA";
 export type V10RecognitionResult = RecognitionResult & {
   decisionStatus?: RecognitionDecision;
   confidenceKind?: "evidence-score-not-calibrated-probability";
-  normalization?: { method: CardNormalization["method"]; confidence: number; rotation: number };
+  normalization?: { method: Normalization["method"]; confidence: number; rotation: number };
+  neuralOcr?: {
+    status: PpOcrOutcome["status"];
+    lineCount: number;
+    averageConfidence: number;
+    elapsedMs: number;
+    backend?: string;
+    error?: string;
+  };
   globalVisual?: {
     status: MiloVisualResult["status"];
     indexCandidates: number;
@@ -82,6 +99,22 @@ function exactCatalogDecision(result: RecognitionResult) {
   return true;
 }
 
+function ocrQuality(result: RecognitionResult) {
+  const evidence = result.candidates[0]?.evidence;
+  return Number(exactCatalogDecision(result)) * 500
+    + Number(Boolean(evidence?.fullNumberMatch)) * 220
+    + Number(Boolean(evidence?.localIdMatch)) * 80
+    + Math.round((evidence?.nameSimilarity ?? 0) * 100)
+    + (result.level === "high" ? 60 : result.level === "medium" ? 30 : 0)
+    + result.confidence;
+}
+
+function chooseOcr(primary: RecognitionResult | undefined, fallback: RecognitionResult | undefined) {
+  if (!primary) return fallback;
+  if (!fallback) return primary;
+  return ocrQuality(primary) >= ocrQuality(fallback) ? primary : fallback;
+}
+
 function uniqueCandidates(values: RecognitionCandidate[]) {
   const map = new Map<string, RecognitionCandidate>();
   for (const rawCandidate of values) {
@@ -95,7 +128,8 @@ function uniqueCandidates(values: RecognitionCandidate[]) {
 
 function withMetadata(
   rawResult: RecognitionResult,
-  normalization: CardNormalization,
+  normalization: Normalization,
+  pp: PpOcrOutcome | undefined,
   global: MiloVisualResult | undefined,
   started: number,
   evidence: string[],
@@ -103,7 +137,17 @@ function withMetadata(
   const value = preserveResultCollectorWidth(rawResult) as V10RecognitionResult;
   value.normalization = { method: normalization.method, confidence: normalization.confidence, rotation: normalization.rotation };
   value.confidenceKind = "evidence-score-not-calibrated-probability";
-  value.independentEvidence = evidence;
+  value.independentEvidence = [...new Set(evidence)];
+  if (pp) {
+    value.neuralOcr = {
+      status: pp.status,
+      lineCount: pp.lineCount,
+      averageConfidence: pp.averageConfidence,
+      elapsedMs: pp.elapsedMs,
+      backend: pp.backend,
+      error: pp.error,
+    };
+  }
   if (global) {
     value.globalVisual = {
       status: global.status,
@@ -142,8 +186,6 @@ function promoteVisualWinner(base: RecognitionResult, global: MiloVisualResult, 
     variant: winner.variant ?? base.variant,
   };
 
-  // Retrieval similarity is not a probability. One visual opinion never becomes IDENTIFICADA.
-  // High confidence still requires independent collector-number/catalog agreement.
   if (exactNumber || (catalogAgreement && nameAgreement)) {
     result.level = "high";
     result.confidence = exactNumber && catalogAgreement ? 94 : 89;
@@ -166,8 +208,6 @@ function preserveExactBaseWithVisualCheck(base: RecognitionResult, global: MiloV
     return { result, independent: visualTop ? ["collector-number", "catalog-set", "ocr-name", "milo-visual-retrieval"] : ["collector-number", "catalog-set", "ocr-name"] };
   }
 
-  // OCR/catalog and the independent global visual retriever disagree. Do not silently accept
-  // either side as a high-confidence exact print. Keep both visible for manual confirmation.
   const result: RecognitionResult = { ...base, candidates };
   result.level = "medium";
   result.confidence = 72;
@@ -177,6 +217,41 @@ function preserveExactBaseWithVisualCheck(base: RecognitionResult, global: MiloV
   delete result.language;
   delete result.variant;
   return { result, independent: ["collector-number", "catalog-set", "ocr-name", "milo-conflict"] };
+}
+
+async function normalizeBest(file: File, onProgress?: (message: string) => void): Promise<Normalization> {
+  try {
+    const neural = await normalizeCardWithCornelius(file, onProgress);
+    if ("normalization" in neural && neural.normalization) return neural.normalization;
+    if (neural.detection.status === "failed") onProgress?.("↩️ Cornelius indisponível; usando detector geométrico seguro…");
+    else onProgress?.("↩️ Cornelius não encontrou um contorno confiável; usando detector geométrico…");
+  } catch {
+    onProgress?.("↩️ Cornelius falhou; usando detector geométrico seguro…");
+  }
+  return normalizeCardPhoto(file, onProgress);
+}
+
+async function recognizeWithPpOcr(file: File, onProgress?: (message: string) => void) {
+  const pp = await runPpOcr(file, onProgress);
+  if (pp.status !== "ok" || !pp.hints || (!pp.hints.name && !pp.hints.localId)) return { pp };
+  const stats = { requests: 0, queries: [] as string[], exhausted: false };
+  try {
+    onProgress?.("📚 Conferindo PP-OCRv6 no catálogo TCGdex…");
+    const catalog = await v9.resolveCatalog(pp.hints, pp.hints.language ?? undefined, stats);
+    const result = resultFromCandidates(pp.hints, catalog.ranked, pp.elapsedMs, stats.requests, "ocr");
+    result.catalogCandidatesBefore = catalog.before;
+    result.catalogCandidatesAfter = catalog.ranked.length;
+    result.catalogBudgetExhausted = Boolean(stats.exhausted);
+    result.catalogStrategy = catalog.strategy;
+    result.catalogSetCandidates = catalog.setCandidates;
+    result.catalogSetIndexSource = catalog.setIndexSource;
+    result.catalogQueries = stats.queries;
+    return { pp, result };
+  } catch (error) {
+    return {
+      pp: { ...pp, error: `${pp.error ? `${pp.error} ` : ""}Catálogo PP-OCR: ${error instanceof Error ? error.message : String(error)}` },
+    };
+  }
 }
 
 async function perform(
@@ -189,32 +264,51 @@ async function perform(
   const hash = await hashFile(file);
   if (!bypassCache) {
     const hit = cached(hash);
-    if (hit) { onProgress?.("Resultado reutilizado do cache v10/Milo"); return hit; }
+    if (hit) { onProgress?.("Resultado reutilizado do cache neural"); return hit; }
   }
 
-  onProgress?.("🧠 Reconhecimento v10 ativo · normalizando a carta para a IA Milo…");
-  // selectedLanguage is intentionally not forwarded here. A default UI value is not evidence.
-  // Detected OCR language may localize TCGdex only after the image has produced its own Top-K.
-  const normalization = await normalizeCardPhoto(file, onProgress);
-  onProgress?.("🔎 OCR + catálogo sobre a carta retificada…");
-  const base = await v9.recognizePokemonCard(normalization.file, undefined, onProgress, { bypassCache: true });
+  onProgress?.("🧠 Reconhecimento neural · Cornelius + PP-OCRv6 Small + Milo…");
+  const normalization = await normalizeBest(file, onProgress);
 
-  // Milo now runs for every non-cached recognition. Previously an OCR/catalog early return could
-  // skip the 19.5k-card visual index completely, making v10 appear active while actually behaving
-  // like v9 for a large class of photos.
+  const ppAttempt = await recognizeWithPpOcr(normalization.file, onProgress);
+  const ppBase = ppAttempt.result;
+  let fallbackBase: RecognitionResult | undefined;
+
+  if (!ppBase || !exactCatalogDecision(ppBase)) {
+    onProgress?.("🔎 Conferência de segurança com o reconhecedor anterior…");
+    try {
+      fallbackBase = await v9.recognizePokemonCard(normalization.file, undefined, onProgress, { bypassCache: true });
+    } catch { /* PP-OCR + Milo can still finish the recognition. */ }
+  }
+
+  let base = chooseOcr(ppBase, fallbackBase);
+  if (!base) {
+    base = await v9.recognizePokemonCard(file, undefined, onProgress, { bypassCache: true });
+  }
+  const ppSelected = Boolean(ppBase && base === ppBase);
+  const ocrAgreement = Boolean(ppBase && fallbackBase && sameCard(ppBase.candidates[0], fallbackBase.candidates[0]));
+
   const detectedLanguage = base.hints.language ?? undefined;
   const global = await searchMiloVisual(normalization.blob, detectedLanguage, base.hints, onProgress);
 
   if (exactCatalogDecision(base)) {
     const checked = preserveExactBaseWithVisualCheck(base, global);
-    const final = withMetadata(checked.result, normalization, global, started, checked.independent);
+    const evidence = [...checked.independent];
+    if (ppSelected) evidence.push("ppocrv6-small");
+    if (ocrAgreement) evidence.push("ocr-cross-check");
+    if (normalization.method === "cornelius") evidence.push("cornelius-corners");
+    const final = withMetadata(checked.result, normalization, ppAttempt.pp, global, started, evidence);
     save(hash, final);
     return final;
   }
 
   if (global.winner) {
     const fused = promoteVisualWinner(base, global, global.winner);
-    const final = withMetadata(fused.result, normalization, global, started, fused.independent);
+    const evidence = [...fused.independent];
+    if (ppSelected) evidence.push("ppocrv6-small");
+    if (ocrAgreement) evidence.push("ocr-cross-check");
+    if (normalization.method === "cornelius") evidence.push("cornelius-corners");
+    const final = withMetadata(fused.result, normalization, ppAttempt.pp, global, started, evidence);
     save(hash, final);
     return final;
   }
@@ -242,7 +336,11 @@ async function perform(
     } catch { /* manual flow remains available */ }
   }
 
-  const final = withMetadata(result, normalization, global, started, exactCatalogDecision(result) ? ["collector-number", "catalog-set", "ocr-name"] : []);
+  const evidence = exactCatalogDecision(result) ? ["collector-number", "catalog-set", "ocr-name"] : [];
+  if (ppSelected) evidence.push("ppocrv6-small");
+  if (ocrAgreement) evidence.push("ocr-cross-check");
+  if (normalization.method === "cornelius") evidence.push("cornelius-corners");
+  const final = withMetadata(result, normalization, ppAttempt.pp, global, started, evidence);
   save(hash, final);
   onProgress?.(final.decisionStatus === "IDENTIFICADA"
     ? `✅ ${final.name ?? "Carta"} identificada`
@@ -266,19 +364,31 @@ export function recognizePokemonCard(
 
 export async function shutdownCardRecognition() {
   await tail;
+  shutdownCorneliusRecognition();
   shutdownMiloRecognition();
-  await v9.shutdownCardRecognition();
+  await Promise.allSettled([shutdownPpOcr(), v9.shutdownCardRecognition()]);
 }
 
 export const resolveCatalog = v9.resolveCatalog;
 
 export const cardRecognitionRuntime = {
   version: 10,
-  cache: "v10-milo-always-v1",
-  cascade: ["four-corner-normalization", "v9-ocr-catalog", "always-on-ocr-independent-milo-exact-print-retrieval", "metadata-rerank", "v9-original-regression-fallback"],
+  engine: "cornelius+ppocrv6-small+milo",
+  cache: "v10-cornelius-ppocrv6-milo-v1",
+  cascade: [
+    "cornelius-neural-corner-normalization",
+    "ppocrv6-small-primary-ocr",
+    "tcgdex-catalog-validation",
+    "v9-tesseract-regression-safety-net",
+    "always-on-ocr-independent-milo-exact-print-retrieval",
+    "metadata-rerank",
+    "v9-original-regression-fallback",
+  ],
   confidence: "evidence-score-not-calibrated-probability",
   requiresIndependentEvidenceForIdentified: true,
   uiLanguageIsNotRecognitionEvidence: true,
-  normalization: cardNormalizationRuntime,
+  cornelius: corneliusRuntime,
+  neuralOcr: ppOcrRuntime,
+  normalizationFallback: cardNormalizationRuntime,
   globalVisual: miloRuntime,
 };

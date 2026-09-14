@@ -31,7 +31,7 @@ export function decideRecognition(base: RecognitionResult, candidates: Recogniti
   const ranked = rankEvidence(candidates, base.hints, memory);
   const [best, second] = ranked;
   const nameStrong = Boolean(best && (base.hints.nameConfidence ?? 0.7) >= 0.8 && best.evidence.nameSimilarity >= 0.9);
-  const visualStrong = Boolean(best && visualStatus === "compared" && best.evidence.visualMatch);
+  const visualStrong = Boolean(best && visualStatus === "compared" && best.evidence.visualMatch && (best.visualSimilarity ?? 0) >= 0.78);
   const numberStrong = Boolean(best?.evidence.fullNumberMatch);
   const conflict = Boolean(best && (best.nameConflict || best.visualConflict));
   const separated = Boolean(best && (!second || best.score - second.score >= 8));

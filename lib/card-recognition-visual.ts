@@ -35,7 +35,7 @@ export type VisualOutcome = {
   embeddingDimension?: number;
   embeddingOutput?: string;
 };
-export type VisualTestBackend = "auto" | "webgpu/q4" | "wasm/q4" | "wasm/int8";
+export type VisualTestBackend = "structural" | "auto" | "webgpu/q4" | "wasm/q4" | "wasm/int8";
 
 export function recognitionDebugEnabled() {
   return typeof window !== "undefined" &&
@@ -219,6 +219,7 @@ export function createVisualFallback(createWorker: () => Worker, idleMs = 120_00
   const recognize = (photo: Blob, candidates: RecognitionCandidate[], onProgress?: (message: string) => void, testBackend?: VisualTestBackend) => {
     const run = async (): Promise<VisualOutcome> => {
       const forced = testBackend !== undefined && typeof window !== "undefined";
+      const diagnostic = forced && testBackend !== "structural";
       if (!forced && !needsVisualFallback(candidates)) return {
         candidates,
         used: false,
@@ -246,11 +247,11 @@ export function createVisualFallback(createWorker: () => Worker, idleMs = 120_00
             event.data.error ? finish(new Error(event.data.error)) : finish(undefined, event.data);
           };
           worker!.onerror = event => finish(new Error(event.message || "Não foi possível iniciar o worker visual"));
-          worker!.postMessage({ photo, images: expanded.map(c => c.image), diagnostic: forced, testBackend: forced ? testBackend : undefined });
+          worker!.postMessage({ photo, images: expanded.map(c => c.image), diagnostic, testBackend: diagnostic ? testBackend : undefined });
         });
         if (reply.similarities.length !== expanded.length || reply.similarities.some(n => !Number.isFinite(n))) throw new Error("Comparação visual inválida");
-        let compared = forced ? expanded : applyVisualEvidence(expanded, reply.similarities, reply.scanErrors?.length ? undefined : reply.winnerIndex);
-        if (!forced) {
+        let compared = diagnostic ? expanded : applyVisualEvidence(expanded, reply.similarities, reply.scanErrors?.length ? undefined : reply.winnerIndex);
+        if (!diagnostic) {
           const index = compared.findIndex(candidate => candidate.evidence?.visualMatch);
           if (index >= 0 && !compared[index].collection) {
             const hydrated = await hydrateVisualWinner(compared[index]);

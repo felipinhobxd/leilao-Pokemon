@@ -28,6 +28,7 @@ type V11DebugResult = RecognitionResult & {
     reason?: string;
   };
   independentEvidence?: string[];
+  evidenceRanking?: unknown;
 };
 
 export default function RecognitionDebug({ file, result, busy }: { file: File; result?: RecognitionResult; busy: boolean }) {
@@ -49,9 +50,11 @@ export default function RecognitionDebug({ file, result, busy }: { file: File; r
       const normalized = await normalizeCardPhoto(file, setMessage);
       const candidates = result?.candidates?.filter(candidate => Boolean(candidate.image)).slice(0, 12) ?? [];
       if (!candidates.length) throw new Error("O reconhecimento ainda não gerou candidatos com imagem oficial.");
-      const outcome = await recognizeVisually(normalized.blob, candidates, setMessage, "auto");
+      const outcome = await recognizeVisually(normalized.blob, candidates, setMessage, "structural");
       setMessage(JSON.stringify({
         teste: outcome.status === "compared" ? "PASS" : "FAIL",
+        rankingEvidencias: v11?.evidenceRanking,
+        confiancaPorCampo: { nome: result?.hints.nameConfidence, numero: result?.hints.numberConfidence, hp: result?.hints.hpConfidence },
         reconhecimentoAtivo: `v${cardRecognitionRuntime.version}`,
         backend: outcome.backend,
         candidatosComparados: outcome.candidates.length,

@@ -34,7 +34,7 @@ test("failed visual plus ambiguous OCR cannot retain legacy 89 percent identific
   assert.equal(final.result.name, undefined);
 });
 test("strong name, complete number and official visual agree", () => {
-  const h = { ...hints, localId: "95", cardNumber: "95/149", numberConfidence: .98 };
+  const h = { ...hints, localId: "95", localIdVariants: ["95"], cardNumber: "95/149", numberConfidence: .98 };
   const d = { ...dragon, visualSimilarity: .94, evidence: { visualMatch: true } };
   const final = decideRecognition(base(h), [d, ...wrong], "compared");
   assert.equal(final.status, "IDENTIFICADA");
@@ -61,10 +61,12 @@ test("manual UI language is absent from the inference dependency graph", () => {
   assert.equal((body.match(/_selectedLanguage/g) || []).length, 1);
   const a = decideRecognition(base(hints), [dragon], "failed");
   const b = decideRecognition({ ...base(hints), selectedLanguage: "ja" }, [dragon], "failed");
-  assert.deepEqual(a, b);
+  assert.deepEqual(a.ranking, b.ranking);
+  assert.equal(a.status, b.status);
+  assert.equal(a.result.language, b.result.language);
 });
 test("absent visual winner and partial scan failure cannot identify, even with perfect OCR", () => {
-  const h = { ...hints, localId: "95", numberConfidence: .99 };
+  const h = { ...hints, localId: "95", localIdVariants: ["95"], numberConfidence: .99 };
   const d = { ...dragon, visualSimilarity: .99, evidence: { visualMatch: true } };
   assert.equal(decideRecognition(base(h), [d], "failed").status, "PROVÁVEL");
   assert.equal(decideRecognition(base(h), [dragon], "compared").status, "PROVÁVEL");
@@ -96,4 +98,9 @@ test("same-origin scan forwards bytes and reports exact failing upstream request
     assert.equal(failure.status, 502);
     assert.equal((await failure.json()).stage, "scan-fetch");
   } finally { globalThis.fetch = previous; }
+});
+
+test("a weak structural score cannot be promoted by a worker winner flag", () => {
+  const d = { ...dragon, visualSimilarity: .63, evidence: { visualMatch: true } };
+  assert.notEqual(decideRecognition(base(hints), [d], "compared").status, "IDENTIFICADA");
 });

@@ -16,8 +16,10 @@
 .draft-card,.value-row,.review-list article,.queue-row{border:1px solid var(--line);border-radius:14px;background:var(--surface-soft)}
 .draft-head{display:flex;align-items:center;gap:10px;padding:10px}
 .drag-handle{font-size:20px;cursor:grab;user-select:none;color:var(--muted)}
-.draft-thumb{width:58px;height:74px;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--thumb-bg);color:var(--muted);display:grid;place-items:center;flex:0 0 auto}
+.draft-thumb{width:58px;height:74px;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--thumb-bg);color:var(--muted);display:grid;place-items:center;flex:0 0 auto;transition:width .16s ease,height .16s ease}
 .draft-thumb img{width:100%;height:100%;object-fit:cover}
+.draft-card:has(.draft-fields) .draft-thumb{width:112px;height:152px;align-self:flex-start}
+.draft-card:has(.draft-fields) .draft-thumb img{object-fit:contain}
 .draft-title{display:grid;gap:3px;min-width:0;flex:1}
 .draft-title strong,.draft-title span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .draft-title span{font-size:.85rem;color:var(--muted)}
@@ -88,6 +90,7 @@
   .draft-title{flex-basis:calc(100% - 80px)}
   .draft-actions{width:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
   .draft-actions button{width:100%}
+  .draft-card:has(.draft-fields) .draft-thumb{width:92px;height:126px}
   .draft-fields,.publication-grid,.value-row{grid-template-columns:1fr}
   .recognition-box{grid-template-columns:1fr}
   .recognition-box>button{width:100%}

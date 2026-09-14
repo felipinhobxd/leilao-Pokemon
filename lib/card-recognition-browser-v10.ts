@@ -3,6 +3,7 @@
 import * as v9 from "./card-recognition-browser-v9";
 import { normalizeCardPhoto, cardNormalizationRuntime, type CardNormalization } from "./card-recognition-normalize";
 import { searchGlobalVisual, shutdownGlobalVisualRecognition, globalVisualRuntime, type GlobalVisualResult } from "./card-recognition-global";
+import { preserveCandidateCollectorWidth, preserveResultCollectorWidth } from "./card-recognition-format";
 import type { RecognitionCandidate, RecognitionResult } from "./card-recognition-core";
 
 const CACHE_PREFIX = "leilao:card-recognition:v10:";
@@ -13,11 +14,7 @@ export type RecognitionDecision = "IDENTIFICADA" | "PROVÁVEL" | "INCERTA";
 export type V10RecognitionResult = RecognitionResult & {
   decisionStatus?: RecognitionDecision;
   confidenceKind?: "evidence-score-not-calibrated-probability";
-  normalization?: {
-    method: CardNormalization["method"];
-    confidence: number;
-    rotation: number;
-  };
+  normalization?: { method: CardNormalization["method"]; confidence: number; rotation: number };
   globalVisual?: {
     status: GlobalVisualResult["status"];
     indexCandidates: number;
@@ -87,7 +84,8 @@ function exactCatalogDecision(result: RecognitionResult) {
 
 function uniqueCandidates(values: RecognitionCandidate[]) {
   const map = new Map<string, RecognitionCandidate>();
-  for (const candidate of values) {
+  for (const rawCandidate of values) {
+    const candidate = preserveCandidateCollectorWidth(rawCandidate);
     const key = candidate.id ? `${candidate.language}:${candidate.id}` : `${candidate.language}:${candidate.name}:${candidate.cardNumber}`;
     const current = map.get(key);
     if (!current || candidate.score > current.score || candidate.evidence?.visualMatch) map.set(key, candidate);
@@ -96,13 +94,13 @@ function uniqueCandidates(values: RecognitionCandidate[]) {
 }
 
 function withMetadata(
-  result: RecognitionResult,
+  rawResult: RecognitionResult,
   normalization: CardNormalization,
   global: GlobalVisualResult | undefined,
   started: number,
   evidence: string[],
 ): V10RecognitionResult {
-  const value = result as V10RecognitionResult;
+  const value = preserveResultCollectorWidth(rawResult) as V10RecognitionResult;
   value.normalization = { method: normalization.method, confidence: normalization.confidence, rotation: normalization.rotation };
   value.confidenceKind = "evidence-score-not-calibrated-probability";
   value.independentEvidence = evidence;
@@ -122,7 +120,8 @@ function withMetadata(
   return value;
 }
 
-function promoteVisualWinner(base: RecognitionResult, global: GlobalVisualResult, winner: RecognitionCandidate) {
+function promoteVisualWinner(base: RecognitionResult, global: GlobalVisualResult, winnerRaw: RecognitionCandidate) {
+  const winner = preserveCandidateCollectorWidth(winnerRaw);
   const baseTop = base.candidates[0];
   const exactNumber = numberAgrees(base, winner);
   const catalogAgreement = sameCard(baseTop, winner);
@@ -143,8 +142,8 @@ function promoteVisualWinner(base: RecognitionResult, global: GlobalVisualResult
     variant: winner.variant ?? base.variant,
   };
 
-  // Do not turn one visual opinion into fake certainty. Automatic IDENTIFICADA requires
-  // an independent printed-number/catalog agreement. Otherwise the visual result is a suggestion.
+  // One visual opinion cannot become fake certainty. IDENTIFICADA needs an independent
+  // printed-number/catalog agreement; otherwise the visual result remains a suggestion.
   if (exactNumber || (catalogAgreement && nameAgreement)) {
     result.level = "high";
     result.confidence = exactNumber && catalogAgreement ? 94 : 89;
@@ -169,7 +168,7 @@ async function perform(
   }
 
   // selectedLanguage is intentionally not forwarded here. A default UI value is not evidence.
-  // Detected OCR language is allowed to influence catalog localization after it is actually observed.
+  // Detected OCR language is allowed to influence catalog localization only after it is observed.
   const normalization = await normalizeCardPhoto(file, onProgress);
   onProgress?.("🔎 OCR + catálogo sobre a carta retificada…");
   const base = await v9.recognizePokemonCard(normalization.file, undefined, onProgress, { bypassCache: true });

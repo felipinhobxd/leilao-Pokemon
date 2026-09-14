@@ -548,7 +548,7 @@ function isPhysicalSet(set: TcgSetBrief) {
 }
 
 function denominatorValues(hints: OcrHints) {
-  return [...new Set([...(hints.denominatorVariants ?? []), hints.denominator].filter((value): value is number => Number.isInteger(value) && value > 0))];
+  return [...new Set([...(hints.denominatorVariants ?? []), hints.denominator].filter((value): value is number => typeof value === "number" && Number.isInteger(value) && value > 0))];
 }
 
 function matchingSetsForDenominator(sets: TcgSetBrief[], hints: OcrHints) {

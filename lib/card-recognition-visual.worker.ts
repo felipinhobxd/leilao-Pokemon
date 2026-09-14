@@ -6,7 +6,7 @@ import { extractDinoEmbedding, cosineSimilarity } from "./card-recognition-embed
 const MODEL = "onnx-community/dinov2-small-ONNX";
 const MATCH_WIDTH = 48;
 const MATCH_HEIGHT = 66;
-const MAX_NORMAL_CANDIDATES = 20;
+const MAX_NORMAL_CANDIDATES = 100;
 const MAX_DINO_CANDIDATES = 5;
 
 env.allowLocalModels = false;

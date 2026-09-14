@@ -22,7 +22,7 @@ test("card recognition stays local-first and free-service only", () => {
   assert.ok(runtime.cardRecognitionRuntime.maxCatalogDetailsPerSearch > 0);
   assert.ok(runtime.cardRecognitionRuntime.maxCatalogDetailsPerSearch <= 4);
   assert.equal(runtime.cardRecognitionRuntime.maxCatalogRequests, 8);
-  assert.equal(runtime.cardRecognitionRuntime.cacheVersion, 7);
+  assert.equal(runtime.cardRecognitionRuntime.cacheVersion, 8);
 
   for (const forbidden of [
     "api.openai.com",

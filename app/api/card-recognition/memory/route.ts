@@ -6,6 +6,7 @@ const FINGERPRINT_HEX = /^[a-f0-9]{72}$/;
 const SHA256_HEX = /^[a-f0-9]{64}$/;
 const LANGUAGES = new Set(["pt-BR", "en", "es", "ja"]);
 const MAX_ROWS = 1500;
+const BOOTSTRAP_LIMIT = 24;
 const POPCOUNT = new Uint8Array(Array.from({ length: 256 }, (_, value) => {
   let n = value;
   let count = 0;
@@ -136,6 +137,44 @@ async function learnMemory(db: Awaited<ReturnType<typeof authorize>>["db"], body
   return { learned: true, confirmations };
 }
 
+function imageShaFromUrl(url: string) {
+  return url.match(/\/cards\/([a-f0-9]{64})\.(?:jpg|jpeg|png|webp)(?:\?|$)/i)?.[1]?.toLowerCase() ?? null;
+}
+
+async function bootstrapMemory(db: Awaited<ReturnType<typeof authorize>>["db"]) {
+  const { data: learned, error: learnedError } = await db
+    .from("card_recognition_examples")
+    .select("image_sha256")
+    .order("updated_at", { ascending: false })
+    .limit(MAX_ROWS);
+  if (learnedError) throw new Error("card_recognition_memory_bootstrap_read_failed");
+  const known = new Set((learned ?? []).map(row => String(row.image_sha256)));
+
+  const { data, error } = await db
+    .from("cards")
+    .select("id,name,collection,card_number,language,variant,image_url,updated_at")
+    .not("image_url", "is", null)
+    .order("updated_at", { ascending: false })
+    .limit(200);
+  if (error) throw new Error("card_recognition_cards_read_failed");
+
+  const examples = (data ?? []).flatMap(card => {
+    const imageUrl = String(card.image_url ?? "");
+    const imageSha256 = imageShaFromUrl(imageUrl);
+    if (!imageSha256 || known.has(imageSha256) || !LANGUAGES.has(String(card.language ?? "")) || !String(card.name ?? "").trim()) return [];
+    return [{
+      imageSha256,
+      imageUrl,
+      name: String(card.name),
+      collection: String(card.collection ?? ""),
+      cardNumber: String(card.card_number ?? ""),
+      language: String(card.language),
+      variant: String(card.variant ?? ""),
+    }];
+  }).slice(0, BOOTSTRAP_LIMIT);
+  return { examples };
+}
+
 export async function POST(request: Request) {
   try {
     const { db } = await authorize(request, true);
@@ -144,6 +183,7 @@ export async function POST(request: Request) {
     const action = String(body.action ?? "");
     if (action === "search") return Response.json(await searchMemory(db, body), { headers: { "Cache-Control": "no-store" } });
     if (action === "learn") return Response.json(await learnMemory(db, body), { headers: { "Cache-Control": "no-store" } });
+    if (action === "bootstrap") return Response.json(await bootstrapMemory(db), { headers: { "Cache-Control": "no-store" } });
     throw new HttpError(400, "Ação de memória inválida.");
   } catch (error) {
     return failure(error);

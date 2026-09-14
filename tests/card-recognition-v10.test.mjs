@@ -6,6 +6,8 @@ import { summarizeRecognitionBenchmark, evaluateRecognitionSample } from "../lib
 const v10 = fs.readFileSync(new URL("../lib/card-recognition-browser-v10.ts", import.meta.url), "utf8");
 const milo = fs.readFileSync(new URL("../lib/card-recognition-milo.ts", import.meta.url), "utf8");
 const normalize = fs.readFileSync(new URL("../lib/card-recognition-normalize.ts", import.meta.url), "utf8");
+const cornelius = fs.readFileSync(new URL("../lib/card-recognition-cornelius.ts", import.meta.url), "utf8");
+const ppocr = fs.readFileSync(new URL("../lib/card-recognition-ppocr.ts", import.meta.url), "utf8");
 const wizard = fs.readFileSync(new URL("../app/auctions/new/bulk-wizard.tsx", import.meta.url), "utf8");
 const debugUi = fs.readFileSync(new URL("../app/auctions/new/recognition-debug.tsx", import.meta.url), "utf8");
 const tsconfig = JSON.parse(fs.readFileSync(new URL("../tsconfig.json", import.meta.url), "utf8"));
@@ -33,17 +35,17 @@ test("v10 is the active recognizer but main/business flow remains imported throu
 
 test("default UI language is not evidence and v10 does not forward it to inference", () => {
   assert.match(wizard, /language: "pt-BR"/);
-  assert.match(v10, /selectedLanguage is intentionally not forwarded/);
+  assert.match(v10, /_selectedLanguage\?: string/);
   assert.match(v10, /v9\.recognizePokemonCard\(normalization\.file, undefined/);
   assert.match(v10, /v9\.recognizePokemonCard\(file, undefined/);
   assert.doesNotMatch(v10, /v9\.recognizePokemonCard\([^\n]+selectedLanguage/);
+  assert.match(v10, /uiLanguageIsNotRecognitionEvidence: true/);
 });
 
 test("Milo runs before any exact OCR/catalog return and searches independently from OCR", () => {
   const visualCall = v10.indexOf("const global = await searchMiloVisual(normalization.blob");
   const exactDecision = v10.indexOf("if (exactCatalogDecision(base))", visualCall);
   assert.ok(visualCall > 0 && exactDecision > visualCall, "Milo must run before accepting an exact OCR/catalog decision");
-  assert.match(v10, /Milo now runs for every non-cached recognition/);
   assert.match(v10, /always-on-ocr-independent-milo-exact-print-retrieval/);
   assert.match(milo, /discoveryDependsOnOcr: false/);
   assert.match(milo, /function topMatches\(index: LoadedIndex, query: Float32Array\)/);
@@ -52,9 +54,20 @@ test("Milo runs before any exact OCR/catalog return and searches independently f
   assert.doesNotMatch(milo.slice(milo.indexOf("function topMatches"), milo.indexOf("function emptyEvidence")), /name|ocr|hint/i);
 });
 
-test("v10 invalidates old result cache after making Milo mandatory", () => {
-  assert.match(v10, /CACHE_PREFIX = "leilao:card-recognition:v10-milo-always-v1:"/);
-  assert.match(v10, /cache: "v10-milo-always-v1"/);
+test("v10 invalidates old result cache after adding Cornelius and PP-OCRv6", () => {
+  assert.match(v10, /CACHE_PREFIX = "leilao:card-recognition:v10-cornelius-ppocrv6-milo-v1:"/);
+  assert.match(v10, /cache: "v10-cornelius-ppocrv6-milo-v1"/);
+});
+
+test("Cornelius and PP-OCRv6 are local-first optional stages with safe fallbacks", () => {
+  assert.match(v10, /normalizeCardWithCornelius\(file, onProgress\)/);
+  assert.match(v10, /return normalizeCardPhoto\(file, onProgress\)/);
+  assert.match(v10, /runPpOcr\(file, onProgress\)/);
+  assert.match(cornelius, /executionProviders: \["wasm"\]/);
+  assert.match(cornelius, /inference: "local-browser"/);
+  assert.match(ppocr, /model: \{ det: "small", rec: "small" \}/);
+  assert.match(ppocr, /backend: "wasm"/);
+  assert.match(ppocr, /inference: "local-browser"/);
 });
 
 test("debug UI tests and reports the actual v10 Milo retriever instead of only legacy DINO", () => {
@@ -85,6 +98,8 @@ test("normalization estimates four edges/corners and applies a real projective h
   assert.match(normalize, /warpQuad/);
   assert.match(normalize, /aspect-fallback/);
   assert.match(normalize, /\[0, 90, 180, 270\] as const/);
+  assert.match(cornelius, /inverseHomography/);
+  assert.match(cornelius, /warp\(source: HTMLCanvasElement, quad: CardQuad\)/);
 });
 
 test("IDENTIFICADA requires independent evidence instead of raw visual similarity", () => {

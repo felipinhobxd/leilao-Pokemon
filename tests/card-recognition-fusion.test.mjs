@@ -9,11 +9,13 @@ const tsconfig = JSON.parse(fs.readFileSync(new URL("../tsconfig.json", import.m
 
 test("runtime routes card recognition through a regression-safe three-stage fusion", () => {
   assert.equal(tsconfig.compilerOptions.paths["@/lib/card-recognition-browser"][0], "./lib/card-recognition-browser-v9.ts");
-  assert.match(fusion, /recognition principal/);
+  assert.match(fusion, /reconhecimento principal/);
   assert.match(fusion, /reconhecedor anterior/);
   assert.match(fusion, /resgate por foto inteira/);
-  assert.match(fusion, /primary\.level === "high"/);
-  assert.match(fusion, /legacy\.level === "high"/);
+  assert.match(fusion, /function decisive/);
+  assert.match(fusion, /fullNumberMatch/);
+  assert.match(fusion, /visualMatch/);
+  assert.match(fusion, /agreement \* 150/);
   assert.match(fusion, /sameIdentity/);
   assert.match(legacy, /SESSION_CACHE_PREFIX = "leilao:card-recognition:v7:/);
 });

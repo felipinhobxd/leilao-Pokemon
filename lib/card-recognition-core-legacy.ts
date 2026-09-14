@@ -11,6 +11,10 @@ export type OcrHints = {
   language: RecognitionLanguage | null;
   languageConfidence: number;
   text: string;
+  nameConfidence?: number;
+  numberConfidence?: number;
+  denominatorConfidence?: number;
+  hpConfidence?: number;
   localIdVariants?: string[];
   denominatorVariants?: number[];
 };

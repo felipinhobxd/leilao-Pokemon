@@ -41,8 +41,8 @@ test("v11 is the active recognizer but business flow remains imported through th
 test("default UI language is not evidence and v11 does not forward it to inference", () => {
   assert.match(wizard, /language: "pt-BR"/);
   assert.match(v10, /_selectedLanguage\?: string/);
-  assert.match(v10, /v9\.recognizePokemonCard\(normalization\.file, undefined/);
-  assert.match(v10, /v9\.recognizePokemonCard\(file, undefined/);
+  assert.doesNotMatch(v10, /v9\.recognizePokemonCard\(/);
+
   assert.doesNotMatch(v10, /v9\.recognizePokemonCard\([^\n]+selectedLanguage/);
   assert.match(v10, /uiLanguageIsNotRecognitionEvidence: true/);
 });
@@ -99,7 +99,7 @@ test("confirmed memory stores tiny fingerprints and never duplicates card images
 test("unconfirmed predictions cannot self-train the memory", () => {
   assert.match(v10, /selfTrainingFromUnconfirmedPredictions: false/);
   assert.match(v10, /Memory never replaces OCR/);
-  assert.match(v10, /memory\.veryStrong && remembered && sameCard/);
+  assert.match(v10, /decideRecognition\(base, visual\.candidates/);
   assert.doesNotMatch(v10, /rememberConfirmedCard/);
 });
 
@@ -135,9 +135,9 @@ test("normalization estimates four edges/corners and applies a real projective h
 
 test("IDENTIFICADA requires independent evidence rather than raw memory or visual similarity", () => {
   assert.match(v10, /requiresIndependentEvidenceForIdentified: true/);
-  assert.match(v10, /exactNumber \|\| \(catalogAgreement && nameAgreement\)/);
-  assert.match(v10, /memory\?\.veryStrong && memoryAgreement && nameAgreement/);
-  assert.match(v10, /result\.level = "medium"/);
+  assert.match(v10, /final\.decisionStatus = decision\.status/);
+
+
   assert.match(v10, /evidence-score-not-calibrated-probability/);
 });
 

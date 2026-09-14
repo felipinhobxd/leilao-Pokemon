@@ -113,6 +113,16 @@ async function learnMemory(db: Awaited<ReturnType<typeof authorize>>["db"], body
   const language = String(body.language ?? "");
   if (!LANGUAGES.has(language)) throw new HttpError(400, "Idioma de carta inválido.");
 
+  // Only final labels already saved by the user can become memory. Predictions alone fail.
+  if (imageShaFromUrl(imageUrl) !== imageSha256) throw new HttpError(400, "Imagem e SHA não correspondem.");
+  const { data: saved, error: savedError } = await db.from("cards")
+    .select("name,collection,card_number,language,variant")
+    .eq("image_url", imageUrl).order("updated_at", { ascending: false }).limit(1).maybeSingle();
+  if (savedError) throw new Error("card_recognition_confirmation_lookup_failed");
+  if (!saved || saved.name !== name || (saved.collection || "") !== (collection || "") ||
+      (saved.card_number || "") !== (cardNumber || "") || saved.language !== language ||
+      (saved.variant || "") !== (variant || "")) throw new HttpError(409, "Confirme e salve os dados finais antes de criar memória.");
+
   const { data: existing, error: existingError } = await db
     .from("card_recognition_examples")
     .select("confirmations")

@@ -47,8 +47,9 @@ function draftFor(file: File | null, preview: string, lot: number, expanded: boo
 }
 
 function recognitionLabel(card: Draft) {
-  if (card.recognitionStage === "identified") return `✅ Carta identificada ${card.recognitionConfidence ?? 0}%`;
-  if (card.recognitionStage === "review") return `🟡 Verifique os dados · ${card.recognitionConfidence ?? 0}%`;
+  if (card.recognitionStage === "not-found" && (card.recognitionResult as { decisionStatus?: string } | undefined)?.decisionStatus === "REVISAR") return "🔎 Evidências insuficientes ou conflitantes · revisar";
+  if (card.recognitionStage === "identified") return card.recognitionMessage === "Candidato escolhido manualmente" ? "✅ Carta escolhida manualmente" : "✅ Carta identificada";
+  if (card.recognitionStage === "review") return "🟡 Carta provável · verifique os dados";
   if (card.recognitionStage === "not-found") return "🔴 Não consegui identificar com segurança";
   if (card.recognitionStage === "error") return "⚠ Reconhecimento indisponível";
   if (card.recognitionStage === "queued") return "🔍 Na fila de reconhecimento…";

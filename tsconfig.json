@@ -16,7 +16,7 @@
     "incremental": true,
     "plugins": [{ "name": "next" }],
     "paths": {
-      "@/lib/card-recognition-browser": ["./lib/card-recognition-browser-v9.ts"],
+      "@/lib/card-recognition-browser": ["./lib/card-recognition-browser-v10.ts"],
       "@/*": ["./*"]
     }
   },

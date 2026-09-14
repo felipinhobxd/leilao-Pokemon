@@ -50,6 +50,16 @@ test("OCR can be completely wrong without blocking Milo image-only retrieval", (
   assert.doesNotMatch(milo.slice(milo.indexOf("function topMatches"), milo.indexOf("function emptyEvidence")), /name|ocr|hint/i);
 });
 
+test("Milo normalizes real-photo lighting before embedding without using card metadata", () => {
+  assert.match(milo, /QUERY_AUTOCONTRAST_CUTOFF = 0\.005/);
+  assert.match(milo, /autocontrastRgbInPlace\(pixels\)/);
+  assert.match(milo, /queryPhotometricNormalization: "autocontrast-0\.5%-per-channel"/);
+  const start = milo.indexOf("function autocontrastRgbInPlace");
+  const end = milo.indexOf("async function imageTensor", start);
+  assert.ok(start >= 0 && end > start);
+  assert.doesNotMatch(milo.slice(start, end), /name|localId|ocr|hint|cardNumber/i);
+});
+
 test("normalization estimates four edges/corners and applies a real projective homography", () => {
   assert.match(normalize, /bestVertical/);
   assert.match(normalize, /bestHorizontal/);

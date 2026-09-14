@@ -1,0 +1,1 @@
+Runtime cache validation compares metadata rows, embedding dimension and int8 byte length before accepting the index.

@@ -22,7 +22,7 @@ import { needsVisualFallback, recognizeVisually, shutdownVisualRecognition, type
 const TESSERACT_VERSION = "7.0.0";
 const TESSERACT_SCRIPT = `https://cdn.jsdelivr.net/npm/tesseract.js@${TESSERACT_VERSION}/dist/tesseract.min.js`;
 const TCGDEX_BASE = "https://api.tcgdex.net/v2";
-const SESSION_CACHE_PREFIX = "leilao:card-recognition:v7:";
+const SESSION_CACHE_PREFIX = "leilao:card-recognition:v8:";
 const SET_INDEX_CACHE_PREFIX = "leilao:tcgdex:sets:v1:";
 const CATALOG_TTL_MS = 30 * 60_000;
 const SET_INDEX_TTL_MS = 24 * 60 * 60_000;
@@ -75,6 +75,7 @@ type OcrRead = { text: string; confidence: number };
 type NumberRead = OcrRead & ReturnType<typeof extractCardNumber>;
 type SetIndexSource = "memory" | "persistent" | "network" | "stale";
 type PersistedSetIndex = { savedAt: number; sets: TcgSetBrief[] };
+type OcrProfile = "normal" | "detail" | "number";
 
 type RecognitionDebug = {
   file: { name: string; width: number; height: number };
@@ -334,12 +335,16 @@ function cropCardRegion(
   x1: number,
   y1: number,
   mode: "gray" | "contrast" | "threshold" = "gray",
+  profile: OcrProfile = "normal",
 ) {
   const sourceX = Math.max(0, Math.round(box.x + box.width * x0));
   const sourceY = Math.max(0, Math.round(box.y + box.height * y0));
   const sourceWidth = Math.max(1, Math.min(source.width - sourceX, Math.round(box.width * (x1 - x0))));
   const sourceHeight = Math.max(1, Math.min(source.height - sourceY, Math.round(box.height * (y1 - y0))));
-  const scale = Math.min(4, Math.max(1, OCR_MIN_LINE_HEIGHT / sourceHeight, Math.min(OCR_MAX_WIDTH / sourceWidth, 2.6)));
+  const targetHeight = profile === "number" ? 340 : profile === "detail" ? 260 : OCR_MIN_LINE_HEIGHT;
+  const maxWidth = profile === "number" ? 2600 : profile === "detail" ? 2200 : OCR_MAX_WIDTH;
+  const maxScale = profile === "number" ? 6 : profile === "detail" ? 5 : 4;
+  const scale = Math.min(maxScale, Math.max(1, targetHeight / sourceHeight, Math.min(maxWidth / sourceWidth, profile === "normal" ? 2.6 : maxScale)));
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(sourceWidth * scale));
   canvas.height = Math.max(1, Math.round(sourceHeight * scale));
@@ -347,7 +352,7 @@ function cropCardRegion(
   if (!context) throw new Error("Canvas indisponível para OCR.");
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = "high";
-  context.filter = mode === "gray" ? "grayscale(1) contrast(1.18)" : "grayscale(1) contrast(1.55)";
+  context.filter = mode === "gray" ? "grayscale(1) contrast(1.2)" : "grayscale(1) contrast(1.65)";
   context.drawImage(source, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, canvas.width, canvas.height);
 
   if (mode === "threshold") {
@@ -386,13 +391,10 @@ function nameReadScore(read: OcrRead) {
 
 async function recognizeName(source: HTMLCanvasElement, box: CardBox, worker: TesseractWorker) {
   const reads: OcrRead[] = [];
-  const primary = cropCardRegion(source, box, 0, 0, 0.94, 0.14, "gray");
-  reads.push(await recognizeWithWorker(worker, primary, "6"));
-  if (nameReadScore(reads[0]) < 45) reads.push(await recognizeWithWorker(worker, cropCardRegion(source, box, 0, 0, 0.94, 0.14, "gray"), "11"));
-  if (Math.max(...reads.map(nameReadScore)) < 50) {
-    const alternate = cropCardRegion(source, box, 0, 0, 0.94, 0.19, "contrast");
-    reads.push(await recognizeWithWorker(worker, alternate, "11"));
-  }
+  // First pass targets only the printed Pokémon name, avoiding BASIC/HP/type icons.
+  reads.push(await recognizeWithWorker(worker, cropCardRegion(source, box, 0.08, 0.005, 0.84, 0.115, "gray", "detail"), "7"));
+  if (nameReadScore(reads[0]) < 55) reads.push(await recognizeWithWorker(worker, cropCardRegion(source, box, 0.05, 0, 0.88, 0.14, "contrast", "detail"), "13"));
+  if (Math.max(...reads.map(nameReadScore)) < 50) reads.push(await recognizeWithWorker(worker, cropCardRegion(source, box, 0, 0, 0.94, 0.18, "gray", "detail"), "11"));
   reads.sort((a, b) => nameReadScore(b) - nameReadScore(a));
   return { reads, best: reads[0] ?? { text: "", confidence: 0 } };
 }
@@ -408,21 +410,24 @@ function plausibleNumber(read: NumberRead) {
 
 async function recognizeCollectorNumber(source: HTMLCanvasElement, box: CardBox, worker: TesseractWorker) {
   const reads: NumberRead[] = [];
-  const bands: Array<[number, number]> = [[0.78, 0.91], [0.83, 0.96], [0.74, 0.87], [0.67, 0.80], [0.87, 0.99]];
-  for (const [y0, y1] of bands) {
-    const gray = cropCardRegion(source, box, 0, y0, 0.85, y1, "gray");
-    const first = await recognizeWithWorker(worker, gray, "11");
+  const regions: Array<[number, number, number, number]> = [
+    [0, 0.82, 0.62, 1.0],
+    [0, 0.76, 0.72, 0.94],
+    [0.38, 0.82, 1.0, 1.0],
+    [0, 0.68, 1.0, 0.90],
+    [0, 0.86, 1.0, 1.0],
+  ];
+  const whitelist = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/|-.: ";
+  for (const [x0, y0, x1, y1] of regions) {
+    const first = await recognizeWithWorker(worker, cropCardRegion(source, box, x0, y0, x1, y1, "gray", "number"), "7", whitelist);
     let parsed = { ...first, ...extractCardNumber(first.text) };
     reads.push(parsed);
     if (plausibleNumber(parsed)) return { reads, best: parsed };
 
-    if (parsed.localId || parsed.denominator) {
-      const contrast = cropCardRegion(source, box, 0, y0, 0.85, y1, "contrast");
-      const second = await recognizeWithWorker(worker, contrast, "11");
-      parsed = { ...second, ...extractCardNumber(second.text) };
-      reads.push(parsed);
-      if (plausibleNumber(parsed)) return { reads, best: parsed };
-    }
+    const second = await recognizeWithWorker(worker, cropCardRegion(source, box, x0, y0, x1, y1, "threshold", "number"), "11", whitelist);
+    parsed = { ...second, ...extractCardNumber(second.text) };
+    reads.push(parsed);
+    if (plausibleNumber(parsed)) return { reads, best: parsed };
   }
   const best = reads.filter(read => read.localId && read.denominator).sort((a, b) => Number(plausibleNumber(b)) - Number(plausibleNumber(a)) || b.confidence - a.confidence)[0];
   return { reads, best: best ?? { text: "", confidence: 0, cardNumber: "", localId: "", denominator: null, localIdVariants: [], denominatorVariants: [] } };
@@ -430,12 +435,11 @@ async function recognizeCollectorNumber(source: HTMLCanvasElement, box: CardBox,
 
 async function recognizeLanguage(source: HTMLCanvasElement, box: CardBox, worker: TesseractWorker, nameText: string, numberText: string) {
   const reads: OcrRead[] = [];
-  const main = cropCardRegion(source, box, 0, 0.35, 0.98, 0.82, "gray");
-  reads.push(await recognizeWithWorker(worker, main, "11"));
+  // Attacks/rules contain the strongest language-specific vocabulary; footer is fallback.
+  reads.push(await recognizeWithWorker(worker, cropCardRegion(source, box, 0.04, 0.36, 0.96, 0.82, "gray", "detail"), "6"));
   let hints = buildOcrHints(nameText, numberText, reads.map(read => read.text).join("\n"));
   if (!hints.language || hints.languageConfidence < 70) {
-    const lower = cropCardRegion(source, box, 0, 0.68, 0.98, 0.91, "contrast");
-    reads.push(await recognizeWithWorker(worker, lower, "11"));
+    reads.push(await recognizeWithWorker(worker, cropCardRegion(source, box, 0.04, 0.62, 0.96, 0.93, "contrast", "detail"), "6"));
     hints = buildOcrHints(nameText, numberText, reads.map(read => read.text).join("\n"));
   }
   return { reads, hints };
@@ -557,7 +561,6 @@ function matchingSetsForDenominator(sets: TcgSetBrief[], hints: OcrHints) {
   const physical = sets.filter(isPhysicalSet);
   const official = physical.filter(set => denominators.includes(Number(set.cardCount?.official ?? 0)));
   if (official.length) return official;
-  // total includes secret/hidden cards and is only a fallback when OCR also has a usable name.
   if (hints.name.trim().length < 4) return [];
   return physical.filter(set => denominators.includes(Number(set.cardCount?.total ?? 0)));
 }
@@ -612,8 +615,6 @@ export async function resolveCatalog(hints: OcrHints, preferredLanguage: string 
   const name = hints.name.trim();
   const attempted = new Set<string>();
 
-  // Fast deterministic path: the printed denominator identifies candidate sets, then
-  // set + localId maps directly to one concrete TCGdex card. This mirrors a manual lookup.
   if (ids.length && denominatorValues(hints).length) {
     for (const language of languages) {
       if (stats.requests >= MAX_CATALOG_REQUESTS) break;
@@ -678,7 +679,6 @@ export async function resolveCatalog(hints: OcrHints, preferredLanguage: string 
             if (candidate) candidates.set(key, candidate);
           } catch { /* Keep already retrieved candidates. */ }
           const current = snapshot();
-          // Only OCR evidence supports early identification; the form language is just search order.
           if (sorted.length === 1 && current.ranked[0]?.evidence?.fullNumberMatch && current.ranked[0].evidence.nameSimilarity >= 0.9) return current;
         }
         const current = snapshot();
@@ -700,17 +700,17 @@ async function recognizeFromOrientedSource(source: HTMLCanvasElement, fileName: 
   const box = locateCard(source);
   const worker = await getLatinWorker();
 
-  onProgress?.("🔤 Lendo nome");
+  onProgress?.("1/4 · 🔤 Lendo nome em alta resolução");
   const name = await recognizeName(source, box, worker);
 
-  onProgress?.("🔢 Lendo número");
+  onProgress?.("2/4 · 🔢 Ampliando e lendo número da carta");
   const number = await recognizeCollectorNumber(source, box, worker);
 
-  onProgress?.("🌐 Identificando idioma");
+  onProgress?.("3/4 · 🌐 Lendo texto para identificar idioma");
   const language = await recognizeLanguage(source, box, worker, name.best.text, number.best.text);
   let hints = mergeNumberAlternatives(language.hints, number.reads);
 
-  onProgress?.("🃏 Confirmando no catálogo");
+  onProgress?.("4/4 · 🃏 Descobrindo coleção / edição no TCGdex");
   let catalog = await resolveCatalog(hints, preferredLanguage, stats);
   let ranked: RecognitionCandidate[] = catalog.ranked;
 
@@ -718,8 +718,8 @@ async function recognizeFromOrientedSource(source: HTMLCanvasElement, fileName: 
   if (shouldTryJapanese) {
     try {
       const japaneseWorker = await getJapaneseWorker();
-      const top = cropCardRegion(source, box, 0, 0, 0.95, 0.20, "gray");
-      const middle = cropCardRegion(source, box, 0, 0.20, 0.98, 0.75, "gray");
+      const top = cropCardRegion(source, box, 0, 0, 0.95, 0.20, "gray", "detail");
+      const middle = cropCardRegion(source, box, 0, 0.20, 0.98, 0.75, "gray", "detail");
       const topRead = await recognizeWithWorker(japaneseWorker, top, "11");
       const middleRead = await recognizeWithWorker(japaneseWorker, middle, "11");
       const japaneseHints = buildOcrHints(topRead.text, number.best.text, middleRead.text);
@@ -744,89 +744,89 @@ async function performRecognition(file: File, preferredLanguage?: string, onProg
   let source = sourceCanvasForImage(decoded);
   const canvases = [source];
   try {
-  if (source.width > source.height * 1.08) {
-    const clockwise = rotateCanvas(source, 90);
-    const counterClockwise = rotateCanvas(source, 270);
-    canvases.push(clockwise, counterClockwise);
-    source = locateCard(clockwise).score >= locateCard(counterClockwise).score ? clockwise : counterClockwise;
-  }
+    if (source.width > source.height * 1.08) {
+      const clockwise = rotateCanvas(source, 90);
+      const counterClockwise = rotateCanvas(source, 270);
+      canvases.push(clockwise, counterClockwise);
+      source = locateCard(clockwise).score >= locateCard(counterClockwise).score ? clockwise : counterClockwise;
+    }
 
-  const stats: CatalogStats = { requests: 0, queries: [] };
-  let run = await recognizeFromOrientedSource(source, file.name, preferredLanguage, onProgress, stats);
-  // Cheap upside-down fallback only when the fast pass found no meaningful image evidence.
-  if (!run.hints.name && !run.hints.localId && !run.ranked.length) {
-    const rotated = rotateCanvas(source, 180);
-    canvases.push(rotated);
-    run = await recognizeFromOrientedSource(rotated, file.name, preferredLanguage, onProgress, stats);
-    source = rotated;
-  }
+    const stats: CatalogStats = { requests: 0, queries: [] };
+    let run = await recognizeFromOrientedSource(source, file.name, preferredLanguage, onProgress, stats);
+    if (!run.hints.name && !run.hints.localId && !run.ranked.length) {
+      const rotated = rotateCanvas(source, 180);
+      canvases.push(rotated);
+      run = await recognizeFromOrientedSource(rotated, file.name, preferredLanguage, onProgress, stats);
+      source = rotated;
+    }
 
-  const pool = run.catalog.pool;
-  const best = run.ranked[0];
-  const easy = best?.evidence?.fullNumberMatch && best.evidence.nameSimilarity >= 0.9 && best.score - (run.ranked[1]?.score ?? 0) >= 8;
-  let visual: VisualOutcome = { candidates: pool, used: false,
-    status: easy ? "not-needed" : !run.hints.localId && !run.hints.name ? "insufficient-clues" : "no-candidates",
-    reason: easy ? "Banco + OCR inequívocos" : !run.hints.localId && !run.hints.name ? "Pistas insuficientes" : "Menos de dois candidatos visuais plausíveis" };
-  if (!easy && needsVisualFallback(pool)) {
-    const normalized = document.createElement("canvas");
-    normalized.width = 224; normalized.height = 312;
-    canvases.push(normalized);
-    const ctx = normalized.getContext("2d");
-    if (ctx) {
-      ctx.drawImage(source, run.box.x, run.box.y, run.box.width, run.box.height, 0, 0, 224, 312);
-      const blob = await new Promise<Blob | null>(resolve => normalized.toBlob(resolve, "image/png"));
-      if (blob) visual = await recognizeVisually(blob, pool, onProgress);
-      else visual = { ...visual, status: "failed", error: "Não foi possível preparar a imagem" };
-    } else visual = { ...visual, status: "failed", error: "Canvas indisponível" };
-  }
-  // Only a visually confirmed winner may cross from the private shortlist into display.
-  const winner = visual.candidates.find(c => c.evidence?.visualMatch);
-  if (winner) run.ranked = [winner, ...run.ranked.filter(c => c.id !== winner.id || c.language !== winner.language)].slice(0, 5);
-  const elapsedMs = Math.round(performance.now() - started);
-  const result = resultFromCandidates(run.hints, run.ranked, elapsedMs, run.stats.requests, "ocr");
-  if (visual.used && result.level === "high") { result.level = "medium"; result.confidence = Math.min(79, result.confidence); }
-  if (winner) {
-    Object.assign(result, { level: "medium", confidence: 60, name: winner.name, collection: winner.collection, cardNumber: winner.cardNumber });
-  }
-  if (!run.hints.language || run.hints.languageConfidence < 55) delete result.language;
-  Object.assign(result, {
-    visualUsed: visual.used,
-    visualStatus: visual.status,
-    visualBackend: visual.backend,
-    visualError: visual.error,
-    visualReason: visual.reason,
-    visualCandidateCount: pool.length,
-    visualInitMs: visual.initMs,
-    visualSimilarities: visual.similarities,
-    visualCandidatePool: pool,
-    catalogCandidatesBefore: run.catalog.before,
-    catalogCandidatesAfter: run.ranked.length,
-    catalogBudgetExhausted: stats.exhausted ?? false,
-    catalogStrategy: run.catalog.strategy,
-    catalogSetCandidates: run.catalog.setCandidates,
-    catalogSetIndexSource: run.catalog.setIndexSource,
-    catalogQueries: [...run.stats.queries],
-  });
-  saveSessionRecognition(hash, result);
-  pushDebug({
-    file: { name: file.name, width: source.width, height: source.height },
-    cardBox: run.box,
-    nameReads: run.name.reads,
-    numberReads: run.number.reads,
-    languageReads: run.language.reads,
-    hints: run.hints,
-    catalogQueries: run.stats.queries,
-    catalogStrategy: run.catalog.strategy,
-    setCandidates: run.catalog.setCandidates,
-    candidates: run.ranked,
-    elapsedMs,
-  });
-  onProgress?.(result.level === "high"
-    ? `✅ ${result.name ?? "Carta"} identificada — ${result.confidence}%`
-    : result.level === "medium"
-      ? `🟡 ${result.name ?? "Possível carta"} — ${result.confidence}% — confirme os dados`
-      : "🔴 Não consegui identificar");
-  return result;
+    const pool = run.catalog.pool;
+    const best = run.ranked[0];
+    const easy = best?.evidence?.fullNumberMatch && best.evidence.nameSimilarity >= 0.9 && best.score - (run.ranked[1]?.score ?? 0) >= 8;
+    let visual: VisualOutcome = { candidates: pool, used: false,
+      status: easy ? "not-needed" : !run.hints.localId && !run.hints.name ? "insufficient-clues" : "no-candidates",
+      reason: easy ? "Banco + OCR inequívocos" : !run.hints.localId && !run.hints.name ? "Pistas insuficientes" : "Menos de dois candidatos visuais plausíveis" };
+    if (!easy && needsVisualFallback(pool)) {
+      const normalized = document.createElement("canvas");
+      normalized.width = 448; normalized.height = 624;
+      canvases.push(normalized);
+      const ctx = normalized.getContext("2d");
+      if (ctx) {
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(source, run.box.x, run.box.y, run.box.width, run.box.height, 0, 0, 448, 624);
+        const blob = await new Promise<Blob | null>(resolve => normalized.toBlob(resolve, "image/png"));
+        if (blob) visual = await recognizeVisually(blob, pool, onProgress);
+        else visual = { ...visual, status: "failed", error: "Não foi possível preparar a imagem" };
+      } else visual = { ...visual, status: "failed", error: "Canvas indisponível" };
+    }
+    const winner = visual.candidates.find(c => c.evidence?.visualMatch);
+    if (winner) run.ranked = [winner, ...run.ranked.filter(c => c.id !== winner.id || c.language !== winner.language)].slice(0, 5);
+    const elapsedMs = Math.round(performance.now() - started);
+    const result = resultFromCandidates(run.hints, run.ranked, elapsedMs, run.stats.requests, "ocr");
+    if (visual.used && result.level === "high") { result.level = "medium"; result.confidence = Math.min(79, result.confidence); }
+    if (winner) {
+      Object.assign(result, { level: "medium", confidence: 60, name: winner.name, collection: winner.collection, cardNumber: winner.cardNumber });
+    }
+    if (!run.hints.language || run.hints.languageConfidence < 55) delete result.language;
+    Object.assign(result, {
+      visualUsed: visual.used,
+      visualStatus: visual.status,
+      visualBackend: visual.backend,
+      visualError: visual.error,
+      visualReason: visual.reason,
+      visualCandidateCount: pool.length,
+      visualInitMs: visual.initMs,
+      visualSimilarities: visual.similarities,
+      visualCandidatePool: pool,
+      catalogCandidatesBefore: run.catalog.before,
+      catalogCandidatesAfter: run.ranked.length,
+      catalogBudgetExhausted: stats.exhausted ?? false,
+      catalogStrategy: run.catalog.strategy,
+      catalogSetCandidates: run.catalog.setCandidates,
+      catalogSetIndexSource: run.catalog.setIndexSource,
+      catalogQueries: [...run.stats.queries],
+    });
+    saveSessionRecognition(hash, result);
+    pushDebug({
+      file: { name: file.name, width: source.width, height: source.height },
+      cardBox: run.box,
+      nameReads: run.name.reads,
+      numberReads: run.number.reads,
+      languageReads: run.language.reads,
+      hints: run.hints,
+      catalogQueries: run.stats.queries,
+      catalogStrategy: run.catalog.strategy,
+      setCandidates: run.catalog.setCandidates,
+      candidates: run.ranked,
+      elapsedMs,
+    });
+    onProgress?.(result.level === "high"
+      ? `✅ ${result.name ?? "Carta"} identificada — ${result.confidence}%`
+      : result.level === "medium"
+        ? `🟡 ${result.name ?? "Possível carta"} — ${result.confidence}% — confirme os dados`
+        : "🔴 Não consegui identificar");
+    return result;
   } finally { for (const canvas of canvases) canvas.width = canvas.height = 0; }
 }
 
@@ -855,5 +855,5 @@ export const cardRecognitionRuntime = {
   maxCatalogRequests: MAX_CATALOG_REQUESTS,
   setIndexTtlMs: SET_INDEX_TTL_MS,
   maxDirectSetLookups: MAX_DIRECT_SET_LOOKUPS,
-  cacheVersion: 7,
+  cacheVersion: 8,
 };

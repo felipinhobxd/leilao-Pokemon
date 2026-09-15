@@ -22,6 +22,8 @@ const HEALTH_TIMEOUT_MS = 1200;
 const STATUS_TTL_MS = 60_000;
 const OFFLINE_BACKOFF_MS = 60_000;
 const RECOGNIZE_TIMEOUT_MS = 120_000;
+const IMAGE_RECOGNITION_STORAGE_KEY = "leilao-pokemon:image-recognition-enabled";
+export const imageRecognitionPreferenceEvent = "leilao-pokemon:image-recognition-change";
 
 export type LocalServiceStatus = "checking" | "online" | "offline";
 
@@ -80,6 +82,17 @@ type ServiceResult = {
 type StatusCache = { status: LocalServiceStatus; checkedAt: number; health?: ServiceHealth };
 let statusCache: StatusCache = { status: "checking", checkedAt: 0 };
 let probePromise: Promise<StatusCache> | null = null;
+
+export function imageRecognitionEnabled(): boolean {
+  if (typeof window === "undefined") return true;
+  return window.localStorage.getItem(IMAGE_RECOGNITION_STORAGE_KEY) !== "false";
+}
+
+export function setImageRecognitionEnabled(enabled: boolean) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(IMAGE_RECOGNITION_STORAGE_KEY, enabled ? "true" : "false");
+  window.dispatchEvent(new CustomEvent(imageRecognitionPreferenceEvent, { detail: { enabled } }));
+}
 
 export function localServiceAddress() {
   return SERVICE_BASE;
@@ -185,6 +198,33 @@ export type LocalRecognitionResult = RecognitionResult & {
   };
 };
 
+function disabledRecognitionResult(selectedLanguage?: string): LocalRecognitionResult {
+  const language = selectedLanguage ? mapLanguage(selectedLanguage) : null;
+  return {
+    confidence: 0,
+    level: "low",
+    candidates: [],
+    hints: {
+      name: "",
+      cardNumber: "",
+      localId: "",
+      denominator: null,
+      hp: null,
+      language,
+      languageConfidence: 0,
+      text: "",
+    },
+    source: "ocr",
+    elapsedMs: 0,
+    catalogRequests: 0,
+    visualUsed: false,
+    visualStatus: "not-needed",
+    visualCandidateCount: 0,
+    decisionStatus: "SEM RESULTADO",
+    confidenceKind: "evidence-score-not-calibrated-probability",
+  };
+}
+
 function mapResult(service: ServiceResult): LocalRecognitionResult {
   const candidates = (service.candidates ?? []).map(mapCandidate);
   const best = service.best ? mapCandidate(service.best) : candidates[0];
@@ -252,6 +292,10 @@ export async function recognizePokemonCard(
   onProgress?: (message: string) => void,
   options: { bypassCache?: boolean } = {},
 ): Promise<LocalRecognitionResult> {
+  if (!imageRecognitionEnabled()) {
+    onProgress?.("⏸️ Reconhecimento de imagens desativado");
+    return disabledRecognitionResult(selectedLanguage);
+  }
   const status = await probeLocalService();
   if (status === "online") {
     try {
@@ -276,6 +320,7 @@ export async function confirmRecognitionMemory(file: File, card: {
   localId?: string;
   denominator?: number | null;
 }) {
+  if (!imageRecognitionEnabled()) return { status: "disabled" as const };
   const status = await probeLocalService();
   if (status !== "online") return { status: "offline" as const };
   const form = new FormData();

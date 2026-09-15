@@ -83,10 +83,7 @@ SCAN_QUALITY_CHAIN = ("high.webp", "low.webp")
 _MIN_SCAN_BYTES = 4096
 
 
-def _looks_like_image(data: bytes) -> bool:
-    if not data or len(data) < _MIN_SCAN_BYTES:
-        return False
-    head = data[:16]
+def _magic_ok(head: bytes) -> bool:
     if head[:3] == b"\xff\xd8\xff":
         return True  # JPEG
     if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
@@ -96,6 +93,35 @@ def _looks_like_image(data: bytes) -> bool:
     if head[:4] == b"GIF8":
         return True  # GIF
     return False
+
+
+def _looks_like_image(data: bytes) -> bool:
+    if not data or len(data) < _MIN_SCAN_BYTES:
+        return False
+    return _magic_ok(data[:16])
+
+
+def _cached_scan_ok(path: str) -> bool:
+    """Cache-hit validation: a previously downloaded file must still look like
+    an image (>= 4 KB + magic bytes). The CDN returns HTTP 200 + HTML for some
+    missing scans; older caches and interrupted writes can hold such garbage,
+    and `exists && size > 0` happily serves it back forever.
+    """
+    try:
+        if not os.path.exists(path) or os.path.getsize(path) < _MIN_SCAN_BYTES:
+            return False
+        with open(path, "rb") as fh:
+            head = fh.read(16)
+    except OSError:
+        return False
+    return _magic_ok(head)
+
+
+def _invalidate_cache(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def _cache_scan(image_base: str, quality: str, data: bytes) -> str:
@@ -117,32 +143,40 @@ def _en_mirror_base(image_base: str) -> Optional[str]:
     return None
 
 
-def ensure_scan(image_base: str, quality: str = "high.webp") -> Optional[str]:
-    """Download-once local cache for an official scan. Returns local path or None.
+def resolve_scan(image_base: Optional[str]) -> Optional[tuple[str, str]]:
+    """Resolve a usable scan for an asset base.
 
-    Tries the requested quality first, then the fallback chain, then (for
-    non-English cards) the English mirror of the same card: when the localized
-    scan is absent from the CDN the EN artwork still identifies the card, so
-    the index can cover it instead of leaving a retrieval gap. Every download
-    is validated by magic bytes so HTML error pages never enter the cache.
-    Cached files (including EN mirrors) are checked before any network call.
+    Returns (local_path, source) with source in
+    {"high.webp", "low.webp", "en-high.webp", "en-low.webp"}, or None.
+
+    Order (cache-first, zero network on the hot path):
+      1. own-language cache (validated by magic bytes; corrupt entries are
+         removed and treated as misses)
+      2. EN-mirror cache
+      3. own-language download (high -> low)
+      4. EN-mirror download (same artwork, same local id in mirrored sets)
+    Every download is validated by magic bytes so HTML error pages never
+    enter the cache.
     """
+    if not image_base:
+        return None
     chain = list(SCAN_QUALITY_CHAIN)
-    if quality in chain:
-        chain.remove(quality)
-        chain.insert(0, quality)
     # 1. own-language cache hit (most common path: zero network)
     for q in chain:
         path = scan_path(image_base, q)
-        if os.path.exists(path) and os.path.getsize(path) > 0:
-            return path
+        if _cached_scan_ok(path):
+            return path, q
+        elif os.path.exists(path):
+            _invalidate_cache(path)
     mirror_base = _en_mirror_base(image_base)
     # 2. EN-mirror cache hit
     if mirror_base:
         for q in chain:
             cached = scan_path(image_base, f"en-{q}")
-            if os.path.exists(cached) and os.path.getsize(cached) > 0:
-                return cached
+            if _cached_scan_ok(cached):
+                return cached, f"en-{q}"
+            elif os.path.exists(cached):
+                _invalidate_cache(cached)
     # 3. own-language downloads
     for q in chain:
         try:
@@ -151,7 +185,7 @@ def ensure_scan(image_base: str, quality: str = "high.webp") -> Optional[str]:
             continue
         if not _looks_like_image(data):
             continue
-        return _cache_scan(image_base, q, data)
+        return _cache_scan(image_base, q, data), q
     # 4. EN-mirror download (same artwork, same local id in mirrored sets)
     if mirror_base:
         for q in chain:
@@ -161,8 +195,18 @@ def ensure_scan(image_base: str, quality: str = "high.webp") -> Optional[str]:
                 continue
             if not _looks_like_image(data):
                 continue
-            return _cache_scan(image_base, f"en-{q}", data)
+            return _cache_scan(image_base, f"en-{q}", data), f"en-{q}"
     return None
+
+
+def ensure_scan(image_base: str, quality: str = "high.webp") -> Optional[str]:
+    """Download-once local cache for an official scan. Returns local path or None.
+
+    See resolve_scan() for the full resolution chain (quality fallback + EN
+    mirror + magic-byte validation on downloads AND cache hits).
+    """
+    resolved = resolve_scan(image_base)
+    return resolved[0] if resolved is not None else None
 
 
 def init_db(db_path: str = CATALOG_DB) -> sqlite3.Connection:
@@ -191,8 +235,27 @@ def init_db(db_path: str = CATALOG_DB) -> sqlite3.Connection:
     return conn
 
 
-def fetch_language_cards(language: str) -> list[CardRecord]:
-    """Download full card list for a language via the set endpoints (includes set metadata)."""
+@dataclass
+class FetchReport:
+    """Per-language fetch outcome. A catalog build is only COMPLETE when
+    failed_sets is empty; partial data must never be stamped as updated."""
+    language: str
+    expected_sets: int
+    succeeded_sets: int
+    failed_sets: list[str]
+
+    @property
+    def ok(self) -> bool:
+        return not self.failed_sets
+
+
+def fetch_language_cards(language: str) -> tuple[list[CardRecord], FetchReport]:
+    """Download full card list for a language via the set endpoints.
+
+    A set that still fails after the transport retries plus one set-level
+    retry is REPORTED (FetchReport.failed_sets) instead of being silently
+    skipped: the caller decides whether the result may be stamped complete.
+    """
     code = LANG_CODE.get(language)
     if not code:
         raise ValueError(f"Unsupported language {language}")
@@ -201,14 +264,22 @@ def fetch_language_cards(language: str) -> list[CardRecord]:
     if not isinstance(sets, list):
         raise RuntimeError(f"Unexpected sets payload for {code}")
     records: list[CardRecord] = []
+    failed: list[str] = []
+    expected = 0
     for sset in sets:
         set_id = sset.get("id")
         if not set_id:
             continue
-        try:
-            detail_raw = _http_get(f"{TCGDEX_BASE}/{code}/sets/{set_id}", timeout=30.0)
-            detail = json.loads(detail_raw)
-        except Exception:
+        expected += 1
+        detail = None
+        for attempt in range(2):  # set-level retry on top of _http_get retries
+            try:
+                detail = json.loads(_http_get(f"{TCGDEX_BASE}/{code}/sets/{set_id}", timeout=30.0))
+                break
+            except Exception:
+                time.sleep(1.5 * (attempt + 1))
+        if detail is None:
+            failed.append(set_id)
             continue
         card_count = detail.get("cardCount") or {}
         denominator = card_count.get("official") or card_count.get("total")
@@ -233,7 +304,9 @@ def fetch_language_cards(language: str) -> list[CardRecord]:
                 variants=json.dumps(variants, ensure_ascii=False),
                 release_date=detail.get("releaseDate") or "",
             ))
-    return records
+    report = FetchReport(language=language, expected_sets=expected,
+                         succeeded_sets=expected - len(failed), failed_sets=failed)
+    return records, report
 
 
 def save_records(conn: sqlite3.Connection, records: Iterable[CardRecord]) -> int:

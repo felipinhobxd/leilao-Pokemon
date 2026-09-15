@@ -5,19 +5,29 @@ Rules (per project spec):
 - Only confirmation/correction by the user creates ground truth.
 - Predictions are NEVER auto-saved.
 - With few examples: exemplar retrieval (embedding nearest neighbor), no fine-tuning.
+
+Calibration (P0, 2026-09-16): SigLIP2 cosine similarity between DIFFERENT cards
+concentrates around 0.886 median / 0.940 p95 (full pt-BR index, 12.7k cards),
+so a match threshold near 0.80 is unsafely below the impostor distribution and
+would produce false memories. Threshold and margin come from config.py and are
+calibrated by scripts/benchmark_memory.py (positives: same card under different
+degradations; negatives: different, visually similar cards). Memory is AUXILIARY
+evidence: it must never, by itself, produce an IDENTIFICADO decision.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
 
-from .config import BASE_DIR
+from .config import (BASE_DIR, MEMORY_MARGIN, MEMORY_MAX_EXAMPLES,
+                     MEMORY_MIN_SIMILARITY)
 
 MEMORY_FILE = os.path.join(BASE_DIR, "memory.json")
 MEMORY_EMBEDDINGS = os.path.join(BASE_DIR, "memory-embeddings.npz")
@@ -25,6 +35,11 @@ MEMORY_IMAGES = os.path.join(BASE_DIR, "memory-images")
 os.makedirs(MEMORY_IMAGES, exist_ok=True)
 
 _lock = threading.Lock()
+# add_example is load -> append -> save on THREE files; a plain per-save lock
+# still loses updates between the load and the save. The write lock covers the
+# whole read-modify-write so two simultaneous confirmations cannot clobber
+# each other.
+_write_lock = threading.Lock()
 
 
 @dataclass
@@ -45,10 +60,24 @@ class MemoryExample:
         return {
             "id": self.id, "cardId": self.card_id, "language": self.language,
             "name": self.name, "setId": self.set_id, "setName": self.set_name,
-            "localId": self.local_id,
+            "localId": self.local_id, "denominator": self.denominator,
             "cardNumber": f"{self.local_id}/{self.denominator}" if self.denominator else self.local_id,
             "confirmedAt": self.confirmed_at, "imageFile": self.image_file, "note": self.note,
         }
+
+
+@dataclass
+class MemoryMatch:
+    """A calibrated nearest-confirmed-example hit."""
+    example: MemoryExample
+    similarity: float
+    runner_up_similarity: float  # best DIFFERENT-card example (0.0 when none)
+
+    @property
+    def margin(self) -> float:
+        if self.runner_up_similarity <= 0.0:
+            return 1.0
+        return self.similarity - self.runner_up_similarity
 
 
 def load_examples() -> list[MemoryExample]:
@@ -65,32 +94,87 @@ def load_examples() -> list[MemoryExample]:
 
 
 def save_examples(examples: list[MemoryExample]) -> None:
-    with _lock:
-        with open(MEMORY_FILE, "w", encoding="utf-8") as fh:
-            json.dump([e.to_dict() for e in examples], fh, ensure_ascii=False, indent=2)
+    """Atomic write: readers never observe a truncated memory.json."""
+    tmp = MEMORY_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump([e.to_dict() for e in examples], fh, ensure_ascii=False, indent=2)
+    os.replace(tmp, MEMORY_FILE)
+
+
+def _atomic_savez(path: str, **arrays) -> None:
+    # numpy appends ".npz" to string paths that lack it, which would defeat
+    # the tmp+replace dance — pass an open file handle instead.
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as fh:
+        np.savez_compressed(fh, **arrays)
+    os.replace(tmp, path)
 
 
 def add_example(card: dict, image_bytes: bytes, embedding: np.ndarray, note: str = "") -> MemoryExample:
-    examples = load_examples()
-    example_id = f"mem-{int(time.time() * 1000)}"
-    image_file = f"{example_id}.jpg"
-    path = os.path.join(MEMORY_IMAGES, image_file)
-    with open(path, "wb") as fh:
-        fh.write(image_bytes)
-    example = MemoryExample(
-        id=example_id, card_id=card["cardId"], language=card["language"], name=card["name"],
-        set_id=card.get("setId", ""), set_name=card.get("setName", ""),
-        local_id=card.get("localId", ""), denominator=card.get("denominator"),
-        confirmed_at=time.time(), image_file=image_file, note=note,
-    )
-    examples.append(example)
-    save_examples(examples)
-    # append embedding
-    ids, matrix = _load_embeddings()
-    ids = list(ids) + [example_id]
-    matrix = np.vstack([matrix, embedding.astype(np.float32)]) if len(ids) > 1 else embedding.astype(np.float32).reshape(1, -1)
-    np.savez_compressed(MEMORY_EMBEDDINGS, ids=np.array(ids, dtype=object), matrix=matrix)
-    return example
+    """Store a USER-CONFIRMED example. Idempotent on identical image content.
+
+    - dedupe: the same image bytes confirmed again for the same card return the
+      existing example (no duplicate rows/embeddings);
+    - atomic: memory.json / embeddings npz / image file all move into place
+      with os.replace, so a crash never leaves a partial state;
+    - bounded: beyond MEMORY_MAX_EXAMPLES the oldest entries are evicted.
+    """
+    digest = hashlib.sha256(image_bytes).hexdigest()
+    with _write_lock:
+        examples = load_examples()
+        existing = next((e for e in examples
+                         if e.card_id == card["cardId"] and e.language == card["language"]
+                         and _example_digest(e) == digest), None)
+        if existing is not None:
+            return existing
+        example_id = f"mem-{int(time.time() * 1000)}"
+        image_file = f"{example_id}.jpg"
+        path = os.path.join(MEMORY_IMAGES, image_file)
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as fh:
+            fh.write(image_bytes)
+        os.replace(tmp, path)
+        example = MemoryExample(
+            id=example_id, card_id=card["cardId"], language=card["language"], name=card["name"],
+            set_id=card.get("setId", ""), set_name=card.get("setName", ""),
+            local_id=card.get("localId", ""), denominator=card.get("denominator"),
+            confirmed_at=time.time(), image_file=image_file, note=note,
+        )
+        examples.append(example)
+        while len(examples) > MEMORY_MAX_EXAMPLES:
+            oldest = examples[0]
+            examples = examples[1:]
+            _try_remove(os.path.join(MEMORY_IMAGES, oldest.image_file))
+        save_examples(examples)
+        # append embedding (rebuild without evicted examples)
+        ids, matrix = _load_embeddings()
+        keep_ids = [e.id for e in examples if e.id in set(ids)]
+        if keep_ids:
+            keep = [ids.index(i) for i in keep_ids]
+            matrix = matrix[keep]
+            ids = keep_ids
+        ids = list(ids) + [example_id]
+        matrix = (np.vstack([matrix, embedding.astype(np.float32)])
+                  if matrix.size and matrix.shape[0] == len(ids) - 1
+                  else embedding.astype(np.float32).reshape(1, -1))
+        _atomic_savez(MEMORY_EMBEDDINGS, ids=np.array(ids, dtype=object), matrix=matrix)
+        return example
+
+
+def _example_digest(example: MemoryExample) -> Optional[str]:
+    path = os.path.join(MEMORY_IMAGES, example.image_file)
+    try:
+        with open(path, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()
+    except OSError:
+        return None
+
+
+def _try_remove(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def _load_embeddings() -> tuple[list[str], np.ndarray]:
@@ -100,8 +184,17 @@ def _load_embeddings() -> tuple[list[str], np.ndarray]:
     return list(map(str, data["ids"])), data["matrix"].astype(np.float32)
 
 
-def lookup(embedding: np.ndarray, threshold: float = 0.80) -> Optional[tuple[MemoryExample, float]]:
-    """Nearest confirmed example above threshold."""
+def lookup(embedding: np.ndarray, threshold: Optional[float] = None,
+           margin: Optional[float] = None) -> Optional[MemoryMatch]:
+    """Nearest confirmed example above the calibrated threshold AND margin.
+
+    The margin compares the best example against the best example of a
+    DIFFERENT card: with few confirmed examples an impostor can still sit
+    above the absolute threshold, and an ambiguous 0.001 lead must not become
+    a "memory match".
+    """
+    threshold = MEMORY_MIN_SIMILARITY if threshold is None else threshold
+    margin = MEMORY_MARGIN if margin is None else margin
     examples = load_examples()
     if not examples:
         return None
@@ -109,11 +202,22 @@ def lookup(embedding: np.ndarray, threshold: float = 0.80) -> Optional[tuple[Mem
     if matrix.shape[0] == 0 or matrix.shape[0] != len(ids):
         return None
     scores = (matrix @ embedding.astype(np.float32)).ravel()
-    best = int(np.argmax(scores))
-    if scores[best] < threshold:
-        return None
     by_id = {e.id: e for e in examples}
-    example = by_id.get(ids[best])
+    order = np.argsort(-scores)
+    best_idx = int(order[0])
+    example = by_id.get(ids[best_idx])
     if example is None:
         return None
-    return example, float(scores[best])
+    similarity = float(scores[best_idx])
+    if similarity < threshold:
+        return None
+    runner_up = 0.0
+    for idx in order[1:]:
+        other = by_id.get(ids[int(idx)])
+        if other is None or (other.card_id, other.language) == (example.card_id, example.language):
+            continue  # more examples of the SAME card are not competition
+        runner_up = float(scores[int(idx)])
+        break
+    if runner_up > 0.0 and (similarity - runner_up) < margin:
+        return None  # ambiguous against a different card
+    return MemoryMatch(example=example, similarity=similarity, runner_up_similarity=runner_up)

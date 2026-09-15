@@ -63,6 +63,50 @@ DEFAULT_CALIBRATION = {"floor": 0.55, "strong": 0.82, "medium": 0.72, "weight": 
 TOPK = int(os.environ.get("RECOGNITION_TOPK", "50"))
 VERIFY_CANDIDATES = int(os.environ.get("RECOGNITION_VERIFY_TOPK", "12"))
 
+# Confirmed-memory exemplar retrieval (P0 recalibration, 2026-09-16).
+# SigLIP2 cosine similarity between DIFFERENT cards concentrates around
+# 0.886 median / 0.940 p95 on the full pt-BR index (12.7k cards, PR #14
+# calibration), so the old 0.80 threshold sat INSIDE the impostor
+# distribution. Measured by scripts/benchmark_memory.py on the reduced
+# validation environment (2.9k-card index, calibration + validation splits,
+# positives = same card under an independent degradation):
+#   - nearest impostor: max 0.913 (calib) / 0.888 (validation)
+#   - positives: median ~0.87-0.88, p75 ~0.90-0.92 (cross-degradation)
+# MEMORY_MIN_SIMILARITY=0.95 clears every measured impostor maximum AND the
+# full-index p95 (0.940) with headroom; MEMORY_MARGIN=0.012 additionally
+# rejects ambiguous leads over a different card. At these values the
+# false-memory rate is 0 on both splits; memory fires only on clean
+# re-photographs, which is the intended AUXILIARY behavior (it never
+# produces IDENTIFICADO alone — the pipeline enforces that).
+MEMORY_MIN_SIMILARITY = float(os.environ.get("RECOGNITION_MEMORY_MIN_SIMILARITY", "0.95"))
+MEMORY_MARGIN = float(os.environ.get("RECOGNITION_MEMORY_MARGIN", "0.012"))
+MEMORY_MAX_EXAMPLES = int(os.environ.get("RECOGNITION_MEMORY_MAX_EXAMPLES", "500"))
+
 # Service
 SERVICE_HOST = "127.0.0.1"
 SERVICE_PORT = int(os.environ.get("RECOGNITION_PORT", "8765"))
+
+# Recognition work is CPU/GPU heavy and synchronous: the service executes at
+# most RECOGNITION_MAX_CONCURRENCY recognitions at once (the rest wait in an
+# in-process queue and are reported as queueMs). 1 is the safe default on CPU;
+# a strong GPU can raise it to 2.
+RECOGNITION_MAX_CONCURRENCY = max(1, int(os.environ.get("RECOGNITION_MAX_CONCURRENCY", "1")))
+
+# CORS: explicit allow-list, NEVER "*". The wizard on https://<vercel-domain>
+# must be added by the operator, e.g.
+#   RECOGNITION_ALLOWED_ORIGINS=https://leilao.example.com,https://staging.example.com
+# See README ("Painel Vercel + serviço local") for the Private Network Access
+# notes: the service stays bound to 127.0.0.1 and answers the PNA preflight.
+DEFAULT_ALLOWED_ORIGINS = [
+    "http://localhost:3000", "http://127.0.0.1:3000",
+    "http://localhost:3001", "http://127.0.0.1:3001",
+]
+
+
+def allowed_origins() -> list[str]:
+    """Parse RECOGNITION_ALLOWED_ORIGINS (comma-separated) over the localhost defaults."""
+    raw = os.environ.get("RECOGNITION_ALLOWED_ORIGINS", "")
+    if not raw.strip():
+        return list(DEFAULT_ALLOWED_ORIGINS)
+    origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
+    return origins or list(DEFAULT_ALLOWED_ORIGINS)

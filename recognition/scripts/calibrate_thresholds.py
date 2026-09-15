@@ -11,7 +11,10 @@ records, per fixture:
 Then proposes calibration values (floor / strong / medium / weight) that keep
 false-high-confidence at zero while maximizing honest identification.
 
-Usage: python scripts/calibrate_thresholds.py [--model siglip2-base-384] [--embedding-model X]
+DATA LEAKAGE: by default this runs on the `calibration` split of the fixtures
+(scripts/split_fixtures.py) — NEVER on the same rows the benchmark reports on.
+
+Usage: python scripts/calibrate_thresholds.py [--model siglip2-base-384] [--split calibration]
 """
 from __future__ import annotations
 
@@ -39,9 +42,20 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="siglip2-base-384")
     parser.add_argument("--topk", type=int, default=50)
+    parser.add_argument("--fixtures", default=FIXTURES)
+    parser.add_argument("--split", default="calibration",
+                        choices=("all", "calibration", "validation", "heldout"))
     args = parser.parse_args()
 
-    fixtures = json.load(open(f"{FIXTURES}/ground-truth.json"))
+    fixtures = json.load(open(os.path.join(args.fixtures, "ground-truth.json")))
+    if args.split != "all":
+        manifest_path = os.path.join(args.fixtures, "split-manifest.json")
+        if not os.path.exists(manifest_path):
+            sys.exit(f"[calibrate] {manifest_path} missing; run scripts/split_fixtures.py first")
+        manifest = json.load(open(manifest_path))
+        allowed = set(manifest.get(args.split, []))
+        fixtures = [f for f in fixtures if f["fixtureId"] in allowed]
+    print(f"[calibrate] split={args.split}: {len(fixtures)} fixtures")
     from recognizer.pipeline import VisualIndex
     index = VisualIndex(args.model)
 
@@ -105,7 +119,7 @@ def main() -> None:
 
     out = f"data/calibrate-{args.model}.json"
     with open(out, "w", encoding="utf-8") as fh:
-        json.dump({"model": args.model, "rows": rows}, fh, ensure_ascii=False, indent=1)
+        json.dump({"model": args.model, "split": args.split, "rows": rows}, fh, ensure_ascii=False, indent=1)
     print(f"  -> {out}")
 
 

@@ -26,9 +26,9 @@ FUSÃO ──► verificação geométrica ~conclusiva + similaridade global cal
 - **Normalização**: múltiplas estratégias de binarização (Canny+CLAHE, Otsu, threshold adaptativo) com pontuação de plausibilidade ponderando área (quad interno brilhante nunca vence o contorno da carta); rotações 0/90/180/270; par 0°/180° ambíguo resolvido por max de similaridade e OCR.
 - **Retrieval**: busca bruta por cosseno (12–80k cartas cabem em RAM; mais rápido e exato que ANN aproximado nesse porte). Query multi-view: vistas gamma-auto resgatam fotos escuras/lavadas sem prejudicar fotos boas (máximo por carta).
 - **Verificação**: SIFT + RANSAC; inliers ≥ 12 e razão ≥ 0,30 = evidência quase-conclusiva. A pontuação privilegia a região da arte — molduras compartilhadas (Trainer/Item) não dominam o match.
-- **OCR**: PP-OCRv6 medium (det+rec) por regiões com confiança por leitura. Número do colecionador lido em até 4 regiões complementares (canto completo; banda larga 72–100% completa; banda larga esq-60%; banda baixa esq-60%) com escada de denoising (raw → bilateral → Otsu) e early-stop; parse por **votação de consenso** entre leituras (leitura isolada errada perde para leitura repetida correta). Banda "name2" (14–32%) resgata o nome em warps frouxos que deixam a barra de nome mais baixa no frame.
-- **Reprints**: quando a arte é praticamente idêntica e número/set/rodapé estão ilegíveis, o sistema entrega o nome correto + candidatos e decide `PROVÁVEL`/`REVISAR` — nunca inventa a impressão exata. Quando o número É legível (confiança ≥ 0,75 com denominador), uma contradição explícita vira veto na fusão (-70×conf) e teta a decisão em `PROVÁVEL` — reprints de arte idêntica não podem mais "herdar" o IDENTIFICADO da verificação geométrica.
-- **Memória**: apenas confirmação explícita do usuário cria exemplares (ground truth); predições nunca são auto-salvas.
+- **OCR**: PP-OCRv6 medium (det+rec) por regiões com confiança por leitura. Número do colecionador lido em até 4 regiões complementares (canto completo; banda larga 72–100% completa; banda larga esq-60%; banda baixa esq-60%) com escada de denoising (raw → bilateral → Otsu). O early-stop exige **consenso**: o mesmo N/M lido duas vezes (entre regiões/preprocessamentos) — uma leitura única, por mais confiante, não encerra a escada, porque uma leitura isolada errada é exatamente o que a votação existe para derrotar. Banda "name2" (14–32%) resgata o nome em warps frouxos.
+- **Reprints**: quando a arte é praticamente idêntica e número/set/rodapé estão ilegíveis, o sistema entrega o nome correto + candidatos e decide `PROVÁVEL`/`REVISAR` — nunca inventa a impressão exata. O **número completo N/M** é evidência de fusão independente: contradição de N (confiança ≥ 0,75) vira veto (-70×conf) e teta em `PROVÁVEL`; contradição de M com mesmo N (`106/189` fotografado vs `106/73` impresso) é a assinatura de reprint de outro set — mesma penalidade e mesmo teto. Com M legível, o print exato vence; sem leitura confiável, nada é vetado.
+- **Memória**: apenas confirmação explícita do usuário cria exemplares (ground truth); predições nunca são auto-salvas. O lookup exige similaridade ≥ `MEMORY_MIN_SIMILARITY` **e** margem sobre o melhor exemplar de carta DIFERENTE (calibrados por `scripts/benchmark_memory.py`; a distribuição de impostores do SigLIP2 — mediana ≈ 0,886, p95 ≈ 0,940 — torna qualquer threshold ~0,80 inseguro). Memória é evidência AUXILIAR: nunca produz `IDENTIFICADO` sozinha e não infla a similaridade visual.
 
 ## Bake-off de embeddings (2026-09-14, mini-índice adversarial)
 
@@ -78,6 +78,23 @@ python scripts/benchmark.py --methods hybrid-siglip2-base-384+sift --out data/be
 
 Fotos reais: colocar em `data/fixtures-real/` + `ground-truth.json` (mesmo formato) e rodar `benchmark.py --fixtures data/fixtures-real`. **Benchmarks sintético e real são reportados separadamente — nunca somados.**
 
+### Splits sem vazamento de dados
+
+As fixtures sintéticas são degradações dos próprios scans oficiais que o índice embute — servem como **benchmark de regressão**, não como estimativa independente de precisão. Para não calibrar e medir no mesmo conjunto:
+
+```bash
+python scripts/split_fixtures.py                 # split determinístico por cardId (disjunto por carta)
+python scripts/calibrate_thresholds.py --split calibration   # calibra SÓ no split de calibração
+python scripts/benchmark.py --split validation               # reporta no split de validação
+```
+
+São três conjuntos disjuntos por `cardId` (gêmeos pt/en caem juntos no mesmo split): `calibration` (60%) → calibrar thresholds; `validation` (25%) → métrica sintética honesta; `heldout` (15%) → reserva. `--split all` mantém a comparabilidade com rodadas antigas (regressão ponta-a-ponta).
+
+### Holdout real (ainda não disponível)
+
+As 7 fotos de desenvolvimento acima foram usadas para achar os bugs — não são benchmark cego. O próximo passo de medição é um conjunto **holdout** de 30–100 fotos novas, nunca usado para tuning: crie `data/holdout/` com as fotos + `ground-truth.json` no mesmo formato (photo, cardId, language, tags: idioma/holo/glare/sleeve/perspectiva/rotação/reprint) e rode `benchmark.py --fixtures data/holdout`. O manifest fica local (fotos privadas não entram no git). Até existir, reporte "quase 100%" apenas para o dev set — o holdout é a fonte da estimativa cega.
+
+
 ## Validação em fotos reais (2026-09-15, WhatsApp)
 
 7 fotos reais de celular (JPEG comprimido, carta em suporte plástico, ângulo, glare, fundo escuro com pelúcia) — todas pt-BR — **7/7 identificadas corretamente** com evidência nome + número + verificação geométrica:
@@ -94,6 +111,24 @@ Fotos reais: colocar em `data/fixtures-real/` + `ground-truth.json` (mesmo forma
 
 O caso Purrloin era o mais difícil: o scan pt-BR de `swsh3-106` não existe no CDN da TCGdex (404 em todas as qualidades), então o índice antigo nem continha a carta — o pipeline casava com o reprint de arte idêntica `swsh3.5-39` (Caminho do Campeão, 39/73) com confiança alta. Três correções fecharam o buraco: (1) espelho EN do scan (mesma arte, identidade pt-BR preservada) para as ~150 cartas sem scan localizado; (2) OCR de número multi-região que lê `106/189` com confiança 0,89 mesmo sob ruído; (3) veto de número contraditório — o reprint perde o bônus e a carta certa (nome+número+verificação contra o espelho EN, 272 inliers) vence com margem ampla. As correções são paramétricas (regiões/pesos reais), não overfit dessas 7 fotos.
 
+
+## Pós-merge hardening (2026-09-16)
+Correções de bugs de revisão independente, cada uma com regressão de comportamento em `tests/test_postmerge.py` (Python) e `tests/card-recognition-service-contract.test.mjs` (Node):
+
+- **Orientação da rota visual**: `VisualIndex.search` usava `max` e depois comparava `>` contra o próprio máximo (impossível) — a orientação ficava sempre 0. Agora `argmax` por carta mapeia a vista vencedora para a orientação real (0/180), com desempate determinístico (raw primeiro).
+- **Probe de orientação oposta**: `verify()` com quad fraco (< 0,25) repetia o probe primário em vez de testar a orientação oposta — o fallback não fazia nada. Corrigido e testado (nenhuma duplicação).
+- **Número completo N/M ponta-a-ponta**: o campo `denominator` morria no mapping TypeScript (`candidate.hp === undefined ? null : null`). O serviço agora retorna `localId`/`denominator`/`cardNumber` explícitos, o TS preserva os três, e a confirmação de memória recebe o denominador correto.
+- **Denominador como evidência de fusão**: `106/189` contra candidato `106/73` não é "número que bate" — é conflito de denominador (reprint de outro set): penalidade simétrica ao veto de N e teto `PROVÁVEL`. OCR fraco nunca veta (guardas de confiança).
+- **Memória recalibrada**: threshold + margin calibrados por benchmark dedicado (positivos = mesma carta sob degradação independente; negativos = carta mais parecida do índice, incluindo gêmeos de idioma). Ver `config.py`.
+- **Fila para lotes de 20/50 fotos**: o serviço executa reconhecimentos em executor limitado (`RECOGNITION_MAX_CONCURRENCY`, default 1; OCR não roda mais no event loop — `/health` responde durante lotes), e o cliente agenda com concorrência limitada mostrando "Na fila de reconhecimento… (N cartas na frente)". O timeout por requisição mede **execução** — esperar na fila nunca derruba a foto para o pipeline do navegador.
+- **CORS configurável**: `RECOGNITION_ALLOWED_ORIGINS` (defaults localhost; nunca `*`), com resposta ao preflight de Private Network Access para o painel https na Vercel chamar o serviço loopback. O bind continua `127.0.0.1`.
+- **`/health` = readiness**: `ready: true` só quando catálogo + índice + modelos carregados; o cliente só usa o pipeline local com `ready` (não apenas `status: ok`).
+- **Integridade de cache de scans**: cache hit também é validado por magic-bytes (HTML > 4 KB envenenava o cache para sempre) — inválido é removido e baixado de novo; a imagem decodifica ou vira miss.
+- **Catálogo não marca parcial como completo**: sets que falham (após retry de transporte + retry de set) são reportados em `catalog.gaps.<language>`; o stamp de completo só é gravado com 100% dos sets; exit non-zero para jobs agendados. Dados bons nunca são apagados por um fetch parcial.
+- **Modelos reproduzíveis**: `download_models.py` fixa a revision exata de cada repo HF (os thresholds foram calibrados para esses pesos), instala com tmp+rename atômico, valida que o ONNX abre e grava manifest com sha256 (`--verify` re-checa).
+- **URL de imagem utilizável**: candidatos resolvidos via `low.webp`/espelho EN não anunciam mais o `high.webp` do CDN (404) — o serviço aponta para o endpoint local `/scan/{language}/{cardId}`, que serve o que realmente resolveu.
+- **CI testa Python de verdade**: job `recognition-python` roda `compileall` + `unittest discover` (deps leves; benchmarks pesados seguem manuais) e o job Windows valida a sintaxe dos `.ps1`.
+
 ## Instalação (Windows)
 
 ```powershell
@@ -104,6 +139,18 @@ npm run start                 # site + bot + este serviço (opcional; sem ele o 
 
 Equivalente direto: `recognition\install-windows.ps1` e `recognition\run-local.ps1`.
 
+### Painel Vercel + serviço local
+
+O painel publicado na Vercel (https) pode usar o serviço local (loopback é isento de mixed-content nos navegadores atuais). Configuração:
+
+```powershell
+# libere a origem do painel no serviço local (lista explícita, nunca "*")
+$env:RECOGNITION_ALLOWED_ORIGINS = "https://seu-dominio.vercel.app"
+recognition\run-local.ps1
+```
+
+O serviço responde ao preflight de **Private Network Access** (`Access-Control-Allow-Private-Network: true`) que o Chrome exige para página pública -> serviço loopback, e continua bindado apenas em `127.0.0.1`. Sem a variável, só as origens localhost (3000/3001) são aceitas. Múltiplas origens: separar por vírgula.
+
 - Modelos (ONNX, de Hugging Face, via `scripts/download_models.py`): **core** = SigLIP2-base-384 + PP-OCRv6 medium (~1.6 GB, instalação padrão); **extras** (`--extras`) = DINOv3-S (fallback leve) + ALIKED/LightGlue (matcher aprendido — o SIFT default já vem com o OpenCV); `--all` soma os backbones de bake-off.
 - Catálogo: TCGdex → SQLite local (todos os idiomas); scans oficiais em cache local com cadeia de qualidade (`high.webp` → `low.webp`) validada por magic-bytes (o CDN devolve HTML com HTTP 200 para nomes inválidos — nunca entra no cache) e espelho EN para cartas sem scan no idioma local (mesma arte/identidade; ~150 cartas pt-BR). A instalação baixa pt-BR (≈ 12,7k) + en (≈ 19,5k); es/ja ficam apenas nos metadados.
 - Índice: `build_index.py --model siglip2-base-384 --batch 8` (batch maior causa OOM; valor validado) com checkpoint incremental — pt-BR primeiro (12.744 cartas = 100% do catálogo), en em seguida; interromper/retomar sem perder trabalho.
@@ -113,23 +160,23 @@ Equivalente direto: `recognition\install-windows.ps1` e `recognition\run-local.p
 
 ```
 recognition/
-├── recognition_server.py     # FastAPI: /health /recognize /memory /reload-index
+├── recognition_server.py     # FastAPI: /health /recognize /scan /memory /reload-index
 ├── recognizer/
 │   ├── normalize.py          # detecção/retificação + gamma_auto/photometric_variants
 │   ├── embed.py              # ONNX embeddings (SigLIP2, DINOv2/3) com interface comum
 │   ├── features.py           # SIFT/AKAZE/ALIKED+LightGlue + RANSAC
-│   ├── ocr.py                # PP-OCRv6 por regiões
+│   ├── ocr.py                # PP-OCRv6 por regiões + consenso de número
 │   ├── hints.py              # hints textuais + overrides de regressão
-│   ├── catalog.py            # TCGdex → SQLite + cache de scans
+│   ├── catalog.py            # TCGdex → SQLite + cache de scans (magic-bytes)
 │   ├── store.py              # consultas de catálogo/candidatos textuais
-│   ├── memory.py             # memória confirmada (apenas ground truth do usuário)
-│   ├── pipeline.py           # rotas A/B + fusão + decisão honesta
-│   └── config.py             # caminhos, calibração por modelo
-├── scripts/                  # build/download/benchmark/bake-off/calibração
-├── tests/test_units.py       # testes rápidos sem modelos
+│   ├── memory.py             # memória confirmada (threshold+margin calibrados)
+│   ├── pipeline.py           # rotas A/B + fusão (N/M completo) + decisão honesta
+│   └── config.py             # caminhos, calibração, CORS, concorrência
+├── scripts/                  # build/download/benchmark/bake-off/calibração/splits
+├── tests/                    # test_units.py + test_postmerge.py (sem modelos)
 └── data/                     # (local, gitignored) catálogo, scans, índices, fixtures
 ```
 
 ## Privacidade
 
-Tudo roda localmente. Nenhuma API paga, nenhuma imagem enviada a serviços externos. O serviço liga apenas em `127.0.0.1` e aceita CORS apenas das origens localhost do site.
+Tudo roda localmente. Nenhuma API paga, nenhuma imagem enviada a serviços externos. O serviço liga apenas em `127.0.0.1` e aceita CORS apenas da lista explícita de origens (defaults localhost; domínio de produção via `RECOGNITION_ALLOWED_ORIGINS`).

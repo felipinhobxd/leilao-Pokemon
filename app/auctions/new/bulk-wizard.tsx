@@ -8,7 +8,7 @@ import { buildPollPlan, cardConditions, cardLanguages, DEFAULT_POLL_OPTIONS, MAX
 import { brasiliaInputToIso, formatBrasiliaDateTime, formatBrasiliaTime, toBrasiliaInput } from "@/lib/brasilia-time";
 import { uploadCardImageBatch, type CardImageStage } from "@/lib/card-image";
 import { mergeRecognitionFields, type ManualFieldMap, type RecognitionCandidate, type RecognitionResult, type RecognizableField } from "@/lib/card-recognition-core";
-import { recognizePokemonCard, shutdownCardRecognition } from "@/lib/card-recognition-browser";
+import { confirmRecognitionMemory, recognizePokemonCard, shutdownCardRecognition } from "@/lib/card-recognition-local";
 import { createPublicSupabaseClient } from "@/lib/supabase";
 
 type Group = { id: string; name: string; is_default: boolean };
@@ -210,6 +210,19 @@ export default function BulkAuctionWizard() {
       recognitionConfidence: Math.max(card.recognitionConfidence ?? 0, candidate.score),
       recognitionMessage: "Candidato escolhido manualmente",
     }));
+    // Explicit user confirmation = ground truth for the local recognition memory.
+    // Fire-and-forget: never blocks the flow, never fails the wizard.
+    const file = cards.find(card => card.id === id)?.file;
+    if (file && candidate.id && candidate.language && candidate.name) {
+      void confirmRecognitionMemory(file, {
+        cardId: candidate.id,
+        language: candidate.language,
+        name: candidate.name,
+        setName: candidate.collection,
+        localId: candidate.localId,
+        denominator: candidate.denominator,
+      }).catch(() => undefined);
+    }
   }
 
   useEffect(() => {

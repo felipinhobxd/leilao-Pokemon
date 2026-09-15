@@ -1,0 +1,7 @@
+# Modelos e dados sao baixados/gerados localmente (scripts/download_models.py,
+# npm run recognition:index). Nao versionar ~3 GB de artefatos.
+models/
+data/
+.venv/
+__pycache__/
+*.pyc

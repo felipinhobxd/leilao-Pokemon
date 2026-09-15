@@ -34,7 +34,9 @@ test("v11 is the active recognizer but business flow remains imported through th
   assert.equal(tsconfig.compilerOptions.paths["@/lib/card-recognition-browser"][0], "./lib/card-recognition-browser-v10.ts");
   assert.match(v10, /version: 11/);
   assert.match(v10, /import \* as v9 from "\.\/card-recognition-browser-v9"/);
-  assert.match(wizard, /from "@\/lib\/card-recognition-browser"/);
+  // The wizard now prefers the local service pipeline (strong, two-route) and
+  // falls back to v11 in the browser; both keep the same public contract.
+  assert.match(wizard, /from "@\/lib\/card-recognition-local"/);
   assert.match(wizard, /mergeRecognitionFields/);
 });
 

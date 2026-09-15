@@ -1,4 +1,4 @@
-# Reconhecimento local de cartas Pokémon
+# Reconhecimento de cartas Pokémon
 
 ## Objetivo
 
@@ -6,114 +6,84 @@ O cadastro em lote tenta identificar a carta antes do upload definitivo da image
 
 ## Arquitetura
 
-1. O navegador cria o preview local da imagem.
-2. Calcula SHA-256 do arquivo para reutilizar reconhecimento já feito na sessão.
-3. Redimensiona uma cópia temporária para no máximo 1500 px e cria crops em Canvas.
-4. Tesseract.js 7.0.0 é carregado somente quando existe uma imagem para reconhecer.
-5. Um único worker reutilizável lê primeiro as regiões superior e inferior; a região central é lida apenas quando nome/idioma continuam ambíguos.
-6. Português, inglês e espanhol compartilham o worker Latin; japonês é carregado como fallback separado somente quando necessário.
-7. O navegador envia ao TCGdex apenas metadados OCR (nome/número/idioma). A fotografia não é enviada ao catálogo.
-8. Os candidatos são pontuados por número, denominador do set, similaridade do nome, idioma e HP.
-9. Confiança alta preenche os campos; confiança média preenche e pede revisão; confiança baixa não inventa resultado e apresenta candidatos quando existirem.
-10. Só depois o fluxo normal de otimização/deduplicação/upload para o Supabase é executado quando o usuário realmente cria a fila.
+O reconhecimento acontece em duas camadas, em ordem de preferência:
+
+1. **Serviço local forte** (`recognition/`, Python + ONNX, ligado em `127.0.0.1:8765`): pipeline de duas rotas independentes com fusão de evidências.
+2. **Fallback no navegador** (pipeline v11: normalização neural + PP-OCRv6 WASM + catálogo TCGdex) quando o serviço local está offline.
+
+O site detecta o serviço local via `GET /health` (cache de 60 s, backoff de 60 s em caso de falha). Se o serviço falhar no meio de um reconhecimento, o navegador degrada para o pipeline local sem interromper o fluxo.
+
+### As duas rotas do serviço local
+
+**Rota A — visual (nunca depende de OCR):**
+
+1. Detecção do contorno da carta (múltiplas estratégias de binarização: Canny, Otsu, adaptativo) e retificação de perspectiva para 600×840.
+2. Embedding global do cartão normalizado (SigLIP2-base-384 ONNX) em múltiplas vistas: orientações 0°/180° × fotometria (raw + gamma-auto). O score de cada carta do catálogo é o máximo entre as vistas — fotos escuras/lavadas são resgatadas pela vista gamma.
+3. Busca exata por cosseno no índice local (12.588 cartas pt-BR + EN) → Top-50.
+4. Verificação geométrica dos melhores candidatos: SIFT + RANSAC homografia; inliers e razão de inliers são evidência quase-conclusiva. A pontuação é discriminativa na região da arte (molduras compartilhadas entre Trainer/Item não dominam o match).
+
+**Rota B — texto:**
+
+1. PP-OCRv6 medium (ONNX) por regiões (nome, HP, número, denominador, rodapé/set), com confiança por leitura e fallback full-card.
+2. Hints textuais (nome/número/HP/idioma) → candidatos do catálogo local por similaridade.
+
+**Fusão:** verificação geométrica + similaridade global + validação de metadados OCR + memória confirmada → decisão em categorias honestas: `IDENTIFICADO`, `PROVÁVEL`, `REVISAR`, `NAO_IDENTIFICADO`. Nenhum percentual inventado.
+
+### Regras de projeto invioláveis
+
+- **OCR nunca é gatekeeper.** OCR lixo (ex.: "escia" numa carta Shroodle) não impede a identificação visual. Regressão obrigatória: Shroodle deve ser achado mesmo com OCR lendo `escia`.
+- Número OCR parcial/errado não restringe sozinho o catálogo (regressão: Dragonair não vira Parasect).
+- Nome correto + candidatos corretos, mas impressão exata sem evidência suficiente (reprints com arte idêntica, rodapé ilegível) → `PROVÁVEL`/`REVISAR`, nunca uma carta errada com confiança alta.
+- Memória confirmada: apenas a confirmação explícita do usuário cria ground truth; predições nunca são auto-salvas.
+
+## Instalação e execução
+
+```powershell
+npm run recognition:install   # venv + dependências (GPU NVIDIA detectada automaticamente) + modelos + catálogo + índice
+npm run recognition:local     # sobe o serviço em 127.0.0.1:8765
+npm run start                 # site + bot + serviço local de reconhecimento (opcional: ausência degrada para o pipeline do navegador)
+```
+
+No Windows, os equivalentes diretos são `recognition\install-windows.ps1` e `recognition\run-local.ps1`. O índice é reconstruído com `npm run recognition:index` (com checkpoint incremental — interrupções retomam de onde pararam).
 
 ## Privacidade e custo
 
-- Nenhuma API de IA paga é usada.
-- Nenhuma imagem é enviada a OpenAI, Gemini, Claude, AWS, Google Vision, Azure Vision ou serviço equivalente.
-- Tesseract.js roda no navegador em Web Worker/WASM.
-- TCGdex é usado somente como catálogo REST gratuito/open-source.
-- O OCR não passa por Vercel e não exige gravar a imagem no Supabase para reconhecer.
-- O `service_role` do Supabase continua restrito ao servidor; este recurso não usa essa chave.
+- Nenhuma API de IA paga é usada; nenhum dado sai da máquina do usuário.
+- Nenhuma imagem é enviada a OpenAI, Gemini, Claude, AWS, Google Vision, Azure Vision ou equivalente.
+- Os modelos ONNX rodam localmente via ONNX Runtime (CUDA/DirectML/CPU automático). A instalação padrão baixa o essencial (SigLIP2-base-384 + PP-OCRv6 medium, ~1.6 GB); DINOv3-S e ALIKED/LightGlue são opcionais (`download_models.py --extras`).
+- O catálogo TCGdex é baixado uma única vez para SQLite local; scans oficiais ficam em cache local — o site não consulta a TCGdex durante o reconhecimento quando o serviço local está ativo.
 
 ## Performance
 
-O OCR pesado é serializado em um worker reutilizável. Embora 2–3 jobs simultâneos possam reduzir o tempo total em máquinas fortes, múltiplos workers do Tesseract podem multiplicar uso de memória. A primeira versão privilegia estabilidade: o usuário continua editando as cartas enquanto a fila progride.
-
-O catálogo possui cache em memória de 30 minutos e o reconhecimento completo possui cache por SHA-256 em memória + `sessionStorage`. A mesma imagem adicionada novamente na mesma sessão não repete o OCR pesado.
-
-As consultas ao TCGdex são limitadas: primeiro combinam `localId` e nome quando disponíveis, com paginação explícita de até 12 candidatos; fallback por número ou nome acontece apenas quando a busca mais restrita não encontra nada. Cada busca carrega detalhes de no máximo 4 candidatos.
+- Modelo de retrieval carregado uma vez na memória; índice de embeddings em RAM (busca bruta por cosseno — 12–80k cartas cabem em força bruta).
+- Reconhecimento típico: centenas de ms por foto com GPU; poucos segundos em CPU.
+- Cache por SHA-256 em memória + `sessionStorage`: a mesma imagem não é reconhecida duas vezes na sessão.
 
 ## Campos automáticos
 
-Podem ser preenchidos somente quando houver confiança suficiente:
+Podem ser preenchidos somente quando há confiança suficiente:
 
-- Nome
-- Coleção / edição
-- Número da carta
-- Idioma (`pt-BR`, `en`, `es`, `ja`)
-- Variante, somente quando o catálogo indicar uma única variante inequívoca entre Normal/Holo/Reverse Holo
+- Nome, coleção/edição, número da carta, idioma (`pt-BR`, `en`, `es`, `ja`), HP.
+- Variante, somente quando o catálogo indicar uma única variante inequívoca entre Normal/Holo/Reverse Holo.
 
-Nunca são inferidos automaticamente:
-
-- Condição (NM/LP/MP/HP/DMG)
-- Preço
-- Lance inicial
-- Incremento
-- ARREMATE
+Nunca são inferidos automaticamente: condição, preço, lance inicial, incremento, ARREMATE.
 
 ## Prioridade da edição manual
 
-Cada campo reconhecível mantém um sinal de edição manual. Assim que o usuário altera Nome, Coleção, Número, Idioma ou Variante, reconhecimentos automáticos posteriores não sobrescrevem esse campo. Escolher explicitamente um candidato também passa a ser uma decisão manual.
+Cada campo reconhecível mantém um sinal de edição manual. Assim que o usuário altera Nome, Coleção, Número, Idioma ou Variante, reconhecimentos automáticos posteriores não sobrescrevem esse campo. Escolher explicitamente um candidato também é uma decisão manual — e grava a foto como exemplo confirmado na memória do serviço local (ground truth para futuros reconhecimentos).
 
-## Limitações conhecidas
+## Benchmarks
 
-OCR não é visão computacional completa. Reflexo forte, sleeve muito brilhante, perspectiva severa, crop que remove topo/rodapé, resolução baixa, fontes promocionais e cartas fora/incompletas no TCGdex podem reduzir a precisão. A condição física da carta não é inferida.
+Reprodutíveis via `recognition/scripts/benchmark.py` com fixtures sintéticas geradas de scans oficiais (`recognition/scripts/make_fixtures.py`), separadas em níveis normal/hard (perspectiva + fundo de cena + glare/blur/low-light empilhados).
 
-Português, espanhol e inglês podem compartilhar nomes de Pokémon. Por isso o idioma não é decidido apenas pelo nome; são usados texto de regras e correspondência de catálogo. Japonês usa caracteres Hiragana/Katakana/Kanji como sinal forte e um modelo OCR carregado sob demanda.
+Resultados históricos (fixture sintética pt-BR, n=106):
 
-Acurácia de produção deve ser medida com fotografias reais do usuário. Testes unitários de heurística não substituem um conjunto real de imagens com reflexo, perspectiva e sleeves. Não publicar porcentagens de acerto sem esse conjunto.
+| Método | Top-1 | Top-5 | Falso alta conf. | Latência |
+|---|---|---|---|---|
+| OCR-gatekeeper (arquitetura antiga, emulada) | 3,8% | 7,5% | 25,5% | ~5031 ms |
+| Rota visual DINOv3-S | 92,5% | 95,3% | 0,94% | ~257 ms |
+| Híbrido DINOv3-S + SIFT + OCR (baseline desta iteração) | 93,4% | 95,3% | 0,00% | ~4379 ms (CPU 2 núcleos) |
 
-## Métricas exibidas
+O bake-off de embeddings (mini-índice adversarial: cartas-verdade + confusores do índice completo + 500 distratores) definiu o backbone atual: SigLIP2-base-384 com query multi-view (raw + gamma-auto) recuperou rank-1 em todos os casos hard que o DINOv3-S@224 perdia (ranks 286/12/118/45/49 → 1/1/1/1/1). Os números finais do pipeline SigLIP2 estão em `recognition/README.md`.
 
-Cada reconhecimento mantém:
-
-- confiança final;
-- tempo decorrido em milissegundos;
-- número de requests efetivos ao catálogo (hits de cache não contam);
-- indicação quando o resultado veio do cache da sessão.
-
-Essas métricas ajudam a coletar um benchmark real sem enviar imagens ou telemetria adicional ao servidor.
-
-## Fallback visual local
-
-Após localizar/orientar a carta e consultar o catálogo, somente 2–5 candidatos com
-forte evidência OCR e imagens oficiais podem acionar DINOv2-small ONNX. Um acerto
-inequívoco de nome + número não cria worker neural. Nenhum modelo roda em idle.
-
-`@huggingface/transformers` 4.2.0 roda em worker dedicado: WebGPU q4, depois WASM q4,
-com int8 como último fallback. Pesos q4: 16,9 MB; int8: 24,4 MB, além do runtime.
-Modelo original e biblioteca: Apache-2.0. Fontes:
-https://huggingface.co/onnx-community/dinov2-small-ONNX/tree/main/onnx
-https://github.com/facebookresearch/dinov2/blob/main/LICENSE
-
-Uma foto normalizada é comparada serialmente às imagens oficiais. Similaridade
-cosseno só reordena candidatos quando há separação suficiente; nunca admite
-candidatos descartados pelo OCR. Resultados neurais continuam pedindo revisão,
-pois os limiares ainda não foram calibrados com fotos reais.
-
-O worker mantém até 64 embeddings oficiais, encerra após 2 minutos sem uso e é
-terminado após 90 segundos de espera sem resposta. Falhas preservam o resultado
-OCR e suspendem novas tentativas por 2 minutos. Cache completo SHA-256 v3 inclui
-`visualUsed` e `visualBackend`; pesos e embeddings não passam pelo Supabase.
-O cache em memória tem limites de 64 reconhecimentos e 256 respostas de catálogo.
-
-## Iniciar Web + bot no Windows
-
-Na raiz, depois de configurar os ambientes:
-
-```powershell
-npm.cmd ci
-npm.cmd --prefix bot ci
-npm.cmd run build
-npm.cmd start
-```
-
-`npm.cmd run start:web` inicia somente Next.js. O launcher usa o supervisor
-existente. Ctrl+C encerra a árvore de processos; falha de um componente encerra
-ambos. Um guard compartilhado pelo supervisor e modo foreground impede duas
-instâncias locais de usarem a mesma pasta de sessão, inclusive o serviço Windows.
-Não impede outra máquina de usar uma cópia da sessão.
-
-Fotos reais não estavam disponíveis nesta implementação: acurácia, uso de IA em
-X/Y fotos, requests TCGdex reais e consumo CPU/RAM/GPU não medidos.
+Fotos reais do acervo do usuário devem entrar em `recognition/data/fixtures-real/` com `ground-truth.json` no mesmo formato — o benchmark aceita `--fixtures data/fixtures-real` para medir separadamente sintético × real.

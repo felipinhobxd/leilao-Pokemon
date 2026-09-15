@@ -53,15 +53,26 @@ class Candidate:
     ocr_number_match: bool = False
     ocr_language_match: bool = False
     ocr_hp_match: bool = False
+    # Tri-state denominator evidence: None = unknown (candidate or OCR lacks M),
+    # True/False = both sides readable and (dis)agreeing. False on a local-id
+    # match means "same N, different M": a same-artwork reprint of another set.
+    ocr_denominator_match: Optional[bool] = None
+    ocr_full_number_match: bool = False
     image_url: str = ""
     variant: Optional[str] = None
+    # Which scan source actually resolved for this candidate
+    # ("high.webp" | "low.webp" | "en-high.webp" | "en-low.webp" | None).
+    # Transient metadata: candidates whose source is NOT the standard
+    # high.webp must not advertise the high.webp CDN URL (it 404s for them);
+    # the service rewrites their imageUrl to the local /scan endpoint.
+    scan_source: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
             "cardId": self.card_id, "language": self.language, "setId": self.set_id,
             "setName": self.set_name, "name": self.name,
             "cardNumber": f"{self.local_id}/{self.denominator}" if self.denominator else self.local_id,
-            "localId": self.local_id, "hp": self.hp,
+            "localId": self.local_id, "denominator": self.denominator, "hp": self.hp,
             "score": round(self.score, 4),
             "visualSimilarity": round(self.visual_similarity, 4) if self.visual_similarity >= 0 else None,
             "verification": None if self.verification is None else {
@@ -73,6 +84,8 @@ class Candidate:
             },
             "ocrNameSimilarity": round(self.ocr_name_similarity, 4),
             "ocrNumberMatch": self.ocr_number_match,
+            "ocrDenominatorMatch": self.ocr_denominator_match,
+            "ocrFullNumberMatch": self.ocr_full_number_match,
             "ocrLanguageMatch": self.ocr_language_match,
             "ocrHpMatch": self.ocr_hp_match,
             "imageUrl": self.image_url,
@@ -159,11 +172,14 @@ class VisualIndex:
                 view_orientation.append(i)
         embeddings = self.model.embed(views)
         scores = embeddings @ self.matrix.T  # [n_views, N]
-        best_scores = scores.max(axis=0)
-        orientation_idx = np.zeros(len(best_scores), dtype=np.int64)
-        for i in range(1, len(view_orientation)):
-            better = scores[i] > best_scores
-            orientation_idx[better] = view_orientation[i]
+        # Winning view per card + its orientation. argmax picks the FIRST view
+        # on ties, so the raw variant of the winning orientation wins ties
+        # deterministically (photometric variants are ordered raw-first).
+        best_view = np.argmax(scores, axis=0)
+        columns = np.arange(scores.shape[1])
+        best_scores = scores[best_view, columns]
+        orientation_of_view = np.asarray(view_orientation, dtype=np.int64)
+        orientation_idx = orientation_of_view[best_view]
         order = np.argsort(-best_scores)[:topk]
         results = []
         for row in order:
@@ -190,6 +206,17 @@ class Recognizer:
         self._scan_misses: set[str] = set()
         self._lock = threading.Lock()
 
+    @property
+    def ocr_ready(self) -> bool:
+        """OCR sessions loaded (readiness reporting for /health)."""
+        return self.ocr is not None and self.ocr.loaded
+
+    def warm(self) -> None:
+        """Eagerly load every lazy component (embedding index is loaded at
+        construction; OCR det/rec sessions load here). Used by --preload and
+        by readiness probing."""
+        self.ocr.warm()
+
     # ------------------------------------------------------------- scan access
     # Byte-bounded FIFO cache of decoded candidate scans. Entry-count bounds
     # are unsafe here: official scans range from ~1.5 MB to ~7 MB decoded, so
@@ -198,8 +225,8 @@ class Recognizer:
     # memory while still covering the per-request verification working set.
     SCAN_CACHE_MAX_BYTES = 400 * 1024 * 1024
 
-    def _scan_image(self, language: str, card_id: str) -> Optional[np.ndarray]:
-        key = f"{language}|{card_id}"
+    def _scan_image(self, candidate: "Candidate") -> Optional[np.ndarray]:
+        key = f"{candidate.language}|{candidate.card_id}"
         with self._lock:
             cached = self._scan_cache.get(key)
             if cached is not None:
@@ -207,14 +234,23 @@ class Recognizer:
                 return cached
             if key in self._scan_misses:
                 return None
-        card = self.catalog.card_by_key(language, card_id) if self.catalog else None
         image = None
-        if card is not None:
-            from .catalog import ensure_scan
-            path = ensure_scan(card.image_base, "high.webp")
-            if path:
-                data = np.fromfile(path, dtype=np.uint8)
-                image = cv2.imdecode(data, cv2.IMREAD_COLOR)
+        source: Optional[str] = None
+        if self.catalog is not None:
+            from .catalog import resolve_scan
+            record = self.catalog.card_by_key(candidate.language, candidate.card_id)
+            if record is not None and record.image_base:
+                resolved = resolve_scan(record.image_base)
+                if resolved is not None:
+                    path, source = resolved
+                    data = np.fromfile(path, dtype=np.uint8)
+                    image = cv2.imdecode(data, cv2.IMREAD_COLOR)
+                    if image is None:
+                        # truncated/corrupt file that passed the magic-byte
+                        # check: treat as a miss, never serve it
+                        path, source, image = None, None, None
+        if image is not None:
+            candidate.scan_source = source
         nbytes = int(image.nbytes) if image is not None else 0
         with self._lock:
             if image is None:
@@ -277,7 +313,10 @@ class Recognizer:
         primary = card.rotated180 if orientation == "180" else card.image
         probe_variants = [primary]
         if card.confidence < 0.25:  # uncertain normalization: try both orientations
-            probe_variants.append(card.rotated180 if orientation == "180" else card.image)
+            # The OPPOSITE orientation, not a duplicate of the primary probe:
+            # a weak quad can flip the 0/180 disambiguation, and the fallback
+            # only means anything if it tests the other way up.
+            probe_variants.append(card.image if orientation == "180" else card.rotated180)
 
         selected = list(candidates[: self.verify_topk])
         if hints and hints.local_id and hints.number_confidence >= 0.5 and hints.name:
@@ -302,7 +341,7 @@ class Recognizer:
                     break
 
         for candidate in selected:
-            scan = self._scan_image(candidate.language, candidate.card_id)
+            scan = self._scan_image(candidate)
             if scan is None:
                 continue
             best: Optional[Verification] = None
@@ -343,8 +382,26 @@ class Recognizer:
                     numeric = False
                     match = hints.local_id == candidate.local_id
                 candidate.ocr_number_match = match
+                # Full collector number N/M: the denominator is INDEPENDENT
+                # evidence. "106/189" against a candidate printed "106/73" is
+                # NOT a number match — it is a same-artwork reprint of another
+                # set, which only a readable M can expose. Tri-state:
+                #   None  -> M unknown on either side (evidence inert)
+                #   True  -> full N/M agreement
+                #   False -> N agrees but M contradicts (reprint of other set)
+                if (match and hints.denominator is not None
+                        and candidate.denominator is not None):
+                    denominator_match = int(hints.denominator) == int(candidate.denominator)
+                    candidate.ocr_denominator_match = denominator_match
+                    candidate.ocr_full_number_match = denominator_match
                 if match and hints.number_confidence >= 0.6:
-                    weights["ocr_number"] = 45.0 * hints.number_confidence
+                    if candidate.ocr_denominator_match is False:
+                        # Readable N/M vs printed N/M' — strong penalty, symmetric
+                        # with the local-id conflict, never a hard filter on
+                        # weak reads (number_confidence gates the veto).
+                        weights["ocr_denominator_conflict"] = -70.0 * hints.number_confidence
+                    else:
+                        weights["ocr_number"] = 45.0 * hints.number_confidence
                 elif (not match and numeric and hints.number_confidence >= 0.75
                       and hints.denominator):
                     # Explicit collector-number contradiction: the photographed
@@ -392,14 +449,21 @@ class Recognizer:
             evidence.append("language")
 
         # Explicit collector-number contradiction on the top candidate: the
-        # best match prints a different number than the photographed card.
-        # Visual + geometric evidence cannot separate same-artwork reprints,
-        # so a readable contradicting number caps the decision at PROVAVEL —
-        # the user reviews instead of trusting a wrong exact match.
-        number_conflict = (best.ocr_number_match is False
-                           and hints.number_confidence >= 0.75 and hints.denominator)
-        if number_conflict:
+        # best match prints a different number than the photographed card —
+        # either a different N (local-id conflict) or the same N with a
+        # different M (denominator conflict: same-artwork reprint of another
+        # set). Visual + geometric evidence cannot separate same-artwork
+        # reprints, so a readable contradicting number caps the decision at
+        # PROVAVEL — the user reviews instead of trusting a wrong exact match.
+        id_conflict = (best.ocr_number_match is False
+                       and hints.number_confidence >= 0.75 and hints.denominator)
+        den_conflict = (best.ocr_denominator_match is False
+                        and hints.number_confidence >= 0.75 and hints.denominator)
+        number_conflict = id_conflict or den_conflict
+        if id_conflict:
             evidence.append("collector-number-conflict")
+        if den_conflict:
+            evidence.append("denominator-conflict")
 
         strong_evidence = (verified or (best.visual_similarity >= cal["strong"] and len(evidence) >= 2))
         if strong_evidence and margin >= 25 and not number_conflict:
@@ -423,17 +487,19 @@ class Recognizer:
         result.normalization_method = card.method
         result.normalization_confidence = card.confidence
 
-        # Memory of user-confirmed examples (exemplar retrieval, before routes)
+        # Memory of user-confirmed examples (exemplar retrieval, before routes).
+        # Threshold + margin are calibrated for the embedding in use (see
+        # scripts/benchmark_memory.py): SigLIP2 impostor similarity sits around
+        # 0.886 median / 0.940 p95, so anything below the calibrated threshold
+        # is NOT a safe match. Both orientations are probed (a 180-flipped
+        # photo must still find its confirmed example).
         memory_hit = None
         if use_memory:
             t0 = time.time()
             try:
                 from . import memory as memory_module
-                embeddings = self.index.model.embed([card.image])
-                memory_hit = memory_module.lookup(embeddings[0])
-                if memory_hit is not None and memory_hit[1] < 0.85:
-                    # weak: treat as soft prior only
-                    pass
+                embeddings = self.index.model.embed([card.image, card.rotated180])
+                memory_hit = memory_module.lookup(embeddings[0]) or memory_module.lookup(embeddings[1])
             except Exception:
                 memory_hit = None
             timings["memory"] = (time.time() - t0) * 1000
@@ -465,15 +531,19 @@ class Recognizer:
             if key not in merged:
                 merged[key] = candidate
 
-        # Memory hit becomes a strong prior on its confirmed card
+        # Memory hit becomes a bounded prior on its confirmed card. Memory is
+        # AUXILIARY evidence: the boost is capped well below the verification
+        # (220) and strong-name (60) tiers and never overrides
+        # visual_similarity, so memory alone cannot produce IDENTIFICADO.
         if memory_hit is not None:
-            example, similarity = memory_hit
+            from .config import MEMORY_MIN_SIMILARITY
+            example, similarity = memory_hit.example, memory_hit.similarity
             record = self.catalog.card_by_key(example.language, example.card_id) if self.catalog else None
             if record is not None:
                 key = example.card_id + "|" + example.language
                 candidate = merged.get(key) or candidate_from_record(record)
-                candidate.score = max(candidate.score, 90.0 * min(1.0, similarity / 0.95))
-                candidate.visual_similarity = max(candidate.visual_similarity, similarity)
+                strength = max(0.0, min(1.0, (similarity - MEMORY_MIN_SIMILARITY) / 0.04))
+                candidate.score = max(candidate.score, 55.0 * strength)
                 merged[key] = candidate
                 result.evidence.append("confirmed-memory")
 
@@ -489,10 +559,13 @@ class Recognizer:
 
         ranked = self.fuse(list(merged.values()), hints, route_b_candidates)
         decision, evidence = self.decide(ranked, hints)
-        if memory_hit is not None and "confirmed-memory" not in evidence and decision in ("REVISAR", "NAO_IDENTIFICADO"):
+        # A high-similarity, unambiguous confirmed-memory example may upgrade a
+        # REVISAR to PROVAVEL (never to IDENTIFICADO — that always requires
+        # independent route evidence).
+        if (memory_hit is not None and "confirmed-memory" not in evidence
+                and decision == "REVISAR"):
             evidence = ["confirmed-memory"] + evidence
-            if memory_hit[1] >= 0.85:
-                decision = "PROVAVEL" if decision == "REVISAR" else decision
+            decision = "PROVAVEL"
         result.decision = decision
         result.evidence = evidence
         result.candidates = ranked

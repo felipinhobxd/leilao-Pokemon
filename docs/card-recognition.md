@@ -27,14 +27,19 @@ O site detecta o serviço local via `GET /health` (cache de 60 s, backoff de 60 
 1. PP-OCRv6 medium (ONNX) por regiões (nome, HP, número, denominador, rodapé/set), com confiança por leitura. O número do colecionador é lido em até 4 regiões complementares (canto; banda larga 72–100%; variantes esq-60%) com escada de denoising (raw → bilateral → Otsu) e parse por votação de consenso entre leituras; uma banda "name2" (14–32%) resgata o nome em warps frouxos de fotos reais.
 2. Hints textuais (nome/número/HP/idioma) → candidatos do catálogo local por similaridade.
 
-**Fusão:** verificação geométrica + similaridade global + validação de metadados OCR + memória confirmada → decisão em categorias honestas: `IDENTIFICADO`, `PROVÁVEL`, `REVISAR`, `NAO_IDENTIFICADO`. Nenhum percentual inventado. Número de colecionador legível que **contradiz** o melhor candidato vira veto na fusão e teta a decisão em `PROVÁVEL` (reprints de arte idêntica não herdam o IDENTIFICADO da verificação geométrica); candidatos da rota B com nome+número coincidentes sempre passam pela verificação geométrica, mesmo com embedding de espelho EN mal ranqueado.
+**Fusão:** verificação geométrica + similaridade global + validação de metadados OCR + memória confirmada → decisão em categorias honestas: `IDENTIFICADO`, `PROVÁVEL`, `REVISAR`, `NAO_IDENTIFICADO`. Nenhum percentual inventado. O **número completo N/M** é evidência independente: número legível que **contradiz** o melhor candidato (N diferente, ou mesmo N com denominador diferente — assinatura de reprint de outro set) vira veto na fusão e teta a decisão em `PROVÁVEL` (reprints de arte idêntica não herdam o IDENTIFICADO da verificação geométrica); OCR fraco nunca veta. Candidatos da rota B com nome+número coincidentes sempre passam pela verificação geométrica, mesmo com embedding de espelho EN mal ranqueado.
 
 ### Regras de projeto invioláveis
 
 - **OCR nunca é gatekeeper.** OCR lixo (ex.: "escia" numa carta Shroodle) não impede a identificação visual. Regressão obrigatória: Shroodle deve ser achado mesmo com OCR lendo `escia`.
 - Número OCR parcial/errado não restringe sozinho o catálogo (regressão: Dragonair não vira Parasect).
 - Nome correto + candidatos corretos, mas impressão exata sem evidência suficiente (reprints com arte idêntica, rodapé ilegível) → `PROVÁVEL`/`REVISAR`, nunca uma carta errada com confiança alta.
-- Memória confirmada: apenas a confirmação explícita do usuário cria ground truth; predições nunca são auto-salvas.
+- Memória confirmada: apenas a confirmação explícita do usuário cria ground truth; predições nunca são auto-salvas. O lookup exige threshold + margem calibrados (benchmark dedicado; a distribuição de impostores do SigLIP2 ~0,886 mediana torna ~0,80 inseguro) e a memória nunca produz `IDENTIFICADO` sozinha.
+- O número completo N/M sobrevive ponta-a-ponta (serviço → JSON → TypeScript → wizard → memória confirmada); `106/189` nunca vira "106/?" no caminho.
+
+### Hardening pós-merge (2026-09-16)
+
+Correções de revisão independente (regressões de comportamento em `recognition/tests/test_postmerge.py` + `tests/card-recognition-service-contract.test.mjs`): seleção de orientação da rota visual via `argmax` (o código antigo comparava contra o próprio máximo — impossível), probe da orientação oposta na verificação de quads fracos (era duplicata do primário), denominador como evidência de fusão com veto/teto, consenso real no early-stop do OCR de número (uma leitura confiante não encerra a escada), fila de reconhecimento para lotes de 20/50 fotos (executor limitado no serviço + scheduler no cliente; timeout mede execução, não espera em fila), CORS configurável `RECOGNITION_ALLOWED_ORIGINS` com preflight de Private Network Access para o painel Vercel, `/health` com `ready` (catálogo+índice+modelos), cache de scans validado por magic-bytes também em cache hit, catálogo que não marca parcial como completo (gaps reportados), modelos ONNX com revision pinada + instalação atômica + validação, e imagens de candidatos via endpoint local `/scan` quando o CDN 404. Splits de fixtures sem vazamento (calibração/validação/heldout por cardId) e suporte a holdout real separado — detalhes e números em `recognition/README.md`.
 
 ### Validação em fotos reais (2026-09-15)
 

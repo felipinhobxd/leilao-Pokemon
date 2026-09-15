@@ -23,6 +23,11 @@ test("local service client probes health, degrades to browser pipeline, never fa
   assert.match(local, /statusCache = \{ status: "offline", checkedAt: Date\.now\(\) \}/);
   // No localhost wildcard CORS: the service only accepts same-machine origins.
   assert.doesNotMatch(local, /allow_origins: \["\*"\]/);
+  // The pipeline is only used once the service reports readiness, not just liveness.
+  assert.match(local, /health\.ready === false/);
+  // Batch photos queue client-side instead of firing 50 simultaneous requests.
+  assert.match(local, /createRecognitionScheduler/);
+  assert.match(local, /queueStatusMessage/);
 });
 
 test("OCR is never the gatekeeper in the local pipeline: visual route runs independently", () => {
@@ -70,10 +75,18 @@ test("service binds to localhost only and keeps models loaded", () => {
   // The bind address lives in config.py; the server must default to it.
   assert.match(config, /SERVICE_HOST = ["']127\.0\.0\.1["']/);
   assert.match(config, /SERVICE_PORT/);
-  assert.match(recognitionServer, /allow_origins=\[/);
+  // CORS is an explicit allow-list (config-driven, localhost defaults) — never "*".
+  assert.match(recognitionServer, /allow_origins=allowed_origins\(\)/);
+  assert.match(config, /RECOGNITION_ALLOWED_ORIGINS/);
+  assert.doesNotMatch(config, /"\*"\)/);
   assert.doesNotMatch(recognitionServer, /host="0\.0\.0\.0"/);
   assert.match(recognitionServer, /_state\["recognizer"\] is None/);
   assert.match(recognitionServer, /--preload/);
+  // Recognition runs on a bounded executor, off the event loop (batch safety).
+  assert.match(recognitionServer, /run_in_executor/);
+  assert.match(recognitionServer, /RECOGNITION_MAX_CONCURRENCY/);
+  // Health distinguishes process-alive from recognition-ready.
+  assert.match(recognitionServer, /"ready": ready/);
 });
 
 test("npm exposes recognition lifecycle commands", () => {

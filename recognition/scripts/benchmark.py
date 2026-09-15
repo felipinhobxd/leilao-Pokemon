@@ -12,8 +12,18 @@ Methods
 Metrics: Top-1/3/5/10 exact card, name/set/number/language accuracy,
 decision quality (IDENTIFICADO precision), false-high-confidence, latency avg/p95.
 
+DATA LEAKAGE NOTE: fixtures are degradations of the official scans the index
+embeds, so this is a SYNTHETIC REGRESSION benchmark — it detects code
+regressions, it does not estimate real-world accuracy. Thresholds must be
+calibrated on the `calibration` split (calibrate_thresholds.py --split
+calibration) and this benchmark reported on the `validation` split
+(--split validation) or on the full set for regression comparison; never
+calibrate and report on the same rows. Real-photo sets (dev + held-out) are
+reported separately.
+
 Usage:
-    python scripts/benchmark.py --fixtures data/fixtures --methods hybrid-dinov3-vits16+sift,...
+    python scripts/benchmark.py --fixtures data/fixtures --split validation
+        --methods hybrid-siglip2-base-384+sift
 """
 from __future__ import annotations
 
@@ -194,9 +204,34 @@ def run_method(method, fixtures: list[dict], fixtures_dir: str) -> dict:
     return {"summary": summary, "rows": rows}
 
 
+def load_split(fixtures_dir: str, split: str) -> list[dict]:
+    """Load ground truth filtered by the deterministic card-disjoint split."""
+    import json as _json
+    with open(os.path.join(fixtures_dir, "ground-truth.json"), encoding="utf-8") as fh:
+        fixtures = _json.load(fh)
+    if split == "all":
+        return fixtures
+    manifest_path = os.path.join(fixtures_dir, "split-manifest.json")
+    if not os.path.exists(manifest_path):
+        sys.exit(f"[bench] --split {split} requested but {manifest_path} is missing; "
+                 f"run scripts/split_fixtures.py --fixtures {fixtures_dir} first")
+    with open(manifest_path, encoding="utf-8") as fh:
+        manifest = _json.load(fh)
+    allowed = set(manifest.get(split, []))
+    selected = [f for f in fixtures if f["fixtureId"] in allowed]
+    print(f"[bench] split={split}: {len(selected)}/{len(fixtures)} fixtures "
+          f"({len(allowed)} ids in manifest)")
+    return selected
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fixtures", default="data/fixtures")
+    parser.add_argument("--split", default="all",
+                        choices=("all", "calibration", "validation", "heldout"),
+                        help="fixtures split (see split_fixtures.py); 'all' = full "
+                             "synthetic regression set for apples-to-apples "
+                             "comparison with previous runs")
     parser.add_argument("--methods", default="")
     parser.add_argument("--embedding", default=DEFAULT_EMBEDDING)
     parser.add_argument("--matcher", default="sift")
@@ -206,14 +241,13 @@ def main() -> None:
     args = parser.parse_args()
 
     fixtures_dir = args.fixtures
-    gt_path = os.path.join(fixtures_dir, "ground-truth.json")
-    with open(gt_path, encoding="utf-8") as fh:
-        fixtures = json.load(fh)
+    fixtures = load_split(fixtures_dir, args.split)
     if args.offset:
         fixtures = fixtures[args.offset:]
     if args.limit:
         fixtures = fixtures[: args.limit]
-    print(f"[bench] {len(fixtures)} fixtures")
+    print(f"[bench] {len(fixtures)} fixtures (synthetic regression benchmark, "
+          f"fixtures={fixtures_dir}, split={args.split})")
 
     store = CatalogStore()
     methods = []
@@ -246,6 +280,8 @@ def main() -> None:
         print(f"[bench] running {method.name} …")
         result = run_method(method, fixtures, fixtures_dir)
         s = result["summary"]
+        s["split"] = args.split
+        s["benchmark"] = "synthetic-regression"
         print(f"  Top1={s['top1']:.1f}% Top5={s['top5']:.1f}% name={s['name']:.1f}% "
               f"set={s['set']:.1f}% lang={s['language']:.1f}% identified={s['identified']:.1f}% "
               f"falseHigh={s['falseHighConfidence']:.2f}% lat={s['latencyAvgMs']:.0f}/{s['latencyP95Ms']:.0f}ms")

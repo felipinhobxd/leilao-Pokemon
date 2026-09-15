@@ -136,14 +136,10 @@ def extract_hints(ocr: OcrResult) -> OcrHints:
     # strict N/M parses by (num, den), sum confidences per group, and take
     # the strongest group — a lone confident misread loses to a repeated
     # correct one. Loose (slash-less) parses are a last-resort fallback.
-    groups: dict[tuple[str, str], list[float]] = {}
-    for line in ocr.lines:
-        if line.region != "number":
-            continue
-        match = NUMBER_RE.search(line.text)
-        if match and match.group(1) != match.group(2):
-            key = (match.group(1), match.group(2))
-            groups.setdefault(key, []).append(float(line.confidence))
+    # Grouping uses ocr.number_read_groups so the early-stop in read_card
+    # and the vote here agree on what "the same read" means.
+    from .ocr import number_read_groups
+    groups = number_read_groups(ocr.lines)
     best_number = None
     if groups:
         # group score = vote mass; ties broken by the single best line conf

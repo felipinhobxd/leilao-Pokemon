@@ -37,6 +37,35 @@ REC_WIDTH_BUCKETS = (160, 320, 480)
 
 # A line that plausibly contains a collector number ("106/189", "153/217").
 _NUMBER_LINE_RE = re.compile(r"\d{1,3}\s*[/|lI]\s*\d{1,3}")
+# Capturing variant used to group agreeing reads by (num, den).
+_NUMBER_PAIR_RE = re.compile(r"(\d{1,3})\s*[/|lI]\s*(\d{1,3})")
+
+
+def number_read_groups(lines) -> dict[tuple[str, str], list[float]]:
+    """Group strict N/M reads of the number region by (num, den) -> confidences.
+
+    Shared by the OCR early-stop (consensus) and by hints extraction
+    (vote mass), so both agree on what counts as "the same read".
+    """
+    groups: dict[tuple[str, str], list[float]] = {}
+    for line in lines:
+        if getattr(line, "region", "") != "number":
+            continue
+        match = _NUMBER_PAIR_RE.search(line.text)
+        if match and match.group(1) != match.group(2):
+            groups.setdefault((match.group(1), match.group(2)), []).append(float(line.confidence))
+    return groups
+
+
+def number_consensus_reached(lines, min_votes: int = 2) -> bool:
+    """True once some (num, den) pair has been read `min_votes` times.
+
+    A single confident read — even 0.99 — does NOT stop the region ladder:
+    a lone confident-but-wrong read is exactly what consensus exists to
+    outvote (the misread repeats once at most; the true number repeats across
+    complementary regions).
+    """
+    return any(len(votes) >= min_votes for votes in number_read_groups(lines).values())
 
 
 @dataclass
@@ -83,6 +112,15 @@ class PpOcr:
                 if cls._instance is None:
                     cls._instance = cls()
         return cls._instance
+
+    @property
+    def loaded(self) -> bool:
+        """True once the det/rec ONNX sessions exist (readiness reporting)."""
+        return self._det is not None and self._rec is not None
+
+    def warm(self) -> None:
+        """Load the ONNX sessions eagerly (startup/health readiness)."""
+        self._ensure()
 
     def _ensure(self):
         if self._det is not None:
@@ -255,8 +293,11 @@ class PpOcr:
             #      taller band's extra body text defeats detection there)
             # Breadth-first: the raw variant of every region runs before any
             # denoising variant, and the bilateral/Otsu ladder only climbs on
-            # the left-crop regions (where noisy photos actually benefit), so
-            # clean scans stop after one det pass and real photos after 3-5.
+            # the left-crop regions (where noisy photos actually benefit).
+            # Early-stop requires CONSENSUS: the same N/M read twice (across
+            # regions or preprocessings). One confident read no longer stops
+            # the ladder — a lone misread must not preempt the vote that would
+            # outvote it (hints.extract_hints tallies these same lines).
             number_regions = (
                 (0.0, 0.93, 1.0, 1.0, 4.5),
                 (0.0, 0.72, 1.0, 1.0, 3.0),
@@ -274,12 +315,8 @@ class PpOcr:
                 if crop is None or not crop.size:
                     continue
                 variant = self._number_variant(crop, variant_name)
-                found_confident = False
-                for line in self._recognize_batch(variant, self._detect_boxes(variant), "number"):
-                    lines.append(line)
-                    if line.confidence >= 0.8 and _NUMBER_LINE_RE.search(line.text):
-                        found_confident = True
-                if found_confident:
+                lines.extend(self._recognize_batch(variant, self._detect_boxes(variant), "number"))
+                if number_consensus_reached(lines):
                     break
 
             return OcrResult(lines=lines, elapsed_ms=int((time.time() - started) * 1000))

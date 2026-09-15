@@ -70,21 +70,99 @@ def scan_url(image_base: str, quality: str = "high.webp") -> str:
     return f"{image_base}/{quality}"
 
 
-def ensure_scan(image_base: str, quality: str = "high.webp") -> Optional[str]:
-    """Download-once local cache for an official scan. Returns local path or None."""
+# Quality fallback chain: ~1.2% of catalog scans lack high.webp on the CDN
+# (404) but are available as low.webp. Without the chain those cards silently
+# drop out of the index (catalog gap, cause G) and the pipeline can only
+# match same-artwork reprints of them. NOTE: bare "png"/"jpg" URLs return
+# HTTP 200 with an HTML error page, so downloads are validated by magic
+# bytes before entering the cache.
+SCAN_QUALITY_CHAIN = ("high.webp", "low.webp")
+
+# Image magic bytes (JPEG / WebP / PNG / GIF) with a minimum plausible size
+# for a card scan; anything else (HTML error pages, redirects) is rejected.
+_MIN_SCAN_BYTES = 4096
+
+
+def _looks_like_image(data: bytes) -> bool:
+    if not data or len(data) < _MIN_SCAN_BYTES:
+        return False
+    head = data[:16]
+    if head[:3] == b"\xff\xd8\xff":
+        return True  # JPEG
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return True  # WebP
+    if head[:8] == b"\x89PNG\r\n\x1a\n":
+        return True  # PNG
+    if head[:4] == b"GIF8":
+        return True  # GIF
+    return False
+
+
+def _cache_scan(image_base: str, quality: str, data: bytes) -> str:
     path = scan_path(image_base, quality)
-    if os.path.exists(path) and os.path.getsize(path) > 0:
-        return path
-    try:
-        data = _http_get(scan_url(image_base, quality), timeout=25.0)
-    except Exception:
-        return None
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "wb") as fh:
         fh.write(data)
     os.replace(tmp, path)
     return path
+
+
+def _en_mirror_base(image_base: str) -> Optional[str]:
+    """English asset base for a localized card, when it exists."""
+    for lang in ("pt", "es", "ja", "fr", "de", "it"):
+        marker = f"/{lang}/"
+        if marker in image_base:
+            return image_base.replace(marker, "/en/", 1)
+    return None
+
+
+def ensure_scan(image_base: str, quality: str = "high.webp") -> Optional[str]:
+    """Download-once local cache for an official scan. Returns local path or None.
+
+    Tries the requested quality first, then the fallback chain, then (for
+    non-English cards) the English mirror of the same card: when the localized
+    scan is absent from the CDN the EN artwork still identifies the card, so
+    the index can cover it instead of leaving a retrieval gap. Every download
+    is validated by magic bytes so HTML error pages never enter the cache.
+    Cached files (including EN mirrors) are checked before any network call.
+    """
+    chain = list(SCAN_QUALITY_CHAIN)
+    if quality in chain:
+        chain.remove(quality)
+        chain.insert(0, quality)
+    # 1. own-language cache hit (most common path: zero network)
+    for q in chain:
+        path = scan_path(image_base, q)
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            return path
+    mirror_base = _en_mirror_base(image_base)
+    # 2. EN-mirror cache hit
+    if mirror_base:
+        for q in chain:
+            cached = scan_path(image_base, f"en-{q}")
+            if os.path.exists(cached) and os.path.getsize(cached) > 0:
+                return cached
+    # 3. own-language downloads
+    for q in chain:
+        try:
+            data = _http_get(scan_url(image_base, q), timeout=25.0)
+        except Exception:
+            continue
+        if not _looks_like_image(data):
+            continue
+        return _cache_scan(image_base, q, data)
+    # 4. EN-mirror download (same artwork, same local id in mirrored sets)
+    if mirror_base:
+        for q in chain:
+            try:
+                data = _http_get(scan_url(mirror_base, q), timeout=25.0)
+            except Exception:
+                continue
+            if not _looks_like_image(data):
+                continue
+            return _cache_scan(image_base, f"en-{q}", data)
+    return None
 
 
 def init_db(db_path: str = CATALOG_DB) -> sqlite3.Connection:

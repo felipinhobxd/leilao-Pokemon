@@ -178,7 +178,12 @@ class TestCalibration(unittest.TestCase):
             for field in ("floor", "strong", "medium", "weight"):
                 self.assertIn(field, cal, f"{name}.{field} ausente")
             self.assertGreater(cal["strong"], cal["medium"])
-            self.assertGreater(cal["medium"], cal["floor"])
+            # floor (chance-level similarity subtracted before weighting) can
+            # legitimately sit ABOVE medium for backbones with compressed
+            # cosine distributions (SigLIP2: impostor median ~0.886): only the
+            # ordering of the decision thresholds is invariant.
+            self.assertGreaterEqual(cal["floor"], 0.0)
+            self.assertGreater(cal["weight"], 0.0)
         self.assertEqual(set(DEFAULT_CALIBRATION), {"floor", "strong", "medium", "weight"})
 
     def test_fuse_decide_are_instance_methods(self):

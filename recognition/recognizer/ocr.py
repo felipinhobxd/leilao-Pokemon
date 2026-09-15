@@ -3,15 +3,17 @@
 
 Region-based multi-pass OCR for normalized cards:
 - name strip   (top-left, upscaled)     -> card name
+- name band 2  (deeper top, upscaled)   -> card name on loose framings
 - hp strip     (top-right, upscaled)    -> HP
 - footer strip (bottom, upscaled)       -> collector number / set / language hints
-- body pass    (language detection only, downscaled)
+- number corner + wide number band with denoising variants -> collector number
 
 Every read produces (text, confidence); partial reads never become hard facts.
 """
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -32,6 +34,9 @@ DET_MAX_SIDE = 800
 REC_HEIGHT = 48
 REC_MAX_WIDTH = 480
 REC_WIDTH_BUCKETS = (160, 320, 480)
+
+# A line that plausibly contains a collector number ("106/189", "153/217").
+_NUMBER_LINE_RE = re.compile(r"\d{1,3}\s*[/|lI]\s*\d{1,3}")
 
 
 @dataclass
@@ -194,10 +199,15 @@ class PpOcr:
     def read_card(self, card_bgr: np.ndarray, body_pass: bool = True) -> OcrResult:
         """Region-based OCR on a normalized (600x840-ish) card image.
 
-        Three cheap det passes instead of one expensive full-card pass:
+        Passes (det + rec on each region, never one expensive full-card pass):
         1. top strip    (name + HP + stage)
+        1b. deep top band — real photos with loose perspective warps put the
+            name bar 10-25% down; tagged name2/hp2, used only as fallback
         2. bottom strip (flavor text / weakness row / copyright / language)
-        3. number corner (collector number at high scale)
+        3. collector number — four complementary regions (corner + wide
+           bands), raw variant of each first, then denoising variants
+           (bilateral -> Otsu) on the left-crop regions until a confident
+           N/M line shows up
         """
         started = time.time()
         try:
@@ -222,20 +232,76 @@ class PpOcr:
                     line.region = "hp" if center_x >= 0.62 else "name"
                     lines.append(line)
 
+            # --- pass 1b: deep top band for loose framings (name2/hp2)
+            top2 = crop_region(0.0, 0.14, 1.0, 0.32, 2.0)
+            if top2 is not None and top2.size:
+                for line in self._recognize_batch(top2, self._detect_boxes(top2), "top2"):
+                    center_x = line.box[:, 0].mean() / max(1, top2.shape[1])
+                    line.region = "hp2" if center_x >= 0.62 else "name2"
+                    lines.append(line)
+
             # --- pass 2: bottom strip (flavor text / weakness row / copyright / language)
             bottom = crop_region(0.0, 0.80, 1.0, 0.945, 2.2)
             if bottom is not None and bottom.size:
                 lines.extend(self._recognize_batch(bottom, self._detect_boxes(bottom), "footer"))
 
-            # --- pass 3: collector-number line at high magnification (full width:
-            # PT cards put it bottom-LEFT near the set symbol, modern cards bottom-RIGHT)
-            corner = crop_region(0.0, 0.93, 1.0, 1.0, 4.5)
-            if corner is not None and corner.size:
-                lines.extend(self._recognize_batch(corner, self._detect_boxes(corner), "number"))
+            # --- pass 3: collector number. Four complementary regions:
+            #   a) bottom corner, full width (tight framings / synthetic scans)
+            #   b) wide bottom band, full width (loose warps push the number
+            #      up to 70-90% of the frame)
+            #   c) wide bottom band, left 60% (real photos: the right-side
+            #      set code / copyright / stand noise defeats detection)
+            #   d) short bottom-left band (numbers that sit 86-100% down: the
+            #      taller band's extra body text defeats detection there)
+            # Breadth-first: the raw variant of every region runs before any
+            # denoising variant, and the bilateral/Otsu ladder only climbs on
+            # the left-crop regions (where noisy photos actually benefit), so
+            # clean scans stop after one det pass and real photos after 3-5.
+            number_regions = (
+                (0.0, 0.93, 1.0, 1.0, 4.5),
+                (0.0, 0.72, 1.0, 1.0, 3.0),
+                (0.0, 0.72, 0.60, 1.0, 5.0),
+                (0.0, 0.86, 0.60, 1.0, 5.0),
+            )
+            attempts: list[tuple[tuple[float, float, float, float, float], str]] = [
+                (region, "raw") for region in number_regions
+            ]
+            for region in number_regions[2:]:
+                attempts.append((region, "bilateral"))
+                attempts.append((region, "otsu"))
+            for region_spec, variant_name in attempts:
+                crop = crop_region(*region_spec)
+                if crop is None or not crop.size:
+                    continue
+                variant = self._number_variant(crop, variant_name)
+                found_confident = False
+                for line in self._recognize_batch(variant, self._detect_boxes(variant), "number"):
+                    lines.append(line)
+                    if line.confidence >= 0.8 and _NUMBER_LINE_RE.search(line.text):
+                        found_confident = True
+                if found_confident:
+                    break
 
             return OcrResult(lines=lines, elapsed_ms=int((time.time() - started) * 1000))
         except Exception as exc:  # noqa: BLE001
             return OcrResult(elapsed_ms=int((time.time() - started) * 1000), error=str(exc))
+
+    @staticmethod
+    def _number_variant(bgr: np.ndarray, name: str) -> np.ndarray:
+        """Named preprocessing variant for the collector-number regions.
+
+        raw        -> as-is (clean scans)
+        bilateral  -> edge-preserving smoothing (JPEG noise, glare texture)
+        otsu       -> hard binarization of the smoothed gray (worst glare)
+        """
+        if name == "raw":
+            return bgr
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        bilateral = cv2.bilateralFilter(gray, 9, 75, 75)
+        if name == "bilateral":
+            return cv2.cvtColor(bilateral, cv2.COLOR_GRAY2BGR)
+        _, otsu = cv2.threshold(bilateral, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        return cv2.cvtColor(otsu, cv2.COLOR_GRAY2BGR)
 
     def read(self, bgr: np.ndarray) -> OcrResult:
         """Generic full-image OCR (det + rec)."""

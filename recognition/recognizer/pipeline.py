@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -184,15 +185,28 @@ class Recognizer:
         self.index = VisualIndex(embedding_name)
         self.matcher = get_matcher(matcher_name)
         self.ocr = PpOcr.instance()
-        self._scan_cache: dict[str, Optional[np.ndarray]] = {}
+        self._scan_cache = OrderedDict()  # key -> decoded scan (FIFO, byte-bounded)
+        self._scan_cache_bytes = 0
+        self._scan_misses: set[str] = set()
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------- scan access
+    # Byte-bounded FIFO cache of decoded candidate scans. Entry-count bounds
+    # are unsafe here: official scans range from ~1.5 MB to ~7 MB decoded, so
+    # 400 entries can hold gigabytes on a memory-tight machine (OOM observed
+    # at 3.5 GB RSS). The budget keeps the whole service under ~1 GB of scan
+    # memory while still covering the per-request verification working set.
+    SCAN_CACHE_MAX_BYTES = 400 * 1024 * 1024
+
     def _scan_image(self, language: str, card_id: str) -> Optional[np.ndarray]:
         key = f"{language}|{card_id}"
         with self._lock:
-            if key in self._scan_cache:
-                return self._scan_cache[key]
+            cached = self._scan_cache.get(key)
+            if cached is not None:
+                self._scan_cache.move_to_end(key)
+                return cached
+            if key in self._scan_misses:
+                return None
         card = self.catalog.card_by_key(language, card_id) if self.catalog else None
         image = None
         if card is not None:
@@ -201,10 +215,16 @@ class Recognizer:
             if path:
                 data = np.fromfile(path, dtype=np.uint8)
                 image = cv2.imdecode(data, cv2.IMREAD_COLOR)
+        nbytes = int(image.nbytes) if image is not None else 0
         with self._lock:
-            if len(self._scan_cache) > 400:
-                self._scan_cache.clear()
+            if image is None:
+                self._scan_misses.add(key)
+                return None
             self._scan_cache[key] = image
+            self._scan_cache_bytes += nbytes
+            while self._scan_cache and self._scan_cache_bytes > self.SCAN_CACHE_MAX_BYTES:
+                _, old = self._scan_cache.popitem(last=False)
+                self._scan_cache_bytes -= int(old.nbytes)
         return image
 
     # ---------------------------------------------------------------- route B
@@ -245,14 +265,43 @@ class Recognizer:
         return candidates, orientation
 
     # ------------------------------------------------------------ verification
-    def verify(self, card: NormalizedCard, candidates: list[Candidate], orientation: str = "0") -> None:
+    def verify(self, card: NormalizedCard, candidates: list[Candidate], orientation: str = "0",
+               hints: Optional[OcrHints] = None) -> None:
         """Geometric verification. Uses Route A's winning orientation by default
-        (halves cost); the opposite orientation is a fallback for weak quads."""
+        (halves cost); the opposite orientation is a fallback for weak quads.
+
+        Beyond the top visual ranks, candidates whose OCR evidence (collector
+        number + name) matches are always verified: EN-mirror embeddings rank
+        low for localized cards, but the artwork still verifies exactly.
+        """
         primary = card.rotated180 if orientation == "180" else card.image
         probe_variants = [primary]
         if card.confidence < 0.25:  # uncertain normalization: try both orientations
             probe_variants.append(card.rotated180 if orientation == "180" else card.image)
-        for i, candidate in enumerate(candidates[: self.verify_topk]):
+
+        selected = list(candidates[: self.verify_topk])
+        if hints and hints.local_id and hints.number_confidence >= 0.5 and hints.name:
+            already = {id(c) for c in selected}
+            for candidate in candidates[self.verify_topk:]:
+                number_match = False
+                if candidate.local_id:
+                    try:
+                        number_match = int(hints.local_id) == int(candidate.local_id)
+                    except ValueError:
+                        number_match = hints.local_id == candidate.local_id
+                if not number_match:
+                    continue
+                similarity = name_similarity(hints.name, candidate.name or "")
+                if similarity < 0.72:
+                    continue
+                if id(candidate) in already:
+                    continue
+                selected.append(candidate)
+                already.add(id(candidate))
+                if len(selected) >= self.verify_topk + 8:
+                    break
+
+        for candidate in selected:
             scan = self._scan_image(candidate.language, candidate.card_id)
             if scan is None:
                 continue
@@ -287,13 +336,23 @@ class Recognizer:
                 if hints.name_confidence >= 0.8 and similarity < 0.45:
                     weights["ocr_name_conflict"] = -90.0
             if hints.local_id and candidate.local_id:
+                numeric = True
                 try:
                     match = int(hints.local_id) == int(candidate.local_id)
                 except ValueError:
+                    numeric = False
                     match = hints.local_id == candidate.local_id
                 candidate.ocr_number_match = match
                 if match and hints.number_confidence >= 0.6:
                     weights["ocr_number"] = 45.0 * hints.number_confidence
+                elif (not match and numeric and hints.number_confidence >= 0.75
+                      and hints.denominator):
+                    # Explicit collector-number contradiction: the photographed
+                    # card claims N/M and this candidate prints a different N.
+                    # Same-artwork reprints ride visual+verification to the top;
+                    # only a readable number can expose them. Penalized, never
+                    # a hard filter (low-confidence numbers stay inert).
+                    weights["ocr_number_conflict"] = -70.0 * hints.number_confidence
             if hints.language and candidate.language == hints.language:
                 candidate.ocr_language_match = True
                 weights["ocr_language"] = 8.0 * hints.language_confidence
@@ -309,7 +368,14 @@ class Recognizer:
         if not ranked:
             return "NAO_IDENTIFICADO", []
         best = ranked[0]
-        second = ranked[1] if len(ranked) > 1 else None
+        # Margin against the best DIFFERENT card: language twins of the same
+        # card_id (pt-BR / en prints verified against the same scan) differ by
+        # a few points, which must not masquerade as a tight competition.
+        second = None
+        for candidate in ranked[1:]:
+            if candidate.card_id != best.card_id:
+                second = candidate
+                break
         verification = best.verification
         verified = verification is not None and verification.inliers >= 12 and verification.inlier_ratio >= 0.30
         margin = (best.score - second.score) if second is not None else 999.0
@@ -325,8 +391,18 @@ class Recognizer:
         if best.ocr_language_match and hints.language_confidence >= 0.6:
             evidence.append("language")
 
-        strong_evidence = verified or (best.visual_similarity >= cal["strong"] and len(evidence) >= 2)
-        if strong_evidence and margin >= 25:
+        # Explicit collector-number contradiction on the top candidate: the
+        # best match prints a different number than the photographed card.
+        # Visual + geometric evidence cannot separate same-artwork reprints,
+        # so a readable contradicting number caps the decision at PROVAVEL —
+        # the user reviews instead of trusting a wrong exact match.
+        number_conflict = (best.ocr_number_match is False
+                           and hints.number_confidence >= 0.75 and hints.denominator)
+        if number_conflict:
+            evidence.append("collector-number-conflict")
+
+        strong_evidence = (verified or (best.visual_similarity >= cal["strong"] and len(evidence) >= 2))
+        if strong_evidence and margin >= 25 and not number_conflict:
             return "IDENTIFICADO", evidence
         if len(evidence) >= 2 and margin >= 12:
             return "PROVAVEL", evidence
@@ -401,11 +477,14 @@ class Recognizer:
                 merged[key] = candidate
                 result.evidence.append("confirmed-memory")
 
-        # Geometric verification on the merged shortlist (route A candidates first)
+        # Geometric verification on the merged shortlist (route A candidates
+        # first), plus route B candidates whose OCR text evidence (name AND
+        # collector number) points at them: mirror-scan and low-rank true
+        # cards would otherwise never reach verification.
         shortlist = sorted(merged.values(),
                            key=lambda c: -(c.visual_similarity if c.visual_similarity >= 0 else 0.5))
         t0 = time.time()
-        self.verify(card, shortlist, orientation)
+        self.verify(card, shortlist, orientation, hints)
         timings["verification"] = (time.time() - t0) * 1000
 
         ranked = self.fuse(list(merged.values()), hints, route_b_candidates)

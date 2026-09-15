@@ -47,13 +47,15 @@ DEFAULT_EMBEDDING = os.environ.get("RECOGNITION_EMBEDDING", "siglip2-base-384")
 # siglip2-base-384 calibrated on the full pt-BR index (12.588 cards, 106
 # fixtures, 2026-09-15): simTruth p25=0.869 median=0.913; best-impostor
 # median=0.886 p95=0.940; correct-top1 minSim=0.770 gap p05=+0.005.
+# floor=0.89 (impostor median): a chance-level match contributes ~zero
+# fusion score, so same-artwork reprints cannot ride the visual term alone.
 EMBEDDING_CALIBRATION = {
     "dinov3-vits16": {"floor": 0.55, "strong": 0.82, "medium": 0.72, "weight": 140.0},
     "dinov3-vits16-392": {"floor": 0.55, "strong": 0.82, "medium": 0.72, "weight": 140.0},
     "dinov3-vitb16": {"floor": 0.55, "strong": 0.82, "medium": 0.72, "weight": 140.0},
     "dinov3-vitb16-392": {"floor": 0.55, "strong": 0.82, "medium": 0.72, "weight": 140.0},
     "dinov2-small": {"floor": 0.45, "strong": 0.80, "medium": 0.70, "weight": 140.0},
-    "siglip2-base-384": {"floor": 0.85, "strong": 0.91, "medium": 0.87, "weight": 200.0},
+    "siglip2-base-384": {"floor": 0.89, "strong": 0.91, "medium": 0.87, "weight": 200.0},
 }
 DEFAULT_CALIBRATION = {"floor": 0.55, "strong": 0.82, "medium": 0.72, "weight": 140.0}
 

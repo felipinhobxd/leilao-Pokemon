@@ -19,15 +19,15 @@ O site detecta o serviço local via `GET /health` (cache de 60 s, backoff de 60 
 
 1. Detecção do contorno da carta (múltiplas estratégias de binarização: Canny, Otsu, adaptativo) e retificação de perspectiva para 600×840.
 2. Embedding global do cartão normalizado (SigLIP2-base-384 ONNX) em múltiplas vistas: orientações 0°/180° × fotometria (raw + gamma-auto). O score de cada carta do catálogo é o máximo entre as vistas — fotos escuras/lavadas são resgatadas pela vista gamma.
-3. Busca exata por cosseno no índice local (12.588 cartas pt-BR + EN) → Top-50.
+3. Busca exata por cosseno no índice local (12.744 cartas pt-BR — 100% do catálogo — + EN) → Top-50.
 4. Verificação geométrica dos melhores candidatos: SIFT + RANSAC homografia; inliers e razão de inliers são evidência quase-conclusiva. A pontuação é discriminativa na região da arte (molduras compartilhadas entre Trainer/Item não dominam o match).
 
 **Rota B — texto:**
 
-1. PP-OCRv6 medium (ONNX) por regiões (nome, HP, número, denominador, rodapé/set), com confiança por leitura e fallback full-card.
+1. PP-OCRv6 medium (ONNX) por regiões (nome, HP, número, denominador, rodapé/set), com confiança por leitura. O número do colecionador é lido em até 4 regiões complementares (canto; banda larga 72–100%; variantes esq-60%) com escada de denoising (raw → bilateral → Otsu) e parse por votação de consenso entre leituras; uma banda "name2" (14–32%) resgata o nome em warps frouxos de fotos reais.
 2. Hints textuais (nome/número/HP/idioma) → candidatos do catálogo local por similaridade.
 
-**Fusão:** verificação geométrica + similaridade global + validação de metadados OCR + memória confirmada → decisão em categorias honestas: `IDENTIFICADO`, `PROVÁVEL`, `REVISAR`, `NAO_IDENTIFICADO`. Nenhum percentual inventado.
+**Fusão:** verificação geométrica + similaridade global + validação de metadados OCR + memória confirmada → decisão em categorias honestas: `IDENTIFICADO`, `PROVÁVEL`, `REVISAR`, `NAO_IDENTIFICADO`. Nenhum percentual inventado. Número de colecionador legível que **contradiz** o melhor candidato vira veto na fusão e teta a decisão em `PROVÁVEL` (reprints de arte idêntica não herdam o IDENTIFICADO da verificação geométrica); candidatos da rota B com nome+número coincidentes sempre passam pela verificação geométrica, mesmo com embedding de espelho EN mal ranqueado.
 
 ### Regras de projeto invioláveis
 
@@ -35,6 +35,10 @@ O site detecta o serviço local via `GET /health` (cache de 60 s, backoff de 60 
 - Número OCR parcial/errado não restringe sozinho o catálogo (regressão: Dragonair não vira Parasect).
 - Nome correto + candidatos corretos, mas impressão exata sem evidência suficiente (reprints com arte idêntica, rodapé ilegível) → `PROVÁVEL`/`REVISAR`, nunca uma carta errada com confiança alta.
 - Memória confirmada: apenas a confirmação explícita do usuário cria ground truth; predições nunca são auto-salvas.
+
+### Validação em fotos reais (2026-09-15)
+
+7 fotos reais de celular (WhatsApp: JPEG comprimido, carta em suporte plástico, ângulo, glare, fundo escuro), todas pt-BR — **7/7 identificadas corretamente** com evidência nome + número + verificação geométrica (Purrloin 106/189 Escuridão Incandescente, Rayquaza 153/217, Shroodle 120/191, Pansear 22/147, Dragonair 95/149, Charmander 020/217, Pansear 021/142). O caso Purrloin expôs e fechou três buracos: scan pt-BR ausente no CDN (resolvido com espelho EN + cadeia de qualidade validada por magic-bytes), OCR de número que falhava em fotos reais (multi-região + denoising + votação) e ausência de veto contra reprints com número contraditório. Detalhes e tabela completa em `recognition/README.md`.
 
 ## Instalação e execução
 

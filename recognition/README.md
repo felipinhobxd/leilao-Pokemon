@@ -26,8 +26,8 @@ FUSÃO ──► verificação geométrica ~conclusiva + similaridade global cal
 - **Normalização**: múltiplas estratégias de binarização (Canny+CLAHE, Otsu, threshold adaptativo) com pontuação de plausibilidade ponderando área (quad interno brilhante nunca vence o contorno da carta); rotações 0/90/180/270; par 0°/180° ambíguo resolvido por max de similaridade e OCR.
 - **Retrieval**: busca bruta por cosseno (12–80k cartas cabem em RAM; mais rápido e exato que ANN aproximado nesse porte). Query multi-view: vistas gamma-auto resgatam fotos escuras/lavadas sem prejudicar fotos boas (máximo por carta).
 - **Verificação**: SIFT + RANSAC; inliers ≥ 12 e razão ≥ 0,30 = evidência quase-conclusiva. A pontuação privilegia a região da arte — molduras compartilhadas (Trainer/Item) não dominam o match.
-- **OCR**: PP-OCRv6 medium (det+rec) por regiões com confiança por leitura; número lê o strip inferior completo (layouts variam — ex.: `091/132` no canto inferior esquerdo em PT-BR).
-- **Reprints**: quando a arte é praticamente idêntica e número/set/rodapé estão ilegíveis, o sistema entrega o nome correto + candidatos e decide `PROVÁVEL`/`REVISAR` — nunca inventa a impressão exata.
+- **OCR**: PP-OCRv6 medium (det+rec) por regiões com confiança por leitura. Número do colecionador lido em até 4 regiões complementares (canto completo; banda larga 72–100% completa; banda larga esq-60%; banda baixa esq-60%) com escada de denoising (raw → bilateral → Otsu) e early-stop; parse por **votação de consenso** entre leituras (leitura isolada errada perde para leitura repetida correta). Banda "name2" (14–32%) resgata o nome em warps frouxos que deixam a barra de nome mais baixa no frame.
+- **Reprints**: quando a arte é praticamente idêntica e número/set/rodapé estão ilegíveis, o sistema entrega o nome correto + candidatos e decide `PROVÁVEL`/`REVISAR` — nunca inventa a impressão exata. Quando o número É legível (confiança ≥ 0,75 com denominador), uma contradição explícita vira veto na fusão (-70×conf) e teta a decisão em `PROVÁVEL` — reprints de arte idêntica não podem mais "herdar" o IDENTIFICADO da verificação geométrica.
 - **Memória**: apenas confirmação explícita do usuário cria exemplares (ground truth); predições nunca são auto-salvas.
 
 ## Bake-off de embeddings (2026-09-14, mini-índice adversarial)
@@ -57,12 +57,12 @@ Causas diagnosticadas nas falhas restantes: **D** degradação fotométrica extr
 | Rota visual dinov3-vits16 | 92,5% | 95,3% | 0,94% | ~257 ms |
 | Híbrido dinov3-vits16+SIFT+OCR (baseline) | 93,4% | 95,3% | 0,00% | ~4379 ms |
 | Rota visual siglip2 (retrieval puro, índice completo) | 90,6% | 97,2% | 0,00% | ~2984 ms |
-| **Híbrido siglip2+SIFT+OCR (atual)** | **96,2%** | **98,1%** | **0,00%** | ~7080 ms |
+| **Híbrido siglip2+SIFT+OCR (atual)** | **97,2%** | **98,1%** | **0,00%** | ~17238 ms |
 
-Híbrido atual (n=106 fixtures sintéticas, índice pt-BR completo com 12.588 cartas, CPU 2 núcleos do sandbox): Top-3 = 97,2%; name 99,1%; set 96,2%; idioma 100%; identified 84,0%; p95 8679 ms. Em máquina Windows com GPU (DirectML/CUDA) a latência cai fortemente — no sandbox os 4 views SigLIP2 rodam em CPU limitada.
+Híbrido atual (n=106 fixtures sintéticas, índice pt-BR completo com 12.744 cartas — 100% do catálogo —, CPU 2 núcleos do sandbox): Top-3 = 98,1%; name 99,1%; set 97,2%; idioma 100%; identified 83,0%; p95 24060 ms. A latência subiu vs. a rodada anterior porque o OCR de número agora percorre múltiplas regiões com variantes de denoising (early-stop em leitura confiável mantém scans limpos em 1 passe); em máquina Windows com GPU (DirectML/CUDA) a latência cai fortemente.
 
-Falhas Top-1 restantes (4/106), todas com decisão honesta:
-- 2 reprints de arte idêntica (`swsh4.5-30` vs `swsh1-64` Frosmoth; `sv07-107` vs `sv08.5-070` Archaludon) → `REVISAR` com o par de candidatos certo (margem 0,3–0,8 pts). Sem leitura de número/set, força de evidência não existe — não se inventa exact match.
+Falhas Top-1 restantes (3/106), todas com decisão honesta:
+- 1 reprint de arte idêntica (`sv07-107` vs `sv08.5-070` Archaludon) → `REVISAR` com o par de candidatos certo. Sem leitura de número/set, força de evidência não existe — não se inventa exact match. O caso Frosmoth (`swsh4.5-30` vs `swsh1-64`) foi RESOLVIDO nesta rodada: o OCR multi-região lê o número com confiança suficiente e o veto de contradição destrona o reprint.
 - 2 fotos com degradação fotométrica extrema (65%+ pixels quase pretos; `rand-028` Porygon2, `rand-085` Shedinja) → `NAO_IDENTIFICADO`. Sondei vista CLAHE adicional: melhora um caso (rank 34→10) sem alcançar Top-5 e piora o outro — rejeitada (custo +50% de latência, sem ganho de decisão).
 
 Correções de fusão desta rodada (regressões cobertas em `tests/test_units.py`):
@@ -78,6 +78,22 @@ python scripts/benchmark.py --methods hybrid-siglip2-base-384+sift --out data/be
 
 Fotos reais: colocar em `data/fixtures-real/` + `ground-truth.json` (mesmo formato) e rodar `benchmark.py --fixtures data/fixtures-real`. **Benchmarks sintético e real são reportados separadamente — nunca somados.**
 
+## Validação em fotos reais (2026-09-15, WhatsApp)
+
+7 fotos reais de celular (JPEG comprimido, carta em suporte plástico, ângulo, glare, fundo escuro com pelúcia) — todas pt-BR — **7/7 identificadas corretamente** com evidência nome + número + verificação geométrica:
+
+| Carta | Impressão correta | Decisão |
+|---|---|---|
+| Purrloin | `swsh3-106` 106/189 Escuridão Incandescente | IDENTIFICADO |
+| Rayquaza | `me02.5-153` 153/217 Heróis Excelsos | IDENTIFICADO |
+| Shroodle | `sv08-120` 120/191 Fagulhas Impetuosas | IDENTIFICADO |
+| Pansear | `sm3-22` 22/147 Sombras Ardentes | IDENTIFICADO |
+| Dragonair | `sm1-95` 95/149 Sol e Lua | IDENTIFICADO |
+| Charmander | `me02.5-020` 020/217 Heróis Excelsos | IDENTIFICADO |
+| Pansear | `sv07-021` 021/142 Coroa Estelar | IDENTIFICADO |
+
+O caso Purrloin era o mais difícil: o scan pt-BR de `swsh3-106` não existe no CDN da TCGdex (404 em todas as qualidades), então o índice antigo nem continha a carta — o pipeline casava com o reprint de arte idêntica `swsh3.5-39` (Caminho do Campeão, 39/73) com confiança alta. Três correções fecharam o buraco: (1) espelho EN do scan (mesma arte, identidade pt-BR preservada) para as ~150 cartas sem scan localizado; (2) OCR de número multi-região que lê `106/189` com confiança 0,89 mesmo sob ruído; (3) veto de número contraditório — o reprint perde o bônus e a carta certa (nome+número+verificação contra o espelho EN, 272 inliers) vence com margem ampla. As correções são paramétricas (regiões/pesos reais), não overfit dessas 7 fotos.
+
 ## Instalação (Windows)
 
 ```powershell
@@ -89,8 +105,8 @@ npm run start                 # site + bot + este serviço (opcional; sem ele o 
 Equivalente direto: `recognition\install-windows.ps1` e `recognition\run-local.ps1`.
 
 - Modelos (ONNX, de Hugging Face, via `scripts/download_models.py`): **core** = SigLIP2-base-384 + PP-OCRv6 medium (~1.6 GB, instalação padrão); **extras** (`--extras`) = DINOv3-S (fallback leve) + ALIKED/LightGlue (matcher aprendido — o SIFT default já vem com o OpenCV); `--all` soma os backbones de bake-off.
-- Catálogo: TCGdex → SQLite local (todos os idiomas); scans oficiais `high.webp` em cache local — a instalação baixa pt-BR (≈ 12.6k) + en (≈ 19.5k); es/ja ficam apenas nos metadados.
-- Índice: `build_index.py --model siglip2-base-384 --batch 8` (batch maior causa OOM; valor validado) com checkpoint incremental — pt-BR primeiro, en em seguida; interromper/retomar sem perder trabalho.
+- Catálogo: TCGdex → SQLite local (todos os idiomas); scans oficiais em cache local com cadeia de qualidade (`high.webp` → `low.webp`) validada por magic-bytes (o CDN devolve HTML com HTTP 200 para nomes inválidos — nunca entra no cache) e espelho EN para cartas sem scan no idioma local (mesma arte/identidade; ~150 cartas pt-BR). A instalação baixa pt-BR (≈ 12,7k) + en (≈ 19,5k); es/ja ficam apenas nos metadados.
+- Índice: `build_index.py --model siglip2-base-384 --batch 8` (batch maior causa OOM; valor validado) com checkpoint incremental — pt-BR primeiro (12.744 cartas = 100% do catálogo), en em seguida; interromper/retomar sem perder trabalho.
 - GPUs: CUDA/DirectML detectadas automaticamente pelo ONNX Runtime.
 
 ## Estrutura

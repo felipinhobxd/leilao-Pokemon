@@ -29,6 +29,8 @@ ES_WORDS = ("debilidad", "retirada", "baraja", "busca", "descarta", "jugador", "
 CATEGORY_WORDS = {
     "treinador", "item", "pokemon", "energia", "ferramenta", "estadio",
     "trainer", "supporter", "stadium", "tool", "energy", "basic", "holo", "raro",
+    "basico", "estagio", "estagio1", "estagio2", "estagio 1", "estagio 2",
+    "evolucao", "nivel", "ps",
 }
 
 NUMBER_RE = re.compile(r"(\d{1,3})\s*[/|lI]\s*(\d{1,3})")
@@ -91,12 +93,17 @@ def extract_hints(ocr: OcrResult) -> OcrHints:
     if not ocr.lines:
         return hints
 
-    # Name: best line from the "name" region (longest decent-confidence text)
-    name_lines = [line for line in ocr.lines if line.region == "name"]
+    # Name: best line from the "name" region (longest decent-confidence text).
+    # The "name2" band (deeper top crop for loose perspective warps) joins the
+    # pool but only wins when it beats the primary band's read; artwork noise
+    # from the deeper band is filtered by the 3-char minimum.
+    name_lines = [line for line in ocr.lines if line.region in ("name", "name2")]
     name_line = None
     for line in sorted(name_lines, key=lambda l: -l.confidence):
         clean = line.text.strip()
-        if 2 <= len(clean) <= 34 and re.search(r"[A-Za-zÀ-ÿぁ-ン一-龯]", clean) and not NUMBER_RE.search(clean):
+        min_len = 2 if line.region == "name" else 3
+        if (min_len <= len(clean) <= 34 and re.search(r"[A-Za-zÀ-ÿぁ-ン一-龯]", clean)
+                and not NUMBER_RE.search(clean)):
             name_line = line
             break
     if name_line is not None:
@@ -109,25 +116,46 @@ def extract_hints(ocr: OcrResult) -> OcrHints:
             hints.name = clean_name
             hints.name_confidence = float(name_line.confidence)
 
-    # HP from the "hp" region (accepts both "60 PS" and "Ps60" readings)
-    for line in ocr.lines:
-        if line.region != "hp":
-            continue
+    # HP from the "hp"/"hp2" regions (accepts "60 PS" and "Ps60" readings);
+    # highest-confidence match wins so the deeper band can rescue loose warps.
+    hp_lines = [line for line in ocr.lines if line.region in ("hp", "hp2")]
+    hp_line = None
+    for line in sorted(hp_lines, key=lambda l: -l.confidence):
         match = HP_RE.search(line.text)
         if match:
-            value = match.group(1) or match.group(2)
-            hints.hp = int(value)
-            hints.hp_confidence = float(line.confidence)
+            hp_line = (match, line)
             break
+    if hp_line is not None:
+        value = hp_line[0].group(1) or hp_line[0].group(2)
+        hints.hp = int(value)
+        hints.hp_confidence = float(hp_line[1].confidence)
 
-    # Number/denominator: best line with the N/M pattern ("number" region first)
-    best_number = None
+    # Number/denominator. The multi-region OCR emits several reads of the
+    # same collector number (corner + wide bands x denoising ladder); noisy
+    # photos produce both right and wrong parses. Consensus voting: group
+    # strict N/M parses by (num, den), sum confidences per group, and take
+    # the strongest group — a lone confident misread loses to a repeated
+    # correct one. Loose (slash-less) parses are a last-resort fallback.
+    groups: dict[tuple[str, str], list[float]] = {}
     for line in ocr.lines:
-        if line.region == "number":
-            match = NUMBER_RE.search(line.text) or NUMBER_LOOSE_RE.search(line.text)
-            if match and match.group(1) != match.group(2):
-                if best_number is None or line.confidence > best_number[2]:
-                    best_number = (match.group(1), match.group(2), float(line.confidence))
+        if line.region != "number":
+            continue
+        match = NUMBER_RE.search(line.text)
+        if match and match.group(1) != match.group(2):
+            key = (match.group(1), match.group(2))
+            groups.setdefault(key, []).append(float(line.confidence))
+    best_number = None
+    if groups:
+        # group score = vote mass; ties broken by the single best line conf
+        best_key = max(groups, key=lambda k: (sum(groups[k]), max(groups[k])))
+        best_number = (best_key[0], best_key[1], max(groups[best_key]))
+    if best_number is None:
+        for line in ocr.lines:
+            if line.region == "number":
+                match = NUMBER_LOOSE_RE.search(line.text)
+                if match and match.group(1) != match.group(2):
+                    if best_number is None or line.confidence > best_number[2]:
+                        best_number = (match.group(1), match.group(2), float(line.confidence) * 0.8)
     if best_number is None:
         for line in ocr.lines:
             if line.region not in ("footer", "copyright"):

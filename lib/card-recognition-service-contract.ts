@@ -48,6 +48,9 @@ export type ServiceResult = {
   routeB?: boolean;
   normalization?: { method?: string; confidence?: number };
   orientation?: string;
+  // "confirmed" | "uncertain": same-card language twins with no OCR language
+  // evidence — the card identity stands, the language needs user review.
+  languageStatus?: "confirmed" | "uncertain";
   hints?: Record<string, unknown>;
   evidence?: string[];
   elapsedMs?: number;
@@ -154,6 +157,7 @@ export function mapServiceResult(service: ServiceResult, serviceBase: string): R
     routeA?: boolean;
     routeB?: boolean;
     orientation?: string;
+    languageStatus?: "confirmed" | "uncertain";
     evidence?: string[];
     timings?: Record<string, number>;
     queueMs?: number;
@@ -177,6 +181,7 @@ export function mapServiceResult(service: ServiceResult, serviceBase: string): R
       routeA?: boolean;
       routeB?: boolean;
       orientation?: string;
+      languageStatus?: "confirmed" | "uncertain";
       evidence?: string[];
       timings?: Record<string, number>;
       queueMs?: number;
@@ -202,6 +207,7 @@ export function mapServiceResult(service: ServiceResult, serviceBase: string): R
       routeA: service.routeA,
       routeB: service.routeB,
       orientation: service.orientation,
+      languageStatus: service.languageStatus,
       evidence: service.evidence,
       timings: service.timings,
       queueMs: service.queueMs,

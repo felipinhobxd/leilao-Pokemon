@@ -719,3 +719,130 @@ class TestMemoryFusionWeight(unittest.TestCase):
         candidate = self._candidate()
         candidate.memory_similarity = 0.98
         self.assertEqual(candidate.to_dict()["memorySimilarity"], 0.98)
+
+
+# --------------------------------------------------------------------------- language
+class TestLanguageTwins(unittest.TestCase):
+    """Card identity and language are SEPARATE decisions (two-step).
+
+    Same-card pt-BR/EN twins share artwork and layout: visual similarity and
+    verification can never tell them apart, so the language must come from
+    language evidence (OCR words) — or be reported as uncertain, capping the
+    decision at PROVAVEL instead of guessing an IDENTIFICADO in the wrong
+    language.
+    """
+
+    def _recognizer(self):
+        recognizer = Recognizer.__new__(Recognizer)
+        recognizer.calibration = EMBEDDING_CALIBRATION["siglip2-base-384"]
+        return recognizer
+
+    def _candidate(self, card_id, language, visual=0.93):
+        candidate = Candidate(card_id=card_id, language=language, set_id="swsh3",
+                              set_name="Darkness Ablaze", name="Purrloin", local_id="106",
+                              denominator=189, hp=60)
+        candidate.visual_similarity = visual
+        return candidate
+
+    def _hints(self, language="", language_confidence=0.0):
+        from recognizer.hints import OcrHints
+        hints = OcrHints()
+        hints.language = language
+        hints.language_confidence = language_confidence
+        return hints
+
+    def _twins(self):
+        pt = self._candidate("swsh3-106", "pt-BR", visual=0.9300)
+        en = self._candidate("swsh3-106", "en", visual=0.9301)  # EN wins visually by noise
+        return pt, en
+
+    def test_strong_pt_ocr_promotes_pt_twin_over_visual_noise_leader(self):
+        # OCR reads 2+ characteristic pt words (conf 0.9): language evidence
+        # must reorder the same-card twins even though EN leads on visual noise.
+        recognizer = self._recognizer()
+        pt, en = self._twins()
+        hints = self._hints("pt-BR", 0.9)
+        ranked = recognizer.fuse([en, pt], hints, [])
+        ranked = recognizer._apply_language_evidence(ranked, hints)
+        self.assertEqual(ranked[0].language, "pt-BR")
+        decision, evidence = recognizer.decide(ranked, hints)
+        decision, evidence, status = recognizer._cap_uncertain_language(ranked, hints, decision, evidence)
+        self.assertEqual(status, "confirmed")
+        self.assertNotIn("language-uncertain", evidence)
+
+    def test_twins_with_illegible_ocr_report_uncertain_language(self):
+        # Same artwork, no language evidence: identity stands, language is
+        # uncertain, IDENTIFICADO is capped to PROVAVEL.
+        recognizer = self._recognizer()
+        from recognizer.features import Verification
+        pt, en = self._twins()
+        pt.verification = Verification(inliers=60, matches=70, inlier_ratio=0.9,
+                                       reprojection_error=1.5,
+                                       homography=np.eye(3, dtype=np.float32), method="sift")
+        hints = self._hints()  # no language read at all
+        ranked = recognizer.fuse([en, pt], hints, [])
+        ranked = recognizer._apply_language_evidence(ranked, hints)
+        decision, evidence = recognizer.decide(ranked, hints)
+        decision, evidence, status = recognizer._cap_uncertain_language(ranked, hints, decision, evidence)
+        self.assertEqual(status, "uncertain")
+        self.assertEqual(decision, "PROVAVEL", "IDENTIFICADO com idioma possivelmente errado é proibido")
+        self.assertIn("language-uncertain", evidence)
+        self.assertEqual(ranked[0].card_id, "swsh3-106", "identidade da carta se mantém")
+
+    def test_weak_language_word_is_not_strong_evidence(self):
+        # A single shared word ("pokemon" is in BOTH pt and en lists) yields
+        # confidence exactly 0.62 — below the 0.75 strong bar, the twin stays
+        # uncertain even though hints.language is set.
+        recognizer = self._recognizer()
+        pt, en = self._twins()
+        hints = self._hints("pt-BR", 0.62)
+        ranked = recognizer.fuse([en, pt], hints, [])
+        ranked = recognizer._apply_language_evidence(ranked, hints)
+        decision, evidence = recognizer.decide(ranked, hints)
+        decision, evidence, status = recognizer._cap_uncertain_language(ranked, hints, decision, evidence)
+        self.assertEqual(status, "uncertain")
+
+    def test_no_twins_language_is_inherent(self):
+        recognizer = self._recognizer()
+        solo = self._candidate("swsh3-107", "pt-BR")
+        hints = self._hints()
+        ranked = recognizer.fuse([solo], hints, [])
+        decision, evidence = recognizer.decide(ranked, hints)
+        decision, evidence, status = recognizer._cap_uncertain_language(ranked, hints, decision, evidence)
+        self.assertEqual(status, "confirmed")
+
+    def test_mirror_scan_is_not_language_evidence(self):
+        # A pt-BR card verified through the EN mirror scan (pt scan missing)
+        # must NOT inherit "en" from the mirror: scan_source stays transport
+        # metadata and never enters the language decision.
+        recognizer = self._recognizer()
+        pt, en = self._twins()
+        pt.scan_source = "en-high.webp"  # mirror verified, still a pt-BR print
+        hints = self._hints()
+        ranked = recognizer.fuse([en, pt], hints, [])
+        ranked = recognizer._apply_language_evidence(ranked, hints)
+        decision, evidence = recognizer.decide(ranked, hints)
+        decision, evidence, status = recognizer._cap_uncertain_language(ranked, hints, decision, evidence)
+        self.assertEqual(status, "uncertain", "mirror não é evidência de idioma")
+
+    def test_weak_pt_prior_breaks_true_ties_without_contradicting_ocr(self):
+        # No language evidence, exact visual tie: the pt-BR prior (1.5 pts)
+        # decides which twin is SHOWN; the cap still keeps it honest.
+        recognizer = self._recognizer()
+        pt = self._candidate("swsh3-106", "pt-BR", visual=0.9300)
+        en = self._candidate("swsh3-106", "en", visual=0.9300)
+        hints = self._hints()
+        ranked = recognizer.fuse([en, pt], hints, [])
+        self.assertEqual(ranked[0].language, "pt-BR")
+        # ... but with a real OCR en read (conf 0.6) the prior must not win:
+        hints_en = self._hints("en", 0.6)
+        pt2 = self._candidate("swsh3-106", "pt-BR", visual=0.9300)
+        en2 = self._candidate("swsh3-106", "en", visual=0.9300)
+        ranked2 = recognizer.fuse([pt2, en2], hints_en, [])
+        self.assertEqual(ranked2[0].language, "en", "OCR de idioma vence o prior fraco")
+
+    def test_language_status_in_payload(self):
+        from recognizer.pipeline import RecognitionResult
+        result = RecognitionResult()
+        result.language_status = "uncertain"
+        self.assertEqual(result.to_dict()["languageStatus"], "uncertain")

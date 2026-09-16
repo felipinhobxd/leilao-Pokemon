@@ -47,9 +47,11 @@ function draftFor(file: File | null, preview: string, lot: number, expanded: boo
 }
 
 function recognitionLabel(card: Draft) {
+  const uncertainLanguage = (card.recognitionResult as { localPipeline?: { languageStatus?: string } } | undefined)?.localPipeline?.languageStatus === "uncertain";
   if (card.recognitionStage === "not-found" && (card.recognitionResult as { decisionStatus?: string } | undefined)?.decisionStatus === "REVISAR") return "🔎 Evidências insuficientes ou conflitantes · revisar";
-  if (card.recognitionStage === "identified") return card.recognitionMessage === "Candidato escolhido manualmente" ? "✅ Carta escolhida manualmente" : "✅ Carta identificada";
-  if (card.recognitionStage === "review") return "🟡 Carta provável · verifique os dados";
+  if (card.recognitionStage === "identified") return card.recognitionMessage === "Candidato escolhido manualmente" ? "✅ Carta escolhida manualmente"
+    : uncertainLanguage ? `✅ Carta identificada · ${card.language} (idioma incerto — revise)` : "✅ Carta identificada";
+  if (card.recognitionStage === "review") return uncertainLanguage ? `🟡 Carta provável · ${card.language} (idioma incerto — revise)` : "🟡 Carta provável · verifique os dados";
   if (card.recognitionStage === "not-found") return "🔴 Não consegui identificar com segurança";
   if (card.recognitionStage === "error") return "⚠ Reconhecimento indisponível";
   if (card.recognitionStage === "queued") return "🔍 Na fila de reconhecimento…";

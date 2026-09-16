@@ -110,6 +110,12 @@ class RecognitionResult:
     normalization_method: str = ""
     normalization_confidence: float = 0.0
     orientation: str = "0"  # "0" | "180"
+    # Language evidence state, decided AFTER card identity (two-step):
+    #   "confirmed" -> own OCR language evidence (or a single-language print)
+    #   "uncertain" -> a same-card language twin competes and no language
+    #                  evidence separates them; the identity stands but the
+    #                  language must be reviewed by the user.
+    language_status: str = "confirmed"
     hints: Optional[OcrHints] = None
     evidence: list[str] = field(default_factory=list)
     elapsed_ms: int = 0
@@ -124,6 +130,7 @@ class RecognitionResult:
             "normalization": {"method": self.normalization_method,
                               "confidence": round(self.normalization_confidence, 3)},
             "orientation": self.orientation,
+            "languageStatus": self.language_status,
             "hints": self.hints.to_dict() if self.hints else None,
             "evidence": self.evidence,
             "elapsedMs": self.elapsed_ms,
@@ -420,6 +427,16 @@ class Recognizer:
             if hints.language and candidate.language == hints.language:
                 candidate.ocr_language_match = True
                 weights["ocr_language"] = 8.0 * hints.language_confidence
+            elif not hints.language or hints.language_confidence < 0.5:
+                # VERY WEAK language prior (pt-BR > EN > rest), applied ONLY
+                # when OCR produced no usable language evidence. It exists to
+                # break true visual ties between language twins toward the
+                # user's dominant language (mostly pt-BR); at 1.5 points it
+                # can never override a real OCR language read (8.0 * conf) or
+                # any visual/verification lead, and the twin-uncertainty cap
+                # still applies when evidence is absent.
+                if candidate.language == "pt-BR":
+                    weights["language_prior"] = 1.5
             if hints.hp and candidate.hp == hints.hp:
                 candidate.ocr_hp_match = True
                 weights["ocr_hp"] = 6.0 * hints.hp_confidence
@@ -434,6 +451,68 @@ class Recognizer:
                     weights["confirmed_memory"] = 55.0 * strength
             candidate.score = sum(weights.values())
         return sorted(candidates, key=lambda c: -c.score)
+
+    # ---------------------------------------------------------------- language
+    # Language is a SEPARATE decision from card identity (two-step). Visual
+    # similarity and geometric verification cannot tell a pt-BR print from
+    # its EN twin (same artwork, same layout): letting a 0.9123 vs 0.9130
+    # cosine decide the language is exactly the ambiguity bug. Mirrored EN
+    # scans used for verification are NOT language evidence either.
+    # 0.75 requires >= 2 characteristic OCR words for the winning language
+    # with margin: a single shared word ("pokemon" is in BOTH the pt and en
+    # lists) yields exactly 0.62, which must not count as strong evidence.
+    LANGUAGE_STRONG_OCR_CONFIDENCE = 0.75
+
+    def _apply_language_evidence(self, ranked: list[Candidate], hints: OcrHints) -> list[Candidate]:
+        """Step B before decide(): between SAME-CARD language twins all
+        identity evidence is equal by definition (same artwork/set/number),
+        so only language evidence may order them. When the OCR language read
+        is strong and matches a twin (not the current leader), that twin
+        becomes the leader — the identity is unchanged, only the language
+        is resolved by language evidence instead of visual noise.
+        Scan availability (e.g. an EN mirror resolving for verification)
+        never plays a role here."""
+        if (not ranked or not hints.language
+                or hints.language_confidence < self.LANGUAGE_STRONG_OCR_CONFIDENCE):
+            return ranked
+        best = ranked[0]
+        if best.language == hints.language:
+            return ranked  # leader already agrees with the language read
+        for idx, twin in enumerate(ranked[1:], start=1):
+            if twin.card_id == best.card_id and twin.language == hints.language:
+                ranked.insert(0, ranked.pop(idx))
+                break
+        return ranked
+
+    def _cap_uncertain_language(self, ranked: list[Candidate], hints: OcrHints,
+                               decision: str, evidence: list[str]) -> tuple[str, list[str], str]:
+        """Cap the decision when the language of the winning identity is
+        still ambiguous; report languageStatus for the UI.
+
+        Rules:
+        - twins = retrieved candidates of the SAME card_id in another language;
+        - strong language evidence = OCR language read that matches the winner
+          (and, implicitly, not the twin);
+        - twins present + no strong evidence -> language "uncertain": the card
+          identity (artwork/set/number/printing) stands, but the decision is
+          capped at PROVAVEL — never IDENTIFICADO with a possibly wrong tongue;
+        - no twins -> the language is inherent to the winning catalog entry.
+        """
+        best = ranked[0] if ranked else None
+        if best is None:
+            return decision, evidence, "confirmed"
+        twins = [c for c in ranked[1:] if c.card_id == best.card_id and c.language != best.language]
+        if not twins:
+            return decision, evidence, "confirmed"
+        strong_language = (hints.language == best.language
+                           and hints.language_confidence >= self.LANGUAGE_STRONG_OCR_CONFIDENCE)
+        if strong_language:
+            return decision, evidence, "confirmed"
+        # Ambiguous language: keep the identity, flag the uncertainty and cap.
+        evidence = ["language-uncertain"] + evidence
+        if decision == "IDENTIFICADO":
+            decision = "PROVAVEL"
+        return decision, evidence, "uncertain"
 
     # ------------------------------------------------------------------ decide
     def decide(self, ranked: list[Candidate], hints: OcrHints) -> tuple[str, list[str]]:
@@ -572,7 +651,14 @@ class Recognizer:
         timings["verification"] = (time.time() - t0) * 1000
 
         ranked = self.fuse(list(merged.values()), hints, route_b_candidates)
+        # Step B of the two-step identity: language. Applied after fuse() so
+        # card identity (artwork/set/number/printing) is settled first; strong
+        # OCR language evidence may reorder SAME-CARD twins, and a still
+        # ambiguous language caps the decision instead of guessing silently.
+        ranked = self._apply_language_evidence(ranked, hints)
         decision, evidence = self.decide(ranked, hints)
+        decision, evidence, language_status = self._cap_uncertain_language(ranked, hints, decision, evidence)
+        result.language_status = language_status
         # A high-similarity, unambiguous confirmed-memory example may upgrade a
         # REVISAR to PROVAVEL (never to IDENTIFICADO — that always requires
         # independent route evidence).

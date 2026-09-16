@@ -1050,3 +1050,23 @@ class TestMemoryApiHardening(unittest.TestCase):
         self.assertIn("len(data) > 25 * 1024 * 1024", confirm_section)
         self.assertLess(confirm_section.index("len(data) > 25 * 1024 * 1024"),
                         confirm_section.index("decode_upload(data)"))
+
+
+# --------------------------------------------------------------------------- normalize
+class TestHoughSingleLineShape(unittest.TestCase):
+    """HoughLinesP can return a single line as shape (1, 4) instead of
+    (1, 1, 4) on some OpenCV builds — the old `lines[:, 0]` unpack crashed
+    the whole recognition with TypeError on exactly that case."""
+
+    def test_single_flat_line_does_not_crash(self):
+        from recognizer.normalize import _detect_quad_hough
+        import cv2
+        # A vertical bright bar on dark background produces at least one
+        # strong line; the point is that ANY returned shape must be handled.
+        image = np.zeros((200, 200), dtype=np.uint8)
+        cv2.line(image, (100, 0), (100, 199), 255, 3)
+        cv2.line(image, (0, 100), (199, 100), 255, 3)
+        try:
+            _detect_quad_hough(image)
+        except TypeError as exc:
+            self.fail(f"_detect_quad_hough crashed: {exc}")

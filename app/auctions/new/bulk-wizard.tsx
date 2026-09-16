@@ -8,7 +8,7 @@ import { buildPollPlan, cardConditions, cardLanguages, DEFAULT_POLL_OPTIONS, MAX
 import { brasiliaInputToIso, formatBrasiliaDateTime, formatBrasiliaTime, toBrasiliaInput } from "@/lib/brasilia-time";
 import { uploadCardImageBatch, type CardImageStage } from "@/lib/card-image";
 import { mergeRecognitionFields, type ManualFieldMap, type RecognitionCandidate, type RecognitionResult, type RecognizableField } from "@/lib/card-recognition-core";
-import { confirmRecognitionMemory, recognizePokemonCard, shutdownCardRecognition } from "@/lib/card-recognition-local";
+import { confirmRecognitionMemory, recognizePokemonCard, shutdownCardRecognition, imageRecognitionEnabled, imageRecognitionPreferenceEvent } from "@/lib/card-recognition-local";
 import { createPublicSupabaseClient } from "@/lib/supabase";
 
 type Group = { id: string; name: string; is_default: boolean };
@@ -47,9 +47,11 @@ function draftFor(file: File | null, preview: string, lot: number, expanded: boo
 }
 
 function recognitionLabel(card: Draft) {
+  const uncertainLanguage = (card.recognitionResult as { localPipeline?: { languageStatus?: string } } | undefined)?.localPipeline?.languageStatus === "uncertain";
   if (card.recognitionStage === "not-found" && (card.recognitionResult as { decisionStatus?: string } | undefined)?.decisionStatus === "REVISAR") return "🔎 Evidências insuficientes ou conflitantes · revisar";
-  if (card.recognitionStage === "identified") return card.recognitionMessage === "Candidato escolhido manualmente" ? "✅ Carta escolhida manualmente" : "✅ Carta identificada";
-  if (card.recognitionStage === "review") return "🟡 Carta provável · verifique os dados";
+  if (card.recognitionStage === "identified") return card.recognitionMessage === "Candidato escolhido manualmente" ? "✅ Carta escolhida manualmente"
+    : uncertainLanguage ? `✅ Carta identificada · ${card.language} (idioma incerto — revise)` : "✅ Carta identificada";
+  if (card.recognitionStage === "review") return uncertainLanguage ? `🟡 Carta provável · ${card.language} (idioma incerto — revise)` : "🟡 Carta provável · verifique os dados";
   if (card.recognitionStage === "not-found") return "🔴 Não consegui identificar com segurança";
   if (card.recognitionStage === "error") return "⚠ Reconhecimento indisponível";
   if (card.recognitionStage === "queued") return "🔍 Na fila de reconhecimento…";
@@ -166,6 +168,10 @@ export default function BulkAuctionWizard() {
 
   async function identifyCard(id: string, file: File, force = false, retry = false) {
     if (recognitionInFlight.current.has(id)) return;
+    // Recognition disabled: ZERO recognition work — no identifyCard, no health
+    // probe, no local service call, no browser fallback, no not-found state.
+    // The image is simply kept as uploaded.
+    if (!imageRecognitionEnabled()) return;
     recognitionInFlight.current.add(id);
     setCards(current => current.map(card => card.id === id ? { ...card, recognitionStage: "queued", recognitionMessage: "Na fila de reconhecimento…" } : card));
     const preferredLanguage = cards.find(card => card.id === id)?.language;
@@ -173,6 +179,12 @@ export default function BulkAuctionWizard() {
       const result = await recognizePokemonCard(file, preferredLanguage, message => {
         setCards(current => current.map(card => card.id === id ? { ...card, recognitionStage: "analyzing", recognitionMessage: message } : card));
       }, { bypassCache: retry });
+      // Disabled while this request was running: drop the result silently
+      // instead of marking a not-found the user never asked for.
+      if (!imageRecognitionEnabled()) {
+        setCards(current => current.map(card => card.id === id ? { ...card, recognitionStage: "idle", recognitionMessage: "Reconhecimento de imagens está desligado" } : card));
+        return;
+      }
       setCards(current => current.map(card => {
         if (card.id !== id) return card;
         const recognized = mergeRecognitionFields(card as unknown as Record<string, unknown>, card.manualFields, result, force) as Partial<Draft>;
@@ -226,9 +238,33 @@ export default function BulkAuctionWizard() {
   }
 
   useEffect(() => {
+    if (!imageRecognitionEnabled()) return;
     for (const card of cards) {
       if (card.file && card.recognitionStage === "idle" && !recognitionInFlight.current.has(card.id)) void identifyCard(card.id, card.file);
     }
+  }, [cards]);
+
+  // Toggle transitions: OFF stops queuing new recognitions and returns
+  // still-queued cards to idle (in-flight requests finish and are dropped by
+  // the guard in identifyCard); ON resumes recognition for pending images.
+  useEffect(() => {
+    const sync = () => {
+      if (imageRecognitionEnabled()) {
+        for (const card of cards) {
+          if (card.file && card.recognitionStage === "idle" && !recognitionInFlight.current.has(card.id)) void identifyCard(card.id, card.file);
+        }
+      } else {
+        setCards(current => current.map(card => card.recognitionStage === "queued"
+          ? { ...card, recognitionStage: "idle", recognitionMessage: "Reconhecimento de imagens está desligado" }
+          : card));
+      }
+    };
+    window.addEventListener(imageRecognitionPreferenceEvent, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(imageRecognitionPreferenceEvent, sync);
+      window.removeEventListener("storage", sync);
+    };
   }, [cards]);
 
   function addFiles(filesLike: FileList | File[]) {

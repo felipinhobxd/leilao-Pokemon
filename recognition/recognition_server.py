@@ -105,9 +105,20 @@ def get_recognizer() -> Recognizer:
         return _state["recognizer"]
 
 
-def decode_upload(data: bytes) -> np.ndarray:
-    image = Image.open(io.BytesIO(data))
-    image = image.convert("RGB")
+def decode_upload(data: bytes, max_bytes: int = 25 * 1024 * 1024,
+                 max_side: int = 12000) -> np.ndarray:
+    """Decode an uploaded image with hard limits: size (413), content type
+    (400 on non-image data), and dimensions (413 — a decompressed-bomb guard
+    so a single upload cannot exhaust service memory)."""
+    if len(data) > max_bytes:
+        raise HTTPException(status_code=413, detail=f"Imagem muito grande (max {max_bytes // (1024 * 1024)} MB)")
+    try:
+        image = Image.open(io.BytesIO(data))
+        image = image.convert("RGB")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="Arquivo enviado não é uma imagem válida") from exc
+    if image.width > max_side or image.height > max_side:
+        raise HTTPException(status_code=413, detail=f"Dimensões da imagem acima do limite ({max_side}px)")
     array = np.asarray(image, dtype=np.uint8)
     return cv2.cvtColor(array, cv2.COLOR_RGB2BGR)
 
@@ -216,7 +227,10 @@ def scan(language: str, card_id: str):
 
 @app.post("/memory/confirm")
 async def memory_confirm(file: UploadFile = File(...), card: str = Form(...)):
-    """Store a USER-CONFIRMED example (ground truth). Never called automatically."""
+    """Store a USER-CONFIRMED example (ground truth). Never called automatically.
+
+    Hardened like /recognize: upload size limit (413), real image validation
+    (400), and bounded dimensions (413) before any decode/embedding work."""
     import json
     try:
         card_fields = json.loads(card)
@@ -226,7 +240,14 @@ async def memory_confirm(file: UploadFile = File(...), card: str = Form(...)):
     if any(not card_fields.get(k) for k in required):
         raise HTTPException(status_code=400, detail="cardId, language e name são obrigatórios")
     data = await file.read()
-    bgr = decode_upload(data)
+    if len(data) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Imagem muito grande (max 25 MB)")
+    try:
+        bgr = decode_upload(data)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="Imagem inválida") from exc
     recognizer = get_recognizer()
     from recognizer.normalize import normalize_card
     card_image = normalize_card(bgr).image
@@ -247,18 +268,15 @@ def memory_list():
 
 @app.delete("/memory/{example_id}")
 def memory_delete(example_id: str):
-    examples = memory_module.load_examples()
-    remaining = [e for e in examples if e.id != example_id]
-    if len(remaining) == len(examples):
-        raise HTTPException(status_code=404, detail="Exemplo não encontrado")
-    memory_module.save_examples(remaining)
-    # rebuild embeddings file without the removed example
-    ids, matrix = memory_module._load_embeddings()
-    keep = [i for i, mid in enumerate(ids) if mid != example_id]
-    np.savez_compressed(memory_module.MEMORY_EMBEDDINGS,
-                        ids=np.array([ids[i] for i in keep], dtype=object),
-                        matrix=matrix[keep])
-    return {"status": "removed", "remaining": len(remaining)}
+    """Remove an example consistently from memory.json, memory-embeddings.npz
+    AND memory-images/ under the same write lock used by confirm (atomic
+    saves; concurrent confirm/delete pairs can never leave a half-removed or
+    resurrected example behind)."""
+    try:
+        remaining = memory_module.remove_example(example_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Exemplo não encontrado") from exc
+    return {"status": "removed", "remaining": remaining}
 
 
 @app.post("/reload-index")

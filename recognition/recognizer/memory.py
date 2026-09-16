@@ -127,7 +127,10 @@ def add_example(card: dict, image_bytes: bytes, embedding: np.ndarray, note: str
                          and _example_digest(e) == digest), None)
         if existing is not None:
             return existing
-        example_id = f"mem-{int(time.time() * 1000)}"
+        # Collision-proof id: the old time-based id collided when two
+        # confirmations landed in the same millisecond (batch UI), which made
+        # remove_example() delete BOTH examples at once.
+        example_id = f"mem-{int(time.time() * 1000)}-{os.urandom(5).hex()}"
         image_file = f"{example_id}.jpg"
         path = os.path.join(MEMORY_IMAGES, image_file)
         tmp = path + ".tmp"
@@ -159,6 +162,33 @@ def add_example(card: dict, image_bytes: bytes, embedding: np.ndarray, note: str
                   else embedding.astype(np.float32).reshape(1, -1))
         _atomic_savez(MEMORY_EMBEDDINGS, ids=np.array(ids, dtype=object), matrix=matrix)
         return example
+
+
+def remove_example(example_id: str) -> int:
+    """Atomically remove a confirmed example from ALL three stores
+    (memory.json, memory-embeddings.npz, memory-images/) under the write lock.
+
+    Returns the number of remaining examples; raises KeyError when the id is
+    unknown. The lock + atomic saves keep concurrent confirm/delete pairs
+    consistent: a delete can never resurrect an example that a concurrent
+    confirm just removed, and the embeddings file is never left half-written
+    (tmp + os.replace on both files).
+    """
+    with _write_lock:
+        examples = load_examples()
+        if not any(e.id == example_id for e in examples):
+            raise KeyError(example_id)
+        remaining = [e for e in examples if e.id != example_id]
+        save_examples(remaining)
+        ids, matrix = _load_embeddings()
+        keep = [i for i, mid in enumerate(ids) if mid != example_id]
+        _atomic_savez(MEMORY_EMBEDDINGS,
+                      ids=np.array([ids[i] for i in keep], dtype=object),
+                      matrix=matrix[keep])
+        for example in examples:
+            if example.id == example_id:
+                _try_remove(os.path.join(MEMORY_IMAGES, example.image_file))
+        return len(remaining)
 
 
 def _example_digest(example: MemoryExample) -> Optional[str]:

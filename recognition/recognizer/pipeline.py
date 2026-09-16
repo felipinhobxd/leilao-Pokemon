@@ -66,6 +66,12 @@ class Candidate:
     # high.webp must not advertise the high.webp CDN URL (it 404s for them);
     # the service rewrites their imageUrl to the local /scan endpoint.
     scan_source: Optional[str] = None
+    # Confirmed-memory evidence (AUXILIARY, never decisive): similarity to the
+    # nearest USER-CONFIRMED example of exactly this card, or -1 when the
+    # memory did not hit this candidate. Explicit field so fuse() can fold it
+    # into the score — a plain score bonus set before fuse() was silently
+    # wiped by `candidate.score = sum(weights.values())`.
+    memory_similarity: float = -1.0
 
     def to_dict(self) -> dict:
         return {
@@ -90,6 +96,7 @@ class Candidate:
             "ocrHpMatch": self.ocr_hp_match,
             "imageUrl": self.image_url,
             "variant": self.variant,
+            "memorySimilarity": round(self.memory_similarity, 4) if self.memory_similarity >= 0 else None,
         }
 
 
@@ -103,6 +110,15 @@ class RecognitionResult:
     normalization_method: str = ""
     normalization_confidence: float = 0.0
     orientation: str = "0"  # "0" | "180"
+    # Language evidence state, decided AFTER card identity (two-step):
+    #   "confirmed" -> own OCR language evidence (or a single-language print)
+    #   "uncertain" -> a same-card language twin competes and no language
+    #                  evidence separates them; the identity stands but the
+    #                  language must be reviewed by the user.
+    language_status: str = "confirmed"
+    # True when the adaptive difficulty gate routed this request through the
+    # minimal-OCR / reduced-verification budget (unambiguous artwork case).
+    fast_path: bool = False
     hints: Optional[OcrHints] = None
     evidence: list[str] = field(default_factory=list)
     elapsed_ms: int = 0
@@ -117,6 +133,8 @@ class RecognitionResult:
             "normalization": {"method": self.normalization_method,
                               "confidence": round(self.normalization_confidence, 3)},
             "orientation": self.orientation,
+            "languageStatus": self.language_status,
+            "fastPath": self.fast_path,
             "hints": self.hints.to_dict() if self.hints else None,
             "evidence": self.evidence,
             "elapsedMs": self.elapsed_ms,
@@ -158,11 +176,17 @@ class VisualIndex:
         self.id_to_row = {cid: i for i, cid in enumerate(self.ids)}
         self.model = get_model(embedding_name)
 
-    def search(self, image: np.ndarray, topk: int = TOPK, orientations: Optional[list[np.ndarray]] = None):
+    def search(self, image: np.ndarray, topk: int = TOPK, orientations: Optional[list[np.ndarray]] = None,
+               return_views: bool = False):
         """Multi-view retrieval: each orientation x each photometric view is
         embedded; a card's score is its max similarity over all views.
         Raw views win on well-lit photos, gamma-normalized views rescue
-        dark/washed-out ones (bake-off 2026-09-14: rank 2 -> 1 on the hardest)."""
+        dark/washed-out ones (bake-off 2026-09-14: rank 2 -> 1 on the hardest).
+
+        With return_views=True the (embeddings, view_orientation) pair is also
+        returned so the caller can REUSE the raw-view rows for the confirmed
+        memory lookup instead of embedding the same views twice per request.
+        View order is [img0_raw, img0_gamma, img1_raw, img1_gamma, ...]."""
         images = orientations or [image]
         views: list[np.ndarray] = []
         view_orientation: list[int] = []
@@ -186,6 +210,8 @@ class VisualIndex:
             key = self.ids[int(row)]
             language, card_id = key.split("|", 1)
             results.append((language, card_id, float(best_scores[int(row)]), int(orientation_idx[int(row)])))
+        if return_views:
+            return results, embeddings, view_orientation
         return results
 
 
@@ -204,6 +230,11 @@ class Recognizer:
         self._scan_cache = OrderedDict()  # key -> decoded scan (FIFO, byte-bounded)
         self._scan_cache_bytes = 0
         self._scan_misses: set[str] = set()
+        # Single-flight: key -> Event for an IN-PROGRESS scan load. With
+        # RECOGNITION_MAX_CONCURRENCY > 1 (or /scan + recognize racing), N
+        # threads requesting the same miss would each download/decode it; the
+        # first one works and the rest wait on the event, then read the cache.
+        self._scan_inflight: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
 
     @property
@@ -227,66 +258,97 @@ class Recognizer:
 
     def _scan_image(self, candidate: "Candidate") -> Optional[np.ndarray]:
         key = f"{candidate.language}|{candidate.card_id}"
-        with self._lock:
-            cached = self._scan_cache.get(key)
-            if cached is not None:
-                self._scan_cache.move_to_end(key)
-                return cached
-            if key in self._scan_misses:
-                return None
-        image = None
-        source: Optional[str] = None
-        if self.catalog is not None:
-            from .catalog import resolve_scan
-            record = self.catalog.card_by_key(candidate.language, candidate.card_id)
-            if record is not None and record.image_base:
-                resolved = resolve_scan(record.image_base)
-                if resolved is not None:
-                    path, source = resolved
-                    data = np.fromfile(path, dtype=np.uint8)
-                    image = cv2.imdecode(data, cv2.IMREAD_COLOR)
-                    if image is None:
-                        # truncated/corrupt file that passed the magic-byte
-                        # check: treat as a miss, never serve it
-                        path, source, image = None, None, None
-        if image is not None:
-            candidate.scan_source = source
-        nbytes = int(image.nbytes) if image is not None else 0
-        with self._lock:
-            if image is None:
-                self._scan_misses.add(key)
-                return None
-            self._scan_cache[key] = image
-            self._scan_cache_bytes += nbytes
-            while self._scan_cache and self._scan_cache_bytes > self.SCAN_CACHE_MAX_BYTES:
-                _, old = self._scan_cache.popitem(last=False)
-                self._scan_cache_bytes -= int(old.nbytes)
-        return image
+        while True:
+            with self._lock:
+                cached = self._scan_cache.get(key)
+                if cached is not None:
+                    self._scan_cache.move_to_end(key)
+                    return cached
+                if key in self._scan_misses:
+                    return None
+                event = self._scan_inflight.get(key)
+                if event is None:
+                    # First requester for this miss: own the load. Waiters hold
+                    # a direct reference to this event, so it can be set after
+                    # the registry entry is popped.
+                    event = threading.Event()
+                    self._scan_inflight[key] = event
+                    break
+            # Another thread is loading this exact scan: wait for it (never
+            # under the lock) and re-check the cache/miss sets afterwards.
+            event.wait()
+        try:
+            image = None
+            source: Optional[str] = None
+            if self.catalog is not None:
+                from .catalog import resolve_scan
+                record = self.catalog.card_by_key(candidate.language, candidate.card_id)
+                if record is not None and record.image_base:
+                    resolved = resolve_scan(record.image_base)
+                    if resolved is not None:
+                        path, source = resolved
+                        data = np.fromfile(path, dtype=np.uint8)
+                        image = cv2.imdecode(data, cv2.IMREAD_COLOR)
+                        if image is None:
+                            # truncated/corrupt file that passed the magic-byte
+                            # check: treat as a miss, never serve it
+                            path, source, image = None, None, None
+            if image is not None:
+                candidate.scan_source = source
+            nbytes = int(image.nbytes) if image is not None else 0
+            with self._lock:
+                if image is None:
+                    self._scan_misses.add(key)
+                    return None
+                self._scan_cache[key] = image
+                self._scan_cache_bytes += nbytes
+                while self._scan_cache and self._scan_cache_bytes > self.SCAN_CACHE_MAX_BYTES:
+                    _, old = self._scan_cache.popitem(last=False)
+                    self._scan_cache_bytes -= int(old.nbytes)
+            return image
+        finally:
+            with self._lock:
+                self._scan_inflight.pop(key, None)
+            event.set()
 
     # ---------------------------------------------------------------- route B
-    def route_b(self, card: NormalizedCard, orientation: str = "0") -> tuple[OcrHints, list[Candidate]]:
+    def route_b(self, card: NormalizedCard, orientation: str = "0", minimal: bool = False,
+                include_footer: bool = True) -> tuple[OcrHints, list[Candidate], int]:
         """OCR the card. Orientation comes from Route A (fast) when available;
-        otherwise both orientations are tried and the richer read wins."""
+        otherwise both orientations are tried and the richer read wins.
+
+        minimal=True (safe fast path): only the critical-metadata regions run
+        — top strip (name/HP) + footer (language/backup number) + the first
+        two raw collector-number regions with the usual consensus early-stop.
+        The deep-top band and the denoising ladder are skipped: they exist to
+        rescue hard reads, and the fast path only runs on unambiguous cases."""
         if orientation == "180":
             primary = card.rotated180
             secondary = card.image
         else:
             primary = card.image
             secondary = card.rotated180
-        best = self.ocr.read_card(primary)
+        best = self.ocr.read_card(primary, minimal=minimal, include_footer=include_footer)
+        passes = best.passes
         if not best.lines or best.confidence_score < 1.2:
-            other = self.ocr.read_card(secondary)
+            other = self.ocr.read_card(secondary, minimal=minimal, include_footer=include_footer)
+            passes += other.passes
             if other.confidence_score > best.confidence_score:
                 best = other
         hints = extract_hints(best)
         candidates: list[Candidate] = []
         if self.catalog is not None and (hints.name or hints.local_id):
             candidates = self.catalog.text_candidates(hints)
-        return hints, candidates
+        return hints, candidates, passes
 
     # ---------------------------------------------------------------- route A
-    def route_a(self, card: NormalizedCard) -> tuple[list[Candidate], str]:
-        results = self.index.search(card.image, self.topk, [card.image, card.rotated180])
+    def route_a(self, card: NormalizedCard, return_views: bool = False):
+        if return_views:
+            results, view_embeddings, _ = self.index.search(
+                card.image, self.topk, [card.image, card.rotated180], return_views=True)
+        else:
+            results = self.index.search(card.image, self.topk, [card.image, card.rotated180])
+            view_embeddings = None
         candidates = []
         orientation = "0"
         for language, card_id, similarity, orientation_idx in results:
@@ -298,11 +360,18 @@ class Recognizer:
             candidate = candidate_from_record(record)
             candidate.visual_similarity = similarity
             candidates.append(candidate)
+        if return_views:
+            # Rows of the RAW view of each orientation for memory reuse
+            # (photometric variants are ordered raw-first, so row
+            # i * n_variants is orientation i's raw view).
+            n_variants = len(photometric_variants(card.image))
+            raw_rows = [i * n_variants for i in range(2)]
+            return candidates, orientation, view_embeddings, raw_rows
         return candidates, orientation
 
     # ------------------------------------------------------------ verification
     def verify(self, card: NormalizedCard, candidates: list[Candidate], orientation: str = "0",
-               hints: Optional[OcrHints] = None) -> None:
+               hints: Optional[OcrHints] = None, verify_topk: Optional[int] = None) -> None:
         """Geometric verification. Uses Route A's winning orientation by default
         (halves cost); the opposite orientation is a fallback for weak quads.
 
@@ -318,10 +387,11 @@ class Recognizer:
             # only means anything if it tests the other way up.
             probe_variants.append(card.image if orientation == "180" else card.rotated180)
 
-        selected = list(candidates[: self.verify_topk])
+        topk = self.verify_topk if verify_topk is None else verify_topk
+        selected = list(candidates[:topk])
         if hints and hints.local_id and hints.number_confidence >= 0.5 and hints.name:
             already = {id(c) for c in selected}
-            for candidate in candidates[self.verify_topk:]:
+            for candidate in candidates[topk:]:
                 number_match = False
                 if candidate.local_id:
                     try:
@@ -337,7 +407,7 @@ class Recognizer:
                     continue
                 selected.append(candidate)
                 already.add(id(candidate))
-                if len(selected) >= self.verify_topk + 8:
+                if len(selected) >= topk + 8:
                     break
 
         for candidate in selected:
@@ -413,11 +483,92 @@ class Recognizer:
             if hints.language and candidate.language == hints.language:
                 candidate.ocr_language_match = True
                 weights["ocr_language"] = 8.0 * hints.language_confidence
+            elif not hints.language or hints.language_confidence < 0.5:
+                # VERY WEAK language prior (pt-BR > EN > rest), applied ONLY
+                # when OCR produced no usable language evidence. It exists to
+                # break true visual ties between language twins toward the
+                # user's dominant language (mostly pt-BR); at 1.5 points it
+                # can never override a real OCR language read (8.0 * conf) or
+                # any visual/verification lead, and the twin-uncertainty cap
+                # still applies when evidence is absent.
+                if candidate.language == "pt-BR":
+                    weights["language_prior"] = 1.5
             if hints.hp and candidate.hp == hints.hp:
                 candidate.ocr_hp_match = True
                 weights["ocr_hp"] = 6.0 * hints.hp_confidence
+            # Confirmed memory: AUXILIARY evidence folded in here (not before):
+            # bounded well below verification (220) and strong-name (60) tiers
+            # so memory alone can never produce IDENTIFICADO, while a strong
+            # memory hit on the correct card survives the score recomputation.
+            if candidate.memory_similarity >= 0:
+                from .config import MEMORY_MIN_SIMILARITY
+                strength = max(0.0, min(1.0, (candidate.memory_similarity - MEMORY_MIN_SIMILARITY) / 0.04))
+                if strength > 0:
+                    weights["confirmed_memory"] = 55.0 * strength
             candidate.score = sum(weights.values())
         return sorted(candidates, key=lambda c: -c.score)
+
+    # ---------------------------------------------------------------- language
+    # Language is a SEPARATE decision from card identity (two-step). Visual
+    # similarity and geometric verification cannot tell a pt-BR print from
+    # its EN twin (same artwork, same layout): letting a 0.9123 vs 0.9130
+    # cosine decide the language is exactly the ambiguity bug. Mirrored EN
+    # scans used for verification are NOT language evidence either.
+    # 0.75 requires >= 2 characteristic OCR words for the winning language
+    # with margin: a single shared word ("pokemon" is in BOTH the pt and en
+    # lists) yields exactly 0.62, which must not count as strong evidence.
+    LANGUAGE_STRONG_OCR_CONFIDENCE = 0.75
+
+    def _apply_language_evidence(self, ranked: list[Candidate], hints: OcrHints) -> list[Candidate]:
+        """Step B before decide(): between SAME-CARD language twins all
+        identity evidence is equal by definition (same artwork/set/number),
+        so only language evidence may order them. When the OCR language read
+        is strong and matches a twin (not the current leader), that twin
+        becomes the leader — the identity is unchanged, only the language
+        is resolved by language evidence instead of visual noise.
+        Scan availability (e.g. an EN mirror resolving for verification)
+        never plays a role here."""
+        if (not ranked or not hints.language
+                or hints.language_confidence < self.LANGUAGE_STRONG_OCR_CONFIDENCE):
+            return ranked
+        best = ranked[0]
+        if best.language == hints.language:
+            return ranked  # leader already agrees with the language read
+        for idx, twin in enumerate(ranked[1:], start=1):
+            if twin.card_id == best.card_id and twin.language == hints.language:
+                ranked.insert(0, ranked.pop(idx))
+                break
+        return ranked
+
+    def _cap_uncertain_language(self, ranked: list[Candidate], hints: OcrHints,
+                               decision: str, evidence: list[str]) -> tuple[str, list[str], str]:
+        """Cap the decision when the language of the winning identity is
+        still ambiguous; report languageStatus for the UI.
+
+        Rules:
+        - twins = retrieved candidates of the SAME card_id in another language;
+        - strong language evidence = OCR language read that matches the winner
+          (and, implicitly, not the twin);
+        - twins present + no strong evidence -> language "uncertain": the card
+          identity (artwork/set/number/printing) stands, but the decision is
+          capped at PROVAVEL — never IDENTIFICADO with a possibly wrong tongue;
+        - no twins -> the language is inherent to the winning catalog entry.
+        """
+        best = ranked[0] if ranked else None
+        if best is None:
+            return decision, evidence, "confirmed"
+        twins = [c for c in ranked[1:] if c.card_id == best.card_id and c.language != best.language]
+        if not twins:
+            return decision, evidence, "confirmed"
+        strong_language = (hints.language == best.language
+                           and hints.language_confidence >= self.LANGUAGE_STRONG_OCR_CONFIDENCE)
+        if strong_language:
+            return decision, evidence, "confirmed"
+        # Ambiguous language: keep the identity, flag the uncertainty and cap.
+        evidence = ["language-uncertain"] + evidence
+        if decision == "IDENTIFICADO":
+            decision = "PROVAVEL"
+        return decision, evidence, "uncertain"
 
     # ------------------------------------------------------------------ decide
     def decide(self, ranked: list[Candidate], hints: OcrHints) -> tuple[str, list[str]]:
@@ -475,6 +626,34 @@ class Recognizer:
         return "NAO_IDENTIFICADO", evidence
 
     # ---------------------------------------------------------------- recognize
+    # Safe fast path gates (all must hold; measured against the calibration):
+    #   - catalog present and normalization was not a weak quad (>= 0.25);
+    #   - Top-1 visual similarity >= strong + 0.005;
+    #   - visual margin to the best DIFFERENT card >= 0.02 — same-artwork
+    #     reprints of other sets and same-card language twins sit within
+    #     ~0.01 of each other, so a 0.02 gap means the artwork is unambiguous
+    #     (twins are a LANGUAGE question, handled by the two-step logic);
+    #   - on the fast path OCR still runs, but only the critical metadata
+    #     regions (top strip + footer + 2 raw number regions), and fewer
+    #     candidates go through SIFT verification.
+    FAST_PATH_VISUAL_HEADROOM = 0.005
+    FAST_PATH_VISUAL_MARGIN = 0.02
+    FAST_PATH_VERIFY_TOPK = 4
+
+    def _fast_path_eligible(self, card: NormalizedCard, route_a_candidates: list[Candidate]) -> bool:
+        if self.catalog is None or not route_a_candidates or card.confidence < 0.25:
+            return False
+        cal = self.calibration
+        best = route_a_candidates[0]
+        if best.visual_similarity < cal["strong"] + self.FAST_PATH_VISUAL_HEADROOM:
+            return False
+        for candidate in route_a_candidates[1:]:
+            if candidate.card_id != best.card_id:
+                if best.visual_similarity - candidate.visual_similarity < self.FAST_PATH_VISUAL_MARGIN:
+                    return False  # ambiguous artwork: reprint or lookalike competition
+                break
+        return True
+
     def recognize(self, bgr: np.ndarray, ocr_override: Optional[dict] = None,
                   use_memory: bool = True) -> RecognitionResult:
         started = time.time()
@@ -487,32 +666,48 @@ class Recognizer:
         result.normalization_method = card.method
         result.normalization_confidence = card.confidence
 
-        # Memory of user-confirmed examples (exemplar retrieval, before routes).
-        # Threshold + margin are calibrated for the embedding in use (see
+        # Route A: visual retrieval (independent of OCR). The multi-view
+        # embeddings come back so the memory lookup below can REUSE the raw
+        # rows instead of embedding the same two views again per request.
+        t0 = time.time()
+        route_a_candidates, orientation, view_embeddings, raw_rows = self.route_a(card, return_views=True)
+        timings["route_a_retrieval"] = (time.time() - t0) * 1000
+        result.route_a_ok = bool(route_a_candidates)
+
+        # Difficulty assessment (tier 1 -> easy/intermediate/hard). The safe
+        # fast path only fires on unambiguous artwork with a confident quad.
+        fast_path = self._fast_path_eligible(card, route_a_candidates)
+        result.fast_path = fast_path
+        # Language twins in the retrieved pool still need the footer OCR for
+        # language evidence even on the fast path.
+        has_twin = len({c.card_id for c in route_a_candidates}) < len(
+            {(c.card_id, c.language) for c in route_a_candidates})
+
+        # Memory of user-confirmed examples (exemplar retrieval). Threshold +
+        # margin are calibrated for the embedding in use (see
         # scripts/benchmark_memory.py): SigLIP2 impostor similarity sits around
         # 0.886 median / 0.940 p95, so anything below the calibrated threshold
         # is NOT a safe match. Both orientations are probed (a 180-flipped
-        # photo must still find its confirmed example).
+        # photo must still find its confirmed example) using the REUSED
+        # route-A raw-view rows (no extra embedding inference).
         memory_hit = None
-        if use_memory:
+        if use_memory and view_embeddings is not None:
             t0 = time.time()
             try:
                 from . import memory as memory_module
-                embeddings = self.index.model.embed([card.image, card.rotated180])
-                memory_hit = memory_module.lookup(embeddings[0]) or memory_module.lookup(embeddings[1])
+                memory_hit = (memory_module.lookup(view_embeddings[raw_rows[0]])
+                              or memory_module.lookup(view_embeddings[raw_rows[1]]))
             except Exception:
                 memory_hit = None
             timings["memory"] = (time.time() - t0) * 1000
 
-        # Route A: visual retrieval (independent of OCR)
+        # Route B: OCR + text candidates (orientation hinted by Route A).
+        # Fast path -> minimal OCR budget (critical metadata only); the
+        # footer stays whenever language twins need its evidence.
         t0 = time.time()
-        route_a_candidates, orientation = self.route_a(card)
-        timings["route_a_retrieval"] = (time.time() - t0) * 1000
-        result.route_a_ok = bool(route_a_candidates)
-
-        # Route B: OCR + text candidates (orientation hinted by Route A)
-        t0 = time.time()
-        hints, route_b_candidates = self.route_b(card, orientation)
+        hints, route_b_candidates, ocr_passes = self.route_b(card, orientation, minimal=fast_path,
+                                                             include_footer=not fast_path or has_twin)
+        timings["ocr_passes"] = ocr_passes
         if ocr_override:
             from .hints import apply_override
             apply_override(hints, ocr_override)
@@ -531,41 +726,49 @@ class Recognizer:
             if key not in merged:
                 merged[key] = candidate
 
-        # Memory hit becomes a bounded prior on its confirmed card. Memory is
-        # AUXILIARY evidence: the boost is capped well below the verification
-        # (220) and strong-name (60) tiers and never overrides
-        # visual_similarity, so memory alone cannot produce IDENTIFICADO.
+        # Memory hit becomes bounded AUXILIARY evidence on its confirmed card.
+        # The similarity is stored on the candidate (memory_similarity) and
+        # weighted inside fuse(): the previous implementation added a score
+        # bonus here that fuse() immediately recomputed away, so memory never
+        # actually influenced the ranking.
         if memory_hit is not None:
-            from .config import MEMORY_MIN_SIMILARITY
             example, similarity = memory_hit.example, memory_hit.similarity
             record = self.catalog.card_by_key(example.language, example.card_id) if self.catalog else None
             if record is not None:
                 key = example.card_id + "|" + example.language
                 candidate = merged.get(key) or candidate_from_record(record)
-                strength = max(0.0, min(1.0, (similarity - MEMORY_MIN_SIMILARITY) / 0.04))
-                candidate.score = max(candidate.score, 55.0 * strength)
+                candidate.memory_similarity = max(candidate.memory_similarity, similarity)
                 merged[key] = candidate
-                result.evidence.append("confirmed-memory")
 
         # Geometric verification on the merged shortlist (route A candidates
         # first), plus route B candidates whose OCR text evidence (name AND
         # collector number) points at them: mirror-scan and low-rank true
-        # cards would otherwise never reach verification.
+        # cards would otherwise never reach verification. Fast path verifies
+        # fewer candidates (the artwork is unambiguous there by gate).
         shortlist = sorted(merged.values(),
                            key=lambda c: -(c.visual_similarity if c.visual_similarity >= 0 else 0.5))
         t0 = time.time()
-        self.verify(card, shortlist, orientation, hints)
+        self.verify(card, shortlist, orientation, hints,
+                    verify_topk=self.FAST_PATH_VERIFY_TOPK if fast_path else None)
         timings["verification"] = (time.time() - t0) * 1000
 
         ranked = self.fuse(list(merged.values()), hints, route_b_candidates)
+        # Step B of the two-step identity: language. Applied after fuse() so
+        # card identity (artwork/set/number/printing) is settled first; strong
+        # OCR language evidence may reorder SAME-CARD twins, and a still
+        # ambiguous language caps the decision instead of guessing silently.
+        ranked = self._apply_language_evidence(ranked, hints)
         decision, evidence = self.decide(ranked, hints)
+        decision, evidence, language_status = self._cap_uncertain_language(ranked, hints, decision, evidence)
+        result.language_status = language_status
         # A high-similarity, unambiguous confirmed-memory example may upgrade a
         # REVISAR to PROVAVEL (never to IDENTIFICADO — that always requires
         # independent route evidence).
-        if (memory_hit is not None and "confirmed-memory" not in evidence
-                and decision == "REVISAR"):
-            evidence = ["confirmed-memory"] + evidence
-            decision = "PROVAVEL"
+        if memory_hit is not None:
+            if "confirmed-memory" not in evidence:
+                evidence = ["confirmed-memory"] + evidence
+            if decision == "REVISAR":
+                decision = "PROVAVEL"
         result.decision = decision
         result.evidence = evidence
         result.candidates = ranked

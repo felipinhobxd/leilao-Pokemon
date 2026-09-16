@@ -20,7 +20,9 @@ Run:  python -m unittest discover -s tests -v   (from recognition/)
 """
 from __future__ import annotations
 
+import inspect
 import json
+from collections import OrderedDict
 import os
 import shutil
 import sys
@@ -634,3 +636,512 @@ class TestAllowedOrigins(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+# --------------------------------------------------------------------------- memory-fusion
+class TestMemoryFusionWeight(unittest.TestCase):
+    """The confirmed-memory bonus must SURVIVE fuse().
+
+    The pre-fix code set `candidate.score = max(candidate.score, 55*strength)`
+    BEFORE fuse(), but fuse() recomputes `candidate.score = sum(weights)` —
+    the bonus was silently wiped and memory never influenced ranking.
+    """
+
+    def _recognizer(self):
+        recognizer = Recognizer.__new__(Recognizer)
+        recognizer.calibration = EMBEDDING_CALIBRATION["siglip2-base-384"]
+        return recognizer
+
+    def _candidate(self, card_id="swsh3-106", language="pt-BR", visual=0.93):
+        candidate = Candidate(card_id=card_id, language=language, set_id="swsh3",
+                              set_name="Darkness Ablaze", name="Purrloin", local_id="106",
+                              denominator=189, hp=60)
+        candidate.visual_similarity = visual
+        return candidate
+
+    def _hints(self):
+        from recognizer.hints import OcrHints
+        return OcrHints()
+
+    def test_memory_weight_survives_fuse_recomputation(self):
+        recognizer = self._recognizer()
+        candidate = self._candidate()
+        candidate.memory_similarity = 0.97  # strength = (0.97-0.95)/0.04 = 0.5
+        ranked = recognizer.fuse([candidate], self._hints(), [])
+        expected_visual = max(0.0, 0.93 - 0.89) * 200.0  # 8.0
+        expected_prior = 1.5  # pt-BR weak prior (no OCR language evidence)
+        self.assertAlmostEqual(ranked[0].score, expected_visual + expected_prior + 55.0 * 0.5, places=4)
+
+    def test_memory_similarity_below_threshold_contributes_nothing(self):
+        recognizer = self._recognizer()
+        candidate = self._candidate()
+        candidate.memory_similarity = 0.95  # strength 0 -> inert
+        ranked = recognizer.fuse([candidate], self._hints(), [])
+        self.assertAlmostEqual(ranked[0].score, max(0.0, 0.93 - 0.89) * 200.0 + 1.5, places=4)
+
+    def test_memory_ranks_confirmed_card_above_equal_visual_impostor(self):
+        recognizer = self._recognizer()
+        confirmed = self._candidate(card_id="swsh3-106", visual=0.9300)
+        confirmed.memory_similarity = 0.99  # strength 1.0 -> +55
+        impostor = self._candidate(card_id="swsh3-107", visual=0.9301)
+        ranked = recognizer.fuse([impostor, confirmed], self._hints(), [])
+        self.assertEqual(ranked[0].card_id, "swsh3-106",
+                         "memória confirmada deve subir o ranking da carta correta")
+
+    def test_wrong_memory_never_beats_verification_evidence(self):
+        recognizer = self._recognizer()
+        from recognizer.features import Verification
+        true_card = self._candidate(card_id="swsh3-106", visual=0.90)
+        true_card.verification = Verification(inliers=40, matches=50, inlier_ratio=0.8,
+                                              reprojection_error=2.0,
+                                              homography=np.eye(3, dtype=np.float32), method="sift")
+        wrong_memory_card = self._candidate(card_id="swsh3-107", visual=0.90)
+        wrong_memory_card.memory_similarity = 1.0  # strongest possible memory
+        ranked = recognizer.fuse([wrong_memory_card, true_card], self._hints(), [])
+        self.assertEqual(ranked[0].card_id, "swsh3-106",
+                         "memória errada não pode vencer evidência oficial (verificação)")
+
+    def test_memory_alone_never_reaches_identificado(self):
+        # Best possible memory (similarity 1.0 -> +55) with NO independent
+        # evidence: no verification, no OCR, visual at impostor level.
+        # decide() must stay below IDENTIFICADO (spec: memory alone caps at
+        # PROVAVEL/REVISAR; recognize()'s upgrade path also only lifts
+        # REVISAR -> PROVAVEL, never IDENTIFICADO).
+        recognizer = self._recognizer()
+        candidate = self._candidate(visual=0.886)  # impostor median similarity
+        candidate.memory_similarity = 1.0
+        hints = self._hints()
+        ranked = recognizer.fuse([candidate], hints, [])
+        decision, evidence = recognizer.decide(ranked, hints)
+        self.assertNotEqual(decision, "IDENTIFICADO")
+        self.assertIn(decision, ("REVISAR", "PROVAVEL", "NAO_IDENTIFICADO"))
+
+    def test_memory_dict_exposes_similarity(self):
+        payload = self._candidate().to_dict()
+        self.assertIsNone(payload["memorySimilarity"])
+        candidate = self._candidate()
+        candidate.memory_similarity = 0.98
+        self.assertEqual(candidate.to_dict()["memorySimilarity"], 0.98)
+
+
+# --------------------------------------------------------------------------- language
+class TestLanguageTwins(unittest.TestCase):
+    """Card identity and language are SEPARATE decisions (two-step).
+
+    Same-card pt-BR/EN twins share artwork and layout: visual similarity and
+    verification can never tell them apart, so the language must come from
+    language evidence (OCR words) — or be reported as uncertain, capping the
+    decision at PROVAVEL instead of guessing an IDENTIFICADO in the wrong
+    language.
+    """
+
+    def _recognizer(self):
+        recognizer = Recognizer.__new__(Recognizer)
+        recognizer.calibration = EMBEDDING_CALIBRATION["siglip2-base-384"]
+        return recognizer
+
+    def _candidate(self, card_id, language, visual=0.93):
+        candidate = Candidate(card_id=card_id, language=language, set_id="swsh3",
+                              set_name="Darkness Ablaze", name="Purrloin", local_id="106",
+                              denominator=189, hp=60)
+        candidate.visual_similarity = visual
+        return candidate
+
+    def _hints(self, language="", language_confidence=0.0):
+        from recognizer.hints import OcrHints
+        hints = OcrHints()
+        hints.language = language
+        hints.language_confidence = language_confidence
+        return hints
+
+    def _twins(self):
+        pt = self._candidate("swsh3-106", "pt-BR", visual=0.9300)
+        en = self._candidate("swsh3-106", "en", visual=0.9301)  # EN wins visually by noise
+        return pt, en
+
+    def test_strong_pt_ocr_promotes_pt_twin_over_visual_noise_leader(self):
+        # OCR reads 2+ characteristic pt words (conf 0.9): language evidence
+        # must reorder the same-card twins even though EN leads on visual noise.
+        recognizer = self._recognizer()
+        pt, en = self._twins()
+        hints = self._hints("pt-BR", 0.9)
+        ranked = recognizer.fuse([en, pt], hints, [])
+        ranked = recognizer._apply_language_evidence(ranked, hints)
+        self.assertEqual(ranked[0].language, "pt-BR")
+        decision, evidence = recognizer.decide(ranked, hints)
+        decision, evidence, status = recognizer._cap_uncertain_language(ranked, hints, decision, evidence)
+        self.assertEqual(status, "confirmed")
+        self.assertNotIn("language-uncertain", evidence)
+
+    def test_twins_with_illegible_ocr_report_uncertain_language(self):
+        # Same artwork, no language evidence: identity stands, language is
+        # uncertain, IDENTIFICADO is capped to PROVAVEL.
+        recognizer = self._recognizer()
+        from recognizer.features import Verification
+        pt, en = self._twins()
+        pt.verification = Verification(inliers=60, matches=70, inlier_ratio=0.9,
+                                       reprojection_error=1.5,
+                                       homography=np.eye(3, dtype=np.float32), method="sift")
+        hints = self._hints()  # no language read at all
+        ranked = recognizer.fuse([en, pt], hints, [])
+        ranked = recognizer._apply_language_evidence(ranked, hints)
+        decision, evidence = recognizer.decide(ranked, hints)
+        decision, evidence, status = recognizer._cap_uncertain_language(ranked, hints, decision, evidence)
+        self.assertEqual(status, "uncertain")
+        self.assertEqual(decision, "PROVAVEL", "IDENTIFICADO com idioma possivelmente errado é proibido")
+        self.assertIn("language-uncertain", evidence)
+        self.assertEqual(ranked[0].card_id, "swsh3-106", "identidade da carta se mantém")
+
+    def test_weak_language_word_is_not_strong_evidence(self):
+        # A single shared word ("pokemon" is in BOTH pt and en lists) yields
+        # confidence exactly 0.62 — below the 0.75 strong bar, the twin stays
+        # uncertain even though hints.language is set.
+        recognizer = self._recognizer()
+        pt, en = self._twins()
+        hints = self._hints("pt-BR", 0.62)
+        ranked = recognizer.fuse([en, pt], hints, [])
+        ranked = recognizer._apply_language_evidence(ranked, hints)
+        decision, evidence = recognizer.decide(ranked, hints)
+        decision, evidence, status = recognizer._cap_uncertain_language(ranked, hints, decision, evidence)
+        self.assertEqual(status, "uncertain")
+
+    def test_no_twins_language_is_inherent(self):
+        recognizer = self._recognizer()
+        solo = self._candidate("swsh3-107", "pt-BR")
+        hints = self._hints()
+        ranked = recognizer.fuse([solo], hints, [])
+        decision, evidence = recognizer.decide(ranked, hints)
+        decision, evidence, status = recognizer._cap_uncertain_language(ranked, hints, decision, evidence)
+        self.assertEqual(status, "confirmed")
+
+    def test_mirror_scan_is_not_language_evidence(self):
+        # A pt-BR card verified through the EN mirror scan (pt scan missing)
+        # must NOT inherit "en" from the mirror: scan_source stays transport
+        # metadata and never enters the language decision.
+        recognizer = self._recognizer()
+        pt, en = self._twins()
+        pt.scan_source = "en-high.webp"  # mirror verified, still a pt-BR print
+        hints = self._hints()
+        ranked = recognizer.fuse([en, pt], hints, [])
+        ranked = recognizer._apply_language_evidence(ranked, hints)
+        decision, evidence = recognizer.decide(ranked, hints)
+        decision, evidence, status = recognizer._cap_uncertain_language(ranked, hints, decision, evidence)
+        self.assertEqual(status, "uncertain", "mirror não é evidência de idioma")
+
+    def test_weak_pt_prior_breaks_true_ties_without_contradicting_ocr(self):
+        # No language evidence, exact visual tie: the pt-BR prior (1.5 pts)
+        # decides which twin is SHOWN; the cap still keeps it honest.
+        recognizer = self._recognizer()
+        pt = self._candidate("swsh3-106", "pt-BR", visual=0.9300)
+        en = self._candidate("swsh3-106", "en", visual=0.9300)
+        hints = self._hints()
+        ranked = recognizer.fuse([en, pt], hints, [])
+        self.assertEqual(ranked[0].language, "pt-BR")
+        # ... but with a real OCR en read (conf 0.6) the prior must not win:
+        hints_en = self._hints("en", 0.6)
+        pt2 = self._candidate("swsh3-106", "pt-BR", visual=0.9300)
+        en2 = self._candidate("swsh3-106", "en", visual=0.9300)
+        ranked2 = recognizer.fuse([pt2, en2], hints_en, [])
+        self.assertEqual(ranked2[0].language, "en", "OCR de idioma vence o prior fraco")
+
+    def test_language_status_in_payload(self):
+        from recognizer.pipeline import RecognitionResult
+        result = RecognitionResult()
+        result.language_status = "uncertain"
+        self.assertEqual(result.to_dict()["languageStatus"], "uncertain")
+
+
+# --------------------------------------------------------------------------- fast-path
+class TestAdaptiveFastPath(unittest.TestCase):
+    """Safe fast path: unambiguous cases run a minimal OCR budget, everything
+    that can threaten precision (tight margins, weak quads, lookalikes,
+    language twins needing footer evidence) stays on the full path."""
+
+    def _recognizer(self):
+        recognizer = Recognizer.__new__(Recognizer)
+        recognizer.calibration = EMBEDDING_CALIBRATION["siglip2-base-384"]
+        recognizer.catalog = object()  # present
+        return recognizer
+
+    def _card(self, confidence=0.9):
+        from recognizer.normalize import NormalizedCard
+        image = np.zeros((840, 600, 3), dtype=np.uint8)
+        return NormalizedCard(image=image, rotated180=image, rotation_code=0,
+                              method="quad-contour", confidence=confidence, quad=None)
+
+    def _candidate(self, card_id, language="pt-BR", visual=0.93):
+        candidate = Candidate(card_id=card_id, language=language, set_id="s",
+                              set_name="S", name="X", local_id="1", denominator=99, hp=60)
+        candidate.visual_similarity = visual
+        return candidate
+
+    def test_easy_case_is_eligible(self):
+        recognizer = self._recognizer()
+        candidates = [self._candidate("a", visual=0.945), self._candidate("b", visual=0.90)]
+        self.assertTrue(recognizer._fast_path_eligible(self._card(), candidates))
+
+    def test_tight_visual_margin_blocks_fast_path(self):
+        # Same-artwork reprint of another set: visual gap < 0.02 -> full path.
+        recognizer = self._recognizer()
+        candidates = [self._candidate("a", visual=0.945), self._candidate("b", visual=0.938)]
+        self.assertFalse(recognizer._fast_path_eligible(self._card(), candidates))
+
+    def test_weak_quad_blocks_fast_path(self):
+        recognizer = self._recognizer()
+        candidates = [self._candidate("a", visual=0.945), self._candidate("b", visual=0.90)]
+        self.assertFalse(recognizer._fast_path_eligible(self._card(confidence=0.1), candidates))
+
+    def test_below_strong_headroom_blocks_fast_path(self):
+        recognizer = self._recognizer()
+        candidates = [self._candidate("a", visual=0.912), self._candidate("b", visual=0.85)]
+        self.assertFalse(recognizer._fast_path_eligible(self._card(), candidates))
+
+    def test_language_twin_gap_does_not_block_fast_path(self):
+        # Twins are the SAME card_id: the margin only counts DIFFERENT cards.
+        recognizer = self._recognizer()
+        candidates = [self._candidate("a", "pt-BR", visual=0.945),
+                      self._candidate("a", "en", visual=0.9449),
+                      self._candidate("b", visual=0.90)]
+        self.assertTrue(recognizer._fast_path_eligible(self._card(), candidates))
+
+    def test_missing_catalog_blocks_fast_path(self):
+        recognizer = self._recognizer()
+        recognizer.catalog = None
+        candidates = [self._candidate("a", visual=0.945)]
+        self.assertFalse(recognizer._fast_path_eligible(self._card(), candidates))
+
+    def test_minimal_ocr_skips_deep_band_and_ladder(self):
+        # Structural: minimal mode must not queue the rescue regions or the
+        # denoising variants; the two raw number regions stay (consensus pair).
+        import re
+        from recognizer import ocr as ocr_module
+        source = inspect.getsource(ocr_module.PpOcr.read_card)
+        self.assertIn("if minimal:", source)
+        self.assertIn("number_regions[:2]", source)
+        self.assertIn("name_confd < 0.6", source,
+                      "full path must skip pass 1b when the name read is already solid")
+
+    def test_fast_path_result_is_flagged(self):
+        from recognizer.pipeline import RecognitionResult
+        result = RecognitionResult()
+        result.fast_path = True
+        self.assertTrue(result.to_dict()["fastPath"])
+        self.assertFalse(RecognitionResult().to_dict()["fastPath"])
+
+
+class TestEmbeddingReuse(unittest.TestCase):
+    """Route A's view embeddings must be reusable by the memory lookup: the
+    same request must not embed the raw 0/180 views twice."""
+
+    def test_route_a_returns_raw_rows_for_memory(self):
+        import cv2
+        recognizer = Recognizer.__new__(Recognizer)
+        recognizer.calibration = EMBEDDING_CALIBRATION["siglip2-base-384"]
+        recognizer.topk = 5
+
+        class FakeIndex:
+            def search(self, image, topk, orientations, return_views=False):
+                # views: [img0_raw, img0_gamma, img1_raw, img1_gamma]
+                embeddings = np.stack([np.ones(4, dtype=np.float32) for _ in range(4)])
+                results = [("pt-BR", "a", 0.95, 0)]
+                if return_views:
+                    return results, embeddings, [0, 0, 1, 1]
+                return results
+
+        class FakeCatalog:
+            def card_by_key(self, language, card_id):
+                return None
+
+        recognizer.index = FakeIndex()
+        recognizer.catalog = FakeCatalog()
+        from recognizer.normalize import NormalizedCard
+        image = np.zeros((840, 600, 3), dtype=np.uint8)
+        card = NormalizedCard(image=image, rotated180=cv2.rotate(image, cv2.ROTATE_180),
+                              rotation_code=0, method="quad", confidence=0.9, quad=None)
+        candidates, orientation, view_embeddings, raw_rows = recognizer.route_a(card, return_views=True)
+        self.assertIsNotNone(view_embeddings)
+        self.assertEqual(raw_rows, [0, 2], "raw rows must be the first view of each orientation")
+
+
+# --------------------------------------------------------------------------- memory-api
+class TestMemoryApiHardening(unittest.TestCase):
+    """Memory mutations must be atomic and concurrency-safe across all three
+    stores (memory.json / memory-embeddings.npz / memory-images/)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="rec-memapi-")
+        self._orig = (memory_module.MEMORY_FILE, memory_module.MEMORY_EMBEDDINGS, memory_module.MEMORY_IMAGES)
+        memory_module.MEMORY_FILE = os.path.join(self.tmp, "memory.json")
+        memory_module.MEMORY_EMBEDDINGS = os.path.join(self.tmp, "memory-embeddings.npz")
+        memory_module.MEMORY_IMAGES = os.path.join(self.tmp, "memory-images")
+        os.makedirs(memory_module.MEMORY_IMAGES, exist_ok=True)
+
+    def tearDown(self):
+        memory_module.MEMORY_FILE, memory_module.MEMORY_EMBEDDINGS, memory_module.MEMORY_IMAGES = self._orig
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _card(self, card_id):
+        return {"cardId": card_id, "language": "pt-BR", "name": "X"}
+
+    def _state_consistent(self):
+        examples = memory_module.load_examples()
+        ids, matrix = memory_module._load_embeddings()
+        return (sorted(e.id for e in examples) == sorted(ids)
+                and matrix.shape[0] == len(ids))
+
+    def test_remove_example_cleans_all_three_stores(self):
+        memory_module.add_example(self._card("a"), fake_png(5000), np.array([[1.0, 0.0]]))
+        second = memory_module.add_example(self._card("b"), fake_png(6000), np.array([[0.0, 1.0]]))
+        remaining = memory_module.remove_example(second.id)
+        self.assertEqual(remaining, 1)
+        self.assertTrue(self._state_consistent())
+        self.assertFalse(os.path.exists(os.path.join(memory_module.MEMORY_IMAGES, second.image_file)))
+        with self.assertRaises(KeyError):
+            memory_module.remove_example(second.id)
+
+    def test_concurrent_confirm_delete_stay_consistent(self):
+        import threading
+        seeded = memory_module.add_example(self._card("seed"), fake_png(4096),
+                                           np.array([[1.0, 0.0]]))
+        errors = []
+
+        def confirm_worker(i):
+            try:
+                memory_module.add_example(self._card(f"c{i}"), fake_png(4096 + i),
+                                          np.array([[1.0, float(i + 1) / 100]]))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        def delete_worker():
+            try:
+                memory_module.remove_example(seeded.id)
+            except KeyError:
+                pass  # already removed by the other delete worker
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=confirm_worker, args=(i,)) for i in range(6)]
+        threads += [threading.Thread(target=delete_worker) for _ in range(2)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        self.assertEqual(errors, [])
+        self.assertTrue(self._state_consistent(),
+                        "confirm/delete concorrentes deixaram arquivos inconsistentes")
+
+    def test_delete_never_resurrects_a_removed_example(self):
+        first = memory_module.add_example(self._card("a"), fake_png(4096), np.array([[1.0, 0.0]]))
+        memory_module.remove_example(first.id)
+        # A confirm that started BEFORE the delete must not re-add the removed
+        # id: its own id is fresh (time-based), so a later confirm is safe.
+        second = memory_module.add_example(self._card("a"), fake_png(5000), np.array([[1.0, 0.0]]))
+        self.assertNotEqual(first.id, second.id)
+        self.assertEqual(len(memory_module.load_examples()), 1)
+
+    def test_decode_upload_limits(self):
+        # Structural: the server enforces size/dimension/content limits with
+        # explicit HTTP codes before any heavy work.
+        server = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                   "recognition_server.py"), encoding="utf-8").read()
+        self.assertIn("max_bytes: int = 25 * 1024 * 1024", server)
+        self.assertIn("max_side: int = 12000", server)
+        self.assertIn("status_code=413", server)
+        self.assertIn("status_code=400, detail=\"Arquivo enviado não é uma imagem válida\"", server)
+        # /memory/confirm checks the size BEFORE decode (same budget as /recognize)
+        confirm_section = server[server.index("@app.post(\"/memory/confirm\")"):]
+        self.assertIn("len(data) > 25 * 1024 * 1024", confirm_section)
+        self.assertLess(confirm_section.index("len(data) > 25 * 1024 * 1024"),
+                        confirm_section.index("decode_upload(data)"))
+
+
+# --------------------------------------------------------------------------- normalize
+class TestHoughSingleLineShape(unittest.TestCase):
+    """HoughLinesP can return a single line as shape (1, 4) instead of
+    (1, 1, 4) on some OpenCV builds — the old `lines[:, 0]` unpack crashed
+    the whole recognition with TypeError on exactly that case."""
+
+    def test_single_flat_line_does_not_crash(self):
+        from recognizer.normalize import _detect_quad_hough
+        import cv2
+        # A vertical bright bar on dark background produces at least one
+        # strong line; the point is that ANY returned shape must be handled.
+        image = np.zeros((200, 200), dtype=np.uint8)
+        cv2.line(image, (100, 0), (100, 199), 255, 3)
+        cv2.line(image, (0, 100), (199, 100), 255, 3)
+        try:
+            _detect_quad_hough(image)
+        except TypeError as exc:
+            self.fail(f"_detect_quad_hough crashed: {exc}")
+
+
+# --------------------------------------------------------------------------- scan-single-flight
+class TestScanSingleFlight(unittest.TestCase):
+    """Concurrent misses on the same scan key must trigger exactly ONE
+    download+decode (the other threads wait on the event and read the cache)."""
+
+    def test_parallel_misses_load_once(self):
+        import threading
+        import cv2 as cv2_mod
+        recognizer = Recognizer.__new__(Recognizer)
+        recognizer._scan_cache = OrderedDict()
+        recognizer._scan_cache_bytes = 0
+        recognizer._scan_misses = set()
+        recognizer._scan_inflight = {}
+        recognizer._lock = threading.Lock()
+        recognizer.catalog = object()
+        recognizer.SCAN_CACHE_MAX_BYTES = 400 * 1024 * 1024
+        loads = []
+        load_event = threading.Event()
+
+        class FakeRecord:
+            image_base = "https://assets.tcgdex.net/pt/me/me01/001"
+
+        class FakeCatalog:
+            def card_by_key(self, language, card_id):
+                return FakeRecord()
+
+        def fake_resolve(image_base):
+            loads.append(image_base)
+            load_event.wait(timeout=5)  # hold the first load so rivals pile up
+            return "/fake/scan.webp", "high.webp"
+
+        recognizer.catalog = FakeCatalog()
+        import recognizer.pipeline as pipeline_module
+        original = pipeline_module.np.fromfile
+
+        def fake_fromfile(path, dtype=None):
+            # np.fromfile returns an ndarray; cv2.imdecode rejects plain bytes.
+            load_event.set()
+            ok, buf = cv2_mod.imencode(".png", np.zeros((100, 100, 3), np.uint8))
+            return np.frombuffer(buf.tobytes(), dtype=np.uint8)
+
+        pipeline_module.np.fromfile = fake_fromfile
+        import recognizer.catalog as catalog_module
+        catalog_module.resolve_scan = fake_resolve
+        try:
+            results = {}
+            def worker(i):
+                candidate = Candidate(card_id="me01-001", language="pt-BR", set_id="me01",
+                                      set_name="S", name="X", local_id="1", denominator=99, hp=None)
+                results[i] = recognizer._scan_image(candidate)
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
+            for t in threads: t.start()
+            for t in threads: t.join(timeout=10)
+            self.assertEqual(len(loads), 1, f"esperava 1 download, houve {len(loads)}")
+            self.assertEqual(len(results), 4)
+            for image in results.values():
+                self.assertIsNotNone(image)
+        finally:
+            pipeline_module.np.fromfile = original
+
+    def test_example_ids_never_collide_within_the_same_millisecond(self):
+        # Two DIFFERENT cards confirmed back-to-back used to get the same
+        # time-based id, so removing one deleted both.
+        first = memory_module.add_example({"cardId": "a", "language": "pt-BR", "name": "X"},
+                                          fake_png(4096), np.array([[1.0, 0.0]]))
+        second = memory_module.add_example({"cardId": "b", "language": "pt-BR", "name": "Y"},
+                                           fake_png(4100), np.array([[0.0, 1.0]]))
+        self.assertNotEqual(first.id, second.id)
+        remaining = memory_module.remove_example(second.id)
+        self.assertEqual(remaining, 1)
+        survivors = [e.card_id for e in memory_module.load_examples()]
+        self.assertEqual(survivors, ["a"])

@@ -85,6 +85,9 @@ class OcrResult:
     elapsed_ms: int = 0
     backend: str = "onnxruntime"
     error: Optional[str] = None
+    # Number of det+rec region passes actually executed (progressive OCR
+    # observability: fast path ~= 3-4, full path up to ~11 before early-stop).
+    passes: int = 0
 
     @property
     def text(self) -> str:
@@ -234,20 +237,25 @@ class PpOcr:
                     lines.append(OcrLine(text=text, confidence=confidence, box=box, region=region))
         return lines
 
-    def read_card(self, card_bgr: np.ndarray, body_pass: bool = True) -> OcrResult:
+    def read_card(self, card_bgr: np.ndarray, body_pass: bool = True, minimal: bool = False,
+                  include_footer: bool = True) -> OcrResult:
         """Region-based OCR on a normalized (600x840-ish) card image.
 
         Passes (det + rec on each region, never one expensive full-card pass):
         1. top strip    (name + HP + stage)
         1b. deep top band — real photos with loose perspective warps put the
-            name bar 10-25% down; tagged name2/hp2, used only as fallback
+            name bar 10-25% down; tagged name2/hp2, used only as fallback.
+            FULL path: skipped when pass 1 already read a name with
+            confidence >= 0.6 (progressive OCR: don't re-read what is already
+            solid). MINIMAL path: always skipped.
         2. bottom strip (flavor text / weakness row / copyright / language)
         3. collector number — four complementary regions (corner + wide
            bands), raw variant of each first, then denoising variants
            (bilateral -> Otsu) on the left-crop regions until a confident
-           N/M line shows up
+           N/M line shows up. MINIMAL path: only the first two raw regions.
         """
         started = time.time()
+        passes = 0
         try:
             self._ensure()
             lines: list[OcrLine] = []
@@ -265,23 +273,31 @@ class PpOcr:
             # --- pass 1: top strip; sub-label lines by horizontal position
             top = crop_region(0.0, 0.0, 1.0, 0.13, 2.0)
             if top is not None and top.size:
+                passes += 1
                 for line in self._recognize_batch(top, self._detect_boxes(top), "top"):
                     center_x = line.box[:, 0].mean() / max(1, top.shape[1])
                     line.region = "hp" if center_x >= 0.62 else "name"
                     lines.append(line)
 
-            # --- pass 1b: deep top band for loose framings (name2/hp2)
-            top2 = crop_region(0.0, 0.14, 1.0, 0.32, 2.0)
-            if top2 is not None and top2.size:
-                for line in self._recognize_batch(top2, self._detect_boxes(top2), "top2"):
-                    center_x = line.box[:, 0].mean() / max(1, top2.shape[1])
-                    line.region = "hp2" if center_x >= 0.62 else "name2"
-                    lines.append(line)
+            # --- pass 1b: deep top band for loose framings (name2/hp2).
+            # Progressive: only when pass 1 did not produce a solid name read.
+            name_confd = max((l.confidence for l in lines if l.region == "name" and l.text.strip()),
+                             default=0.0)
+            if (not minimal and body_pass) and name_confd < 0.6:
+                top2 = crop_region(0.0, 0.14, 1.0, 0.32, 2.0)
+                if top2 is not None and top2.size:
+                    passes += 1
+                    for line in self._recognize_batch(top2, self._detect_boxes(top2), "top2"):
+                        center_x = line.box[:, 0].mean() / max(1, top2.shape[1])
+                        line.region = "hp2" if center_x >= 0.62 else "name2"
+                        lines.append(line)
 
             # --- pass 2: bottom strip (flavor text / weakness row / copyright / language)
-            bottom = crop_region(0.0, 0.80, 1.0, 0.945, 2.2)
-            if bottom is not None and bottom.size:
-                lines.extend(self._recognize_batch(bottom, self._detect_boxes(bottom), "footer"))
+            if include_footer:
+                bottom = crop_region(0.0, 0.80, 1.0, 0.945, 2.2)
+                if bottom is not None and bottom.size:
+                    passes += 1
+                    lines.extend(self._recognize_batch(bottom, self._detect_boxes(bottom), "footer"))
 
             # --- pass 3: collector number. Four complementary regions:
             #   a) bottom corner, full width (tight framings / synthetic scans)
@@ -304,22 +320,32 @@ class PpOcr:
                 (0.0, 0.72, 0.60, 1.0, 5.0),
                 (0.0, 0.86, 0.60, 1.0, 5.0),
             )
-            attempts: list[tuple[tuple[float, float, float, float, float], str]] = [
-                (region, "raw") for region in number_regions
-            ]
-            for region in number_regions[2:]:
-                attempts.append((region, "bilateral"))
-                attempts.append((region, "otsu"))
+            if minimal:
+                # Fast path: the two complementary raw regions (corner + wide
+                # band) still form a consensus pair; the left-crop rescue
+                # bands and the denoising ladder only pay off on hard reads,
+                # which by definition are not on the fast path.
+                attempts: list[tuple[tuple[float, float, float, float, float], str]] = [
+                    (region, "raw") for region in number_regions[:2]
+                ]
+            else:
+                attempts = [(region, "raw") for region in number_regions]
+                for region in number_regions[2:]:
+                    attempts.append((region, "bilateral"))
+                    attempts.append((region, "otsu"))
             for region_spec, variant_name in attempts:
                 crop = crop_region(*region_spec)
                 if crop is None or not crop.size:
                     continue
+                passes += 1
                 variant = self._number_variant(crop, variant_name)
                 lines.extend(self._recognize_batch(variant, self._detect_boxes(variant), "number"))
                 if number_consensus_reached(lines):
                     break
 
-            return OcrResult(lines=lines, elapsed_ms=int((time.time() - started) * 1000))
+            result = OcrResult(lines=lines, elapsed_ms=int((time.time() - started) * 1000))
+            result.passes = passes
+            return result
         except Exception as exc:  # noqa: BLE001
             return OcrResult(elapsed_ms=int((time.time() - started) * 1000), error=str(exc))
 

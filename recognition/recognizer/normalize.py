@@ -127,8 +127,13 @@ def _detect_quad_hough(gray: np.ndarray) -> Optional[np.ndarray]:
                             minLineLength=min(w, h) // 3, maxLineGap=min(w, h) // 10)
     if lines is None:
         return None
+    # HoughLinesP returns (N, 1, 4), but a single detection can arrive as
+    # (1, 4) on some OpenCV builds — normalize the shape before unpacking
+    # (a one-line result used to crash the whole recognition with
+    # "cannot unpack non-iterable numpy.int32").
+    lines = np.asarray(lines).reshape(-1, 4)
     verticals, horizontals = [], []
-    for x1, y1, x2, y2 in lines[:, 0]:
+    for x1, y1, x2, y2 in lines:
         dx, dy = float(x2 - x1), float(y2 - y1)
         length = math.hypot(dx, dy)
         if length < 1:

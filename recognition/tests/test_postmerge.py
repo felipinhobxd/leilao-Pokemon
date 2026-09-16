@@ -667,14 +667,15 @@ class TestMemoryFusionWeight(unittest.TestCase):
         candidate.memory_similarity = 0.97  # strength = (0.97-0.95)/0.04 = 0.5
         ranked = recognizer.fuse([candidate], self._hints(), [])
         expected_visual = max(0.0, 0.93 - 0.89) * 200.0  # 8.0
-        self.assertAlmostEqual(ranked[0].score, expected_visual + 55.0 * 0.5, places=4)
+        expected_prior = 1.5  # pt-BR weak prior (no OCR language evidence)
+        self.assertAlmostEqual(ranked[0].score, expected_visual + expected_prior + 55.0 * 0.5, places=4)
 
     def test_memory_similarity_below_threshold_contributes_nothing(self):
         recognizer = self._recognizer()
         candidate = self._candidate()
         candidate.memory_similarity = 0.95  # strength 0 -> inert
         ranked = recognizer.fuse([candidate], self._hints(), [])
-        self.assertAlmostEqual(ranked[0].score, max(0.0, 0.93 - 0.89) * 200.0, places=4)
+        self.assertAlmostEqual(ranked[0].score, max(0.0, 0.93 - 0.89) * 200.0 + 1.5, places=4)
 
     def test_memory_ranks_confirmed_card_above_equal_visual_impostor(self):
         recognizer = self._recognizer()

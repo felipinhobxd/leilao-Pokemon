@@ -349,7 +349,10 @@ class Recognizer:
                     self._sift_evictions += 1
             else:
                 self._sift_cache.move_to_end(key)
-        return self._sift_cache[key]
+        # Return the LOCAL reference: a tiny budget may have evicted the entry
+        # we just inserted, but the extracted features remain valid for this
+        # caller regardless of cache residency.
+        return features
 
     def cache_stats(self) -> dict:
         """Cache observability for /health: hit ratios + byte footprints."""

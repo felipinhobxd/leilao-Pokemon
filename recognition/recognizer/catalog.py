@@ -23,6 +23,16 @@ ASSETS_BASE = "https://assets.tcgdex.net"
 LANG_CODE = {"pt-BR": "pt", "en": "en", "es": "es", "ja": "ja"}
 CODE_LANG = {v: k for k, v in LANG_CODE.items()}
 
+# Catalog language classes:
+# - CORE languages must be COMPLETE for the recognition service to be useful
+#   (pt-BR/en index is what identification runs on): a failed core fetch
+#   blocks the installer (non-zero exit).
+# - OPTIONAL languages are metadata-only (es/ja): a gap degrades those
+#   languages' coverage but must never block installation — the failure is
+#   recorded in catalog.gaps.<lang> and a later run retries just the gaps.
+CORE_LANGUAGES = ("pt-BR", "en")
+OPTIONAL_LANGUAGES = ("es", "ja")
+
 _lock = threading.Lock()
 
 # Thread-local requests.Session: connection pooling without cross-thread
@@ -374,12 +384,18 @@ class FetchReport:
         return not self.failed_sets
 
 
-def fetch_language_cards(language: str) -> tuple[list[CardRecord], FetchReport]:
+def fetch_language_cards(language: str,
+                         sets_filter: Optional[list[str]] = None) -> tuple[list[CardRecord], FetchReport]:
     """Download full card list for a language via the set endpoints.
 
     A set that still fails after the transport retries plus one set-level
     retry is REPORTED (FetchReport.failed_sets) instead of being silently
     skipped: the caller decides whether the result may be stamped complete.
+
+    sets_filter: when given (gap-only retry), only those set ids are fetched —
+    the sets listing is still consulted so unknown ids are reported, but sets
+    that already succeeded in an earlier run are NOT re-downloaded. The DB
+    write stays INSERT OR REPLACE, so untouched rows keep their good data.
     """
     code = LANG_CODE.get(language)
     if not code:
@@ -388,6 +404,12 @@ def fetch_language_cards(language: str) -> tuple[list[CardRecord], FetchReport]:
     sets = json.loads(raw)
     if not isinstance(sets, list):
         raise RuntimeError(f"Unexpected sets payload for {code}")
+    if sets_filter is not None:
+        wanted = {s for s in sets_filter if s}
+        sets = [sset for sset in sets if sset.get("id") in wanted]
+        missing_from_listing = sorted(wanted - {sset.get("id") for sset in sets})
+    else:
+        missing_from_listing = []
     records: list[CardRecord] = []
     failed: list[str] = []
     expected = 0
@@ -429,8 +451,12 @@ def fetch_language_cards(language: str) -> tuple[list[CardRecord], FetchReport]:
                 variants=json.dumps(variants, ensure_ascii=False),
                 release_date=detail.get("releaseDate") or "",
             ))
-    report = FetchReport(language=language, expected_sets=expected,
-                         succeeded_sets=expected - len(failed), failed_sets=failed)
+    # A gap-set id that vanished from the listing (set renamed/removed) is a
+    # definitive failure for the retry: report it instead of silently success.
+    failed.extend(missing_from_listing)
+    report = FetchReport(language=language, expected_sets=expected + len(missing_from_listing),
+                         succeeded_sets=expected + len(missing_from_listing) - len(failed),
+                         failed_sets=failed)
     return records, report
 
 

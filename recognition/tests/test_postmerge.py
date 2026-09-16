@@ -634,3 +634,87 @@ class TestAllowedOrigins(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+# --------------------------------------------------------------------------- memory-fusion
+class TestMemoryFusionWeight(unittest.TestCase):
+    """The confirmed-memory bonus must SURVIVE fuse().
+
+    The pre-fix code set `candidate.score = max(candidate.score, 55*strength)`
+    BEFORE fuse(), but fuse() recomputes `candidate.score = sum(weights)` —
+    the bonus was silently wiped and memory never influenced ranking.
+    """
+
+    def _recognizer(self):
+        recognizer = Recognizer.__new__(Recognizer)
+        recognizer.calibration = EMBEDDING_CALIBRATION["siglip2-base-384"]
+        return recognizer
+
+    def _candidate(self, card_id="swsh3-106", language="pt-BR", visual=0.93):
+        candidate = Candidate(card_id=card_id, language=language, set_id="swsh3",
+                              set_name="Darkness Ablaze", name="Purrloin", local_id="106",
+                              denominator=189, hp=60)
+        candidate.visual_similarity = visual
+        return candidate
+
+    def _hints(self):
+        from recognizer.hints import OcrHints
+        return OcrHints()
+
+    def test_memory_weight_survives_fuse_recomputation(self):
+        recognizer = self._recognizer()
+        candidate = self._candidate()
+        candidate.memory_similarity = 0.97  # strength = (0.97-0.95)/0.04 = 0.5
+        ranked = recognizer.fuse([candidate], self._hints(), [])
+        expected_visual = max(0.0, 0.93 - 0.89) * 200.0  # 8.0
+        self.assertAlmostEqual(ranked[0].score, expected_visual + 55.0 * 0.5, places=4)
+
+    def test_memory_similarity_below_threshold_contributes_nothing(self):
+        recognizer = self._recognizer()
+        candidate = self._candidate()
+        candidate.memory_similarity = 0.95  # strength 0 -> inert
+        ranked = recognizer.fuse([candidate], self._hints(), [])
+        self.assertAlmostEqual(ranked[0].score, max(0.0, 0.93 - 0.89) * 200.0, places=4)
+
+    def test_memory_ranks_confirmed_card_above_equal_visual_impostor(self):
+        recognizer = self._recognizer()
+        confirmed = self._candidate(card_id="swsh3-106", visual=0.9300)
+        confirmed.memory_similarity = 0.99  # strength 1.0 -> +55
+        impostor = self._candidate(card_id="swsh3-107", visual=0.9301)
+        ranked = recognizer.fuse([impostor, confirmed], self._hints(), [])
+        self.assertEqual(ranked[0].card_id, "swsh3-106",
+                         "memória confirmada deve subir o ranking da carta correta")
+
+    def test_wrong_memory_never_beats_verification_evidence(self):
+        recognizer = self._recognizer()
+        from recognizer.features import Verification
+        true_card = self._candidate(card_id="swsh3-106", visual=0.90)
+        true_card.verification = Verification(inliers=40, matches=50, inlier_ratio=0.8,
+                                              reprojection_error=2.0, homography=None, method="sift")
+        wrong_memory_card = self._candidate(card_id="swsh3-107", visual=0.90)
+        wrong_memory_card.memory_similarity = 1.0  # strongest possible memory
+        ranked = recognizer.fuse([wrong_memory_card, true_card], self._hints(), [])
+        self.assertEqual(ranked[0].card_id, "swsh3-106",
+                         "memória errada não pode vencer evidência oficial (verificação)")
+
+    def test_memory_alone_never_reaches_identificado(self):
+        # Best possible memory (similarity 1.0 -> +55) with NO independent
+        # evidence: no verification, no OCR, visual at impostor level.
+        # decide() must stay below IDENTIFICADO (spec: memory alone caps at
+        # PROVAVEL/REVISAR; recognize()'s upgrade path also only lifts
+        # REVISAR -> PROVAVEL, never IDENTIFICADO).
+        recognizer = self._recognizer()
+        candidate = self._candidate(visual=0.886)  # impostor median similarity
+        candidate.memory_similarity = 1.0
+        hints = self._hints()
+        ranked = recognizer.fuse([candidate], hints, [])
+        decision, evidence = recognizer.decide(ranked, hints)
+        self.assertNotEqual(decision, "IDENTIFICADO")
+        self.assertIn(decision, ("REVISAR", "PROVAVEL", "NAO_IDENTIFICADO"))
+
+    def test_memory_dict_exposes_similarity(self):
+        payload = self._candidate().to_dict()
+        self.assertIsNone(payload["memorySimilarity"])
+        candidate = self._candidate()
+        candidate.memory_similarity = 0.98
+        self.assertEqual(candidate.to_dict()["memorySimilarity"], 0.98)

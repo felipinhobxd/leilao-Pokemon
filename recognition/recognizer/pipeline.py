@@ -66,6 +66,12 @@ class Candidate:
     # high.webp must not advertise the high.webp CDN URL (it 404s for them);
     # the service rewrites their imageUrl to the local /scan endpoint.
     scan_source: Optional[str] = None
+    # Confirmed-memory evidence (AUXILIARY, never decisive): similarity to the
+    # nearest USER-CONFIRMED example of exactly this card, or -1 when the
+    # memory did not hit this candidate. Explicit field so fuse() can fold it
+    # into the score — a plain score bonus set before fuse() was silently
+    # wiped by `candidate.score = sum(weights.values())`.
+    memory_similarity: float = -1.0
 
     def to_dict(self) -> dict:
         return {
@@ -90,6 +96,7 @@ class Candidate:
             "ocrHpMatch": self.ocr_hp_match,
             "imageUrl": self.image_url,
             "variant": self.variant,
+            "memorySimilarity": round(self.memory_similarity, 4) if self.memory_similarity >= 0 else None,
         }
 
 
@@ -416,6 +423,15 @@ class Recognizer:
             if hints.hp and candidate.hp == hints.hp:
                 candidate.ocr_hp_match = True
                 weights["ocr_hp"] = 6.0 * hints.hp_confidence
+            # Confirmed memory: AUXILIARY evidence folded in here (not before):
+            # bounded well below verification (220) and strong-name (60) tiers
+            # so memory alone can never produce IDENTIFICADO, while a strong
+            # memory hit on the correct card survives the score recomputation.
+            if candidate.memory_similarity >= 0:
+                from .config import MEMORY_MIN_SIMILARITY
+                strength = max(0.0, min(1.0, (candidate.memory_similarity - MEMORY_MIN_SIMILARITY) / 0.04))
+                if strength > 0:
+                    weights["confirmed_memory"] = 55.0 * strength
             candidate.score = sum(weights.values())
         return sorted(candidates, key=lambda c: -c.score)
 
@@ -531,21 +547,19 @@ class Recognizer:
             if key not in merged:
                 merged[key] = candidate
 
-        # Memory hit becomes a bounded prior on its confirmed card. Memory is
-        # AUXILIARY evidence: the boost is capped well below the verification
-        # (220) and strong-name (60) tiers and never overrides
-        # visual_similarity, so memory alone cannot produce IDENTIFICADO.
+        # Memory hit becomes bounded AUXILIARY evidence on its confirmed card.
+        # The similarity is stored on the candidate (memory_similarity) and
+        # weighted inside fuse(): the previous implementation added a score
+        # bonus here that fuse() immediately recomputed away, so memory never
+        # actually influenced the ranking.
         if memory_hit is not None:
-            from .config import MEMORY_MIN_SIMILARITY
             example, similarity = memory_hit.example, memory_hit.similarity
             record = self.catalog.card_by_key(example.language, example.card_id) if self.catalog else None
             if record is not None:
                 key = example.card_id + "|" + example.language
                 candidate = merged.get(key) or candidate_from_record(record)
-                strength = max(0.0, min(1.0, (similarity - MEMORY_MIN_SIMILARITY) / 0.04))
-                candidate.score = max(candidate.score, 55.0 * strength)
+                candidate.memory_similarity = max(candidate.memory_similarity, similarity)
                 merged[key] = candidate
-                result.evidence.append("confirmed-memory")
 
         # Geometric verification on the merged shortlist (route A candidates
         # first), plus route B candidates whose OCR text evidence (name AND
@@ -562,10 +576,11 @@ class Recognizer:
         # A high-similarity, unambiguous confirmed-memory example may upgrade a
         # REVISAR to PROVAVEL (never to IDENTIFICADO — that always requires
         # independent route evidence).
-        if (memory_hit is not None and "confirmed-memory" not in evidence
-                and decision == "REVISAR"):
-            evidence = ["confirmed-memory"] + evidence
-            decision = "PROVAVEL"
+        if memory_hit is not None:
+            if "confirmed-memory" not in evidence:
+                evidence = ["confirmed-memory"] + evidence
+            if decision == "REVISAR":
+                decision = "PROVAVEL"
         result.decision = decision
         result.evidence = evidence
         result.candidates = ranked

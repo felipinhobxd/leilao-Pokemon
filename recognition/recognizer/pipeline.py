@@ -101,6 +101,20 @@ class Candidate:
 
 
 @dataclass
+class ScanCacheEntry:
+    """Decoded official scan + the metadata the plain-ndarray cache lost.
+
+    Storing only `key -> ndarray` made cache HITs return the image WITHOUT
+    `scan_source`, so a second identification of the same card reverted its
+    imageUrl to the high.webp CDN URL — which 404s for exactly the cards that
+    resolved through low.webp / EN-mirror scans.
+    """
+    image: np.ndarray
+    source: Optional[str]
+    nbytes: int
+
+
+@dataclass
 class RecognitionResult:
     decision: str = "NAO_IDENTIFICADO"  # IDENTIFICADO | PROVAVEL | REVISAR | NAO_IDENTIFICADO
     best: Optional[Candidate] = None
@@ -263,7 +277,11 @@ class Recognizer:
                 cached = self._scan_cache.get(key)
                 if cached is not None:
                     self._scan_cache.move_to_end(key)
-                    return cached
+                    # The candidate that hit the cache is a NEW object: it must
+                    # inherit the source the loader discovered, or its
+                    # imageUrl regresses to high.webp (404 for low/mirror cards).
+                    candidate.scan_source = cached.source
+                    return cached.image
                 if key in self._scan_misses:
                     return None
                 event = self._scan_inflight.get(key)
@@ -300,11 +318,11 @@ class Recognizer:
                 if image is None:
                     self._scan_misses.add(key)
                     return None
-                self._scan_cache[key] = image
+                self._scan_cache[key] = ScanCacheEntry(image=image, source=source, nbytes=nbytes)
                 self._scan_cache_bytes += nbytes
                 while self._scan_cache and self._scan_cache_bytes > self.SCAN_CACHE_MAX_BYTES:
                     _, old = self._scan_cache.popitem(last=False)
-                    self._scan_cache_bytes -= int(old.nbytes)
+                    self._scan_cache_bytes -= old.nbytes
             return image
         finally:
             with self._lock:

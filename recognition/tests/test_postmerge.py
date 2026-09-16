@@ -27,6 +27,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import unittest
 
 import numpy as np
@@ -1071,6 +1072,129 @@ class TestHoughSingleLineShape(unittest.TestCase):
             _detect_quad_hough(image)
         except TypeError as exc:
             self.fail(f"_detect_quad_hough crashed: {exc}")
+
+
+# --------------------------------------------------------------------------- scan-source-on-cache-hit
+class TestScanSourceSurvivesCacheHit(unittest.TestCase):
+    """A decoded-scan cache HIT must restore candidate.scan_source.
+
+    The cache used to store key -> ndarray only. The FIRST request resolved
+    the scan (e.g. low.webp or an EN mirror) and set candidate.scan_source,
+    so the service rewrote imageUrl to the local /scan endpoint. The SECOND
+    request got the same image from the RAM cache but scan_source stayed
+    None, so imageUrl fell back to the high.webp CDN URL — which 404s for
+    exactly the cards that needed low/mirror resolution.
+    """
+
+    def _recognizer(self, max_bytes: int = 400 * 1024 * 1024):
+        recognizer = Recognizer.__new__(Recognizer)
+        recognizer._scan_cache = OrderedDict()
+        recognizer._scan_cache_bytes = 0
+        recognizer._scan_misses = set()
+        recognizer._scan_inflight = {}
+        recognizer._lock = threading.Lock()
+        recognizer.SCAN_CACHE_MAX_BYTES = max_bytes
+        recognizer.catalog = None  # resolve_scan path is monkeypatched below
+        return recognizer
+
+    def _with_fake_scan(self, recognizer, source: str):
+        import recognizer.pipeline as pipeline_module
+        original_fromfile = pipeline_module.np.fromfile
+        original_resolve = catalog_module.resolve_scan
+
+        class FakeRecord:
+            image_base = "https://assets.tcgdex.net/pt/me/me01/001"
+
+        class FakeCatalog:
+            def card_by_key(self, language, card_id):
+                return FakeRecord()
+
+        def fake_resolve(image_base):
+            return "/fake/scan.webp", source
+
+        def fake_fromfile(path, dtype=None):
+            import cv2 as cv2_mod
+            ok, buf = cv2_mod.imencode(".png", np.full((64, 64, 3), 200, np.uint8))
+            return np.frombuffer(buf.tobytes(), dtype=np.uint8)
+
+        recognizer.catalog = FakeCatalog()
+        pipeline_module.np.fromfile = fake_fromfile
+        catalog_module.resolve_scan = fake_resolve
+
+        def restore():
+            pipeline_module.np.fromfile = original_fromfile
+            catalog_module.resolve_scan = original_resolve
+        self.addCleanup(restore)
+
+    def _candidate(self) -> Candidate:
+        return Candidate(card_id="me01-001", language="pt-BR", set_id="me01",
+                         set_name="S", name="X", local_id="1", denominator=99, hp=None)
+
+    def test_low_webp_source_survives_second_request_from_ram_cache(self):
+        recognizer = self._recognizer()
+        self._with_fake_scan(recognizer, "low.webp")
+        first = self._candidate()
+        image1 = recognizer._scan_image(first)
+        self.assertIsNotNone(image1)
+        self.assertEqual(first.scan_source, "low.webp")
+        # Second request: RAM cache hit (resolve_scan is NOT called again)
+        second = self._candidate()
+        image2 = recognizer._scan_image(second)
+        self.assertIsNotNone(image2)
+        self.assertIs(image1, image2)
+        self.assertEqual(second.scan_source, "low.webp",
+                         "cache hit perdeu o scan_source: imageUrl voltaria para high.webp (404)")
+
+    def test_en_mirror_source_survives_second_request_from_ram_cache(self):
+        recognizer = self._recognizer()
+        self._with_fake_scan(recognizer, "en-high.webp")
+        first = self._candidate()
+        recognizer._scan_image(first)
+        self.assertEqual(first.scan_source, "en-high.webp")
+        second = self._candidate()
+        recognizer._scan_image(second)
+        self.assertEqual(second.scan_source, "en-high.webp")
+
+    def test_image_url_rewrite_stays_stable_across_requests(self):
+        """End-to-end intent: the service rewrites imageUrl for non-high.webp
+        sources; a cached second identification must keep the same URL."""
+        import importlib
+        server = importlib.import_module("recognition_server")
+
+        class Result:
+            def __init__(self, candidates):
+                self.candidates = candidates
+                self.best = candidates[0] if candidates else None
+
+        class FakeCandidate:
+            def __init__(self, scan_source):
+                self.card_id = "me01-001"
+                self.language = "pt-BR"
+                self.scan_source = scan_source
+                self.image_url = "https://assets.tcgdex.net/pt/me/me01/001/high.webp"
+        # Request 1: resolved through the EN mirror
+        first = FakeCandidate("en-low.webp")
+        server._rewrite_candidate_urls(Result([first]))
+        url_after_first = first.image_url
+        self.assertEqual(url_after_first, "/scan/pt-BR/me01-001")
+        # Request 2: same card, decoded-cache hit must carry the same source
+        second = FakeCandidate("en-low.webp")
+        server._rewrite_candidate_urls(Result([second]))
+        self.assertEqual(second.image_url, url_after_first)
+
+    def test_cache_entries_are_byte_bounded_with_sources(self):
+        recognizer = self._recognizer(max_bytes=1)  # evicts everything
+        self._with_fake_scan(recognizer, "low.webp")
+        first = self._candidate()
+        image1 = recognizer._scan_image(first)
+        self.assertEqual(first.scan_source, "low.webp")
+        # Budget of 1 byte forces eviction: a new candidate must re-load and
+        # still see the source (not a stale cache-only ndarray).
+        recognizer._scan_cache.clear()
+        recognizer._scan_cache_bytes = 0
+        second = self._candidate()
+        recognizer._scan_image(second)
+        self.assertEqual(second.scan_source, "low.webp")
 
 
 # --------------------------------------------------------------------------- scan-single-flight

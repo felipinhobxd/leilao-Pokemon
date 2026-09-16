@@ -23,6 +23,7 @@ import numpy as np
 import onnxruntime as ort
 
 from .config import MODELS_DIR
+from .ort_session import OrtSession
 
 _SESSION_OPTS = ort.SessionOptions()
 _SESSION_OPTS.intra_op_num_threads = max(1, (os.cpu_count() or 2))
@@ -196,8 +197,8 @@ class AlikedLightGlueMatcher:
     _instance_lock = threading.Lock()
 
     def __init__(self):
-        self._aliked: Optional[ort.InferenceSession] = None
-        self._lightglue: Optional[ort.InferenceSession] = None
+        self._aliked: Optional[OrtSession] = None
+        self._lightglue: Optional[OrtSession] = None
         self._lock = threading.Lock()
 
     def _ensure(self):
@@ -206,12 +207,10 @@ class AlikedLightGlueMatcher:
         with self._lock:
             if self._aliked is not None:
                 return
-            providers = [p for p in ("CUDAExecutionProvider", "DmlExecutionProvider", "CPUExecutionProvider")
-                         if p in ort.get_available_providers()]
-            self._aliked = ort.InferenceSession(os.path.join(MODELS_DIR, "aliked-n16-top1k-640.onnx"),
-                                                sess_options=_SESSION_OPTS, providers=providers)
-            self._lightglue = ort.InferenceSession(os.path.join(MODELS_DIR, "lightglue-aliked.onnx"),
-                                                   sess_options=_SESSION_OPTS, providers=providers)
+            # OrtSession: DirectML-safe options + serialized Run when the
+            # session really runs on DML (official EP constraints).
+            self._aliked = OrtSession(os.path.join(MODELS_DIR, "aliked-n16-top1k-640.onnx"))
+            self._lightglue = OrtSession(os.path.join(MODELS_DIR, "lightglue-aliked.onnx"))
 
     @staticmethod
     def _prep(image: np.ndarray) -> np.ndarray:

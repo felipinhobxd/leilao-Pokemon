@@ -24,6 +24,7 @@ import numpy as np
 import onnxruntime as ort
 
 from .config import MODELS_DIR
+from .ort_session import OrtSession
 
 _SESSION_OPTS = ort.SessionOptions()
 _SESSION_OPTS.intra_op_num_threads = max(1, (os.cpu_count() or 2))
@@ -103,8 +104,8 @@ class PpOcr:
     _instance_lock = threading.Lock()
 
     def __init__(self):
-        self._det: Optional[ort.InferenceSession] = None
-        self._rec: Optional[ort.InferenceSession] = None
+        self._det: Optional[OrtSession] = None
+        self._rec: Optional[OrtSession] = None
         self._charset: list[str] = []
         self._lock = threading.Lock()
 
@@ -121,6 +122,18 @@ class PpOcr:
         """True once the det/rec ONNX sessions exist (readiness reporting)."""
         return self._det is not None and self._rec is not None
 
+    @property
+    def provider(self) -> str:
+        """Actual execution provider of the detector session ("" if lazy).
+
+        det and rec are created through the same OrtSession factory, so both
+        follow the same DirectML-safety rules; ORT silently falls back to CPU
+        when a provider cannot init, so this must be read from the session,
+        not from get_available_providers()."""
+        if self._det is None:
+            return ""
+        return self._det.provider
+
     def warm(self) -> None:
         """Load the ONNX sessions eagerly (startup/health readiness)."""
         self._ensure()
@@ -131,12 +144,11 @@ class PpOcr:
         with self._lock:
             if self._det is not None:
                 return
-            providers = [p for p in ("CUDAExecutionProvider", "DmlExecutionProvider", "CPUExecutionProvider")
-                         if p in ort.get_available_providers()]
-            self._det = ort.InferenceSession(os.path.join(MODELS_DIR, "ppocrv6-medium-det.onnx"),
-                                             sess_options=_SESSION_OPTS, providers=providers)
-            self._rec = ort.InferenceSession(os.path.join(MODELS_DIR, "ppocrv6-medium-rec.onnx"),
-                                             sess_options=_SESSION_OPTS, providers=providers)
+            # OrtSession applies the DirectML-safety rules (no memory
+            # patterns, sequential execution, serialized Run on DML) and keeps
+            # plain CPU behavior otherwise. det and rec share the same class.
+            self._det = OrtSession(os.path.join(MODELS_DIR, "ppocrv6-medium-det.onnx"))
+            self._rec = OrtSession(os.path.join(MODELS_DIR, "ppocrv6-medium-rec.onnx"))
             charset_path = os.path.join(MODELS_DIR, "ppocrv6-charset.txt")
             with open(charset_path, encoding="utf-8") as fh:
                 chars = [line.rstrip("\n") for line in fh]

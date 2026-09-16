@@ -128,23 +128,30 @@ def health():
     recognizer = _state["recognizer"]
     catalog_size = len(_state["store"].cards) if _state["store"] else 0
     index_size = len(recognizer.index.ids) if recognizer else 0
-    models_loaded = bool(recognizer and recognizer.ocr_ready and recognizer.index.model is not None)
+    # Strict readiness: catalog + embedding index + embedding session + OCR
+    # sessions. A lazy component that has not been warmed yet means the first
+    # photo would stall for seconds — that is NOT ready.
+    models_loaded = bool(recognizer and recognizer.embedding_ready and recognizer.ocr_ready)
     ready = bool(recognizer and index_size > 0 and models_loaded)
     import onnxruntime as ort
-    return {
+    payload = {
         "status": "ok",
         # ready=true only when the recognition pipeline can actually serve:
-        # catalog + embedding index + OCR sessions all loaded. Clients must
-        # use the local pipeline only when ready (status=ok alone just means
-        # the process is alive).
+        # catalog + embedding index + ALL model sessions loaded (warm). Clients
+        # must use the local pipeline only when ready (status=ok alone just
+        # means the process is alive).
         "ready": ready,
         "service": "pokemon-card-recognition",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "uptimeSec": int(time.time() - _state["started"]),
         "requests": _state["requests"],
         "errors": _state["errors"],
         "backend": {
             "providers": ort.get_available_providers(),
+            # What each session ACTUALLY runs on right now: ORT silently falls
+            # back to CPU when DML/CUDA cannot init, so availableProviders is
+            # NOT evidence of GPU use. Fallbacks are visible here per model.
+            "runtimeProviders": recognizer.runtime_providers() if recognizer else {},
             "embedding": os.environ.get("RECOGNITION_EMBEDDING", DEFAULT_EMBEDDING),
             "matcher": os.environ.get("RECOGNITION_MATCHER", "sift"),
             "ocr": "ppocrv6-medium",
@@ -154,6 +161,14 @@ def health():
         "modelsLoaded": models_loaded,
         "memory": {"examples": len(memory_module.load_examples())},
     }
+    if recognizer is not None:
+        # Cache observability: hit ratios + byte footprints, so tuning
+        # decisions on the target machine use numbers instead of guesses.
+        try:
+            payload["caches"] = recognizer.cache_stats()
+        except Exception:  # noqa: BLE001
+            payload["caches"] = {"error": "unavailable"}
+    return payload
 
 
 def _rewrite_candidate_urls(result) -> None:

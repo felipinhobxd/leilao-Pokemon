@@ -278,11 +278,33 @@ class Recognizer:
         """OCR sessions loaded (readiness reporting for /health)."""
         return self.ocr is not None and self.ocr.loaded
 
+    @property
+    def embedding_ready(self) -> bool:
+        """Embedding session loaded (readiness reporting for /health)."""
+        return self.index is not None and self.index.model is not None and self.index.model.loaded
+
     def warm(self) -> None:
-        """Eagerly load every lazy component (embedding index is loaded at
-        construction; OCR det/rec sessions load here). Used by --preload and
-        by readiness probing."""
+        """Eagerly load EVERY lazy component. The index matrix is loaded at
+        construction, but the embedding ONNX session and the OCR det/rec
+        sessions are lazy: without this, ready=true would still mean a
+        multi-second stall on the FIRST photo (session creation + graph
+        optimization). Used by --preload and by readiness probing: after
+        warm() returns, the next photo can be served at full speed."""
+        if self.index is not None and self.index.model is not None:
+            self.index.model.warm()
         self.ocr.warm()
+
+    def runtime_providers(self) -> dict:
+        """Per-session ACTUAL providers for /health: what each model really
+        runs on right now (ORT can silently fall back to CPU)."""
+        embedding = self.index.model.provider if self.index is not None and self.index.model is not None else ""
+        ocr_detector = self.ocr.provider if self.ocr is not None else ""
+        ocr_recognizer = ""
+        if self.ocr is not None and self.ocr._rec is not None:
+            ocr_recognizer = self.ocr._rec.provider
+        return {"embedding": embedding or "not-loaded",
+                "ocrDetector": ocr_detector or "not-loaded",
+                "ocrRecognizer": ocr_recognizer or "not-loaded"}
 
     # ------------------------------------------------------------- scan access
     # Byte-bounded FIFO cache of decoded candidate scans. Entry-count bounds

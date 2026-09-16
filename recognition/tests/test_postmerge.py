@@ -1132,3 +1132,16 @@ class TestScanSingleFlight(unittest.TestCase):
                 self.assertIsNotNone(image)
         finally:
             pipeline_module.np.fromfile = original
+
+    def test_example_ids_never_collide_within_the_same_millisecond(self):
+        # Two DIFFERENT cards confirmed back-to-back used to get the same
+        # time-based id, so removing one deleted both.
+        first = memory_module.add_example({"cardId": "a", "language": "pt-BR", "name": "X"},
+                                          fake_png(4096), np.array([[1.0, 0.0]]))
+        second = memory_module.add_example({"cardId": "b", "language": "pt-BR", "name": "Y"},
+                                           fake_png(4100), np.array([[0.0, 1.0]]))
+        self.assertNotEqual(first.id, second.id)
+        remaining = memory_module.remove_example(second.id)
+        self.assertEqual(remaining, 1)
+        survivors = [e.card_id for e in memory_module.load_examples()]
+        self.assertEqual(survivors, ["a"])

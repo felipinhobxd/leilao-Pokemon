@@ -127,7 +127,10 @@ def add_example(card: dict, image_bytes: bytes, embedding: np.ndarray, note: str
                          and _example_digest(e) == digest), None)
         if existing is not None:
             return existing
-        example_id = f"mem-{int(time.time() * 1000)}"
+        # Collision-proof id: the old time-based id collided when two
+        # confirmations landed in the same millisecond (batch UI), which made
+        # remove_example() delete BOTH examples at once.
+        example_id = f"mem-{int(time.time() * 1000)}-{os.urandom(5).hex()}"
         image_file = f"{example_id}.jpg"
         path = os.path.join(MEMORY_IMAGES, image_file)
         tmp = path + ".tmp"

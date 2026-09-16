@@ -960,3 +960,93 @@ class TestEmbeddingReuse(unittest.TestCase):
         candidates, orientation, view_embeddings, raw_rows = recognizer.route_a(card, return_views=True)
         self.assertIsNotNone(view_embeddings)
         self.assertEqual(raw_rows, [0, 2], "raw rows must be the first view of each orientation")
+
+
+# --------------------------------------------------------------------------- memory-api
+class TestMemoryApiHardening(unittest.TestCase):
+    """Memory mutations must be atomic and concurrency-safe across all three
+    stores (memory.json / memory-embeddings.npz / memory-images/)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="rec-memapi-")
+        self._orig = (memory_module.MEMORY_FILE, memory_module.MEMORY_EMBEDDINGS, memory_module.MEMORY_IMAGES)
+        memory_module.MEMORY_FILE = os.path.join(self.tmp, "memory.json")
+        memory_module.MEMORY_EMBEDDINGS = os.path.join(self.tmp, "memory-embeddings.npz")
+        memory_module.MEMORY_IMAGES = os.path.join(self.tmp, "memory-images")
+        os.makedirs(memory_module.MEMORY_IMAGES, exist_ok=True)
+
+    def tearDown(self):
+        memory_module.MEMORY_FILE, memory_module.MEMORY_EMBEDDINGS, memory_module.MEMORY_IMAGES = self._orig
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _card(self, card_id):
+        return {"cardId": card_id, "language": "pt-BR", "name": "X"}
+
+    def _state_consistent(self):
+        examples = memory_module.load_examples()
+        ids, matrix = memory_module._load_embeddings()
+        return (sorted(e.id for e in examples) == sorted(ids)
+                and matrix.shape[0] == len(ids))
+
+    def test_remove_example_cleans_all_three_stores(self):
+        memory_module.add_example(self._card("a"), fake_png(5000), np.array([[1.0, 0.0]]))
+        second = memory_module.add_example(self._card("b"), fake_png(6000), np.array([[0.0, 1.0]]))
+        remaining = memory_module.remove_example(second.id)
+        self.assertEqual(remaining, 1)
+        self.assertTrue(self._state_consistent())
+        self.assertFalse(os.path.exists(os.path.join(memory_module.MEMORY_IMAGES, second.image_file)))
+        with self.assertRaises(KeyError):
+            memory_module.remove_example(second.id)
+
+    def test_concurrent_confirm_delete_stay_consistent(self):
+        import threading
+        seeded = memory_module.add_example(self._card("seed"), fake_png(4096),
+                                           np.array([[1.0, 0.0]]))
+        errors = []
+
+        def confirm_worker(i):
+            try:
+                memory_module.add_example(self._card(f"c{i}"), fake_png(4096 + i),
+                                          np.array([[1.0, float(i + 1) / 100]]))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        def delete_worker():
+            try:
+                memory_module.remove_example(seeded.id)
+            except KeyError:
+                pass  # already removed by the other delete worker
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=confirm_worker, args=(i,)) for i in range(6)]
+        threads += [threading.Thread(target=delete_worker) for _ in range(2)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        self.assertEqual(errors, [])
+        self.assertTrue(self._state_consistent(),
+                        "confirm/delete concorrentes deixaram arquivos inconsistentes")
+
+    def test_delete_never_resurrects_a_removed_example(self):
+        first = memory_module.add_example(self._card("a"), fake_png(4096), np.array([[1.0, 0.0]]))
+        memory_module.remove_example(first.id)
+        # A confirm that started BEFORE the delete must not re-add the removed
+        # id: its own id is fresh (time-based), so a later confirm is safe.
+        second = memory_module.add_example(self._card("a"), fake_png(5000), np.array([[1.0, 0.0]]))
+        self.assertNotEqual(first.id, second.id)
+        self.assertEqual(len(memory_module.load_examples()), 1)
+
+    def test_decode_upload_limits(self):
+        # Structural: the server enforces size/dimension/content limits with
+        # explicit HTTP codes before any heavy work.
+        server = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                   "recognition_server.py"), encoding="utf-8").read()
+        self.assertIn("max_bytes: int = 25 * 1024 * 1024", server)
+        self.assertIn("max_side: int = 12000", server)
+        self.assertIn("status_code=413", server)
+        self.assertIn("status_code=400, detail=\"Arquivo enviado não é uma imagem válida\"", server)
+        # /memory/confirm checks the size BEFORE decode (same budget as /recognize)
+        confirm_section = server[server.index("@app.post(\"/memory/confirm\")"):]
+        self.assertIn("len(data) > 25 * 1024 * 1024", confirm_section)
+        self.assertLess(confirm_section.index("len(data) > 25 * 1024 * 1024"),
+                        confirm_section.index("decode_upload(data)"))

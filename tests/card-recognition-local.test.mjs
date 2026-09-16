@@ -23,8 +23,11 @@ test("local service client probes health, degrades to browser pipeline, never fa
   assert.match(local, /statusCache = \{ status: "offline", checkedAt: Date\.now\(\) \}/);
   // No localhost wildcard CORS: the service only accepts same-machine origins.
   assert.doesNotMatch(local, /allow_origins: \["\*"\]/);
-  // The pipeline is only used once the service reports readiness, not just liveness.
-  assert.match(local, /health\.ready === false/);
+  // The pipeline is only used once the service reports readiness, not just
+  // liveness - and readiness is STRICT: ready must be exactly true.
+  // undefined/null/missing (partial JSON, older service) must NOT pass.
+  assert.match(local, /health\.ready !== true/);
+  assert.doesNotMatch(local, /health\.ready === false/);
   // Batch photos queue client-side instead of firing 50 simultaneous requests.
   assert.match(local, /createRecognitionScheduler/);
   assert.match(local, /queueStatusMessage/);
@@ -32,8 +35,8 @@ test("local service client probes health, degrades to browser pipeline, never fa
 
 test("OCR is never the gatekeeper in the local pipeline: visual route runs independently", () => {
   // Route A (visual retrieval) executes before OCR and never requires OCR hints.
-  assert.match(pipeline, /route_a_candidates, orientation = self\.route_a\(card\)/);
-  assert.match(pipeline, /hints, route_b_candidates = self\.route_b\(card, orientation\)/);
+  assert.match(pipeline, /route_a_candidates, orientation, view_embeddings, raw_rows = self\.route_a\(card, return_views=True\)/);
+  assert.match(pipeline, /hints, route_b_candidates, ocr_passes = self\.route_b\(card, orientation, minimal=fast_path/);
   // OCR failure does not empty the candidate pool: route A candidates merge first.
   assert.match(pipeline, /for candidate in route_a_candidates:/);
   // Geometric verification (RANSAC homography) is near-conclusive evidence.

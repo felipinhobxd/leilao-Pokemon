@@ -95,9 +95,11 @@ export async function probeLocalService(force = false): Promise<LocalServiceStat
       if (!response.ok) throw new Error(`health ${response.status}`);
       const health = (await response.json()) as ServiceHealth;
       // status=ok only means the process is alive; the pipeline is usable
-      // only once the models + index are loaded (ready).
+      // only once the models + index are loaded. STRICT contract: ready must
+      // be exactly true — undefined/null/missing (partial JSON, older service)
+      // must be treated as NOT usable, never as ready.
       if (health?.status !== "ok") throw new Error("health inválido");
-      if (health.ready === false) throw new Error("serviço aquecendo (ready=false)");
+      if (health.ready !== true) throw new Error("serviço não pronto (ready != true)");
       statusCache = { status: "online", checkedAt: Date.now(), health };
     } catch {
       statusCache = { status: "offline", checkedAt: Date.now() };

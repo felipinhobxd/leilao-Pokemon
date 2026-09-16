@@ -230,6 +230,11 @@ class Recognizer:
         self._scan_cache = OrderedDict()  # key -> decoded scan (FIFO, byte-bounded)
         self._scan_cache_bytes = 0
         self._scan_misses: set[str] = set()
+        # Single-flight: key -> Event for an IN-PROGRESS scan load. With
+        # RECOGNITION_MAX_CONCURRENCY > 1 (or /scan + recognize racing), N
+        # threads requesting the same miss would each download/decode it; the
+        # first one works and the rest wait on the event, then read the cache.
+        self._scan_inflight: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
 
     @property
@@ -253,41 +258,58 @@ class Recognizer:
 
     def _scan_image(self, candidate: "Candidate") -> Optional[np.ndarray]:
         key = f"{candidate.language}|{candidate.card_id}"
-        with self._lock:
-            cached = self._scan_cache.get(key)
-            if cached is not None:
-                self._scan_cache.move_to_end(key)
-                return cached
-            if key in self._scan_misses:
-                return None
-        image = None
-        source: Optional[str] = None
-        if self.catalog is not None:
-            from .catalog import resolve_scan
-            record = self.catalog.card_by_key(candidate.language, candidate.card_id)
-            if record is not None and record.image_base:
-                resolved = resolve_scan(record.image_base)
-                if resolved is not None:
-                    path, source = resolved
-                    data = np.fromfile(path, dtype=np.uint8)
-                    image = cv2.imdecode(data, cv2.IMREAD_COLOR)
-                    if image is None:
-                        # truncated/corrupt file that passed the magic-byte
-                        # check: treat as a miss, never serve it
-                        path, source, image = None, None, None
-        if image is not None:
-            candidate.scan_source = source
-        nbytes = int(image.nbytes) if image is not None else 0
-        with self._lock:
-            if image is None:
-                self._scan_misses.add(key)
-                return None
-            self._scan_cache[key] = image
-            self._scan_cache_bytes += nbytes
-            while self._scan_cache and self._scan_cache_bytes > self.SCAN_CACHE_MAX_BYTES:
-                _, old = self._scan_cache.popitem(last=False)
-                self._scan_cache_bytes -= int(old.nbytes)
-        return image
+        while True:
+            with self._lock:
+                cached = self._scan_cache.get(key)
+                if cached is not None:
+                    self._scan_cache.move_to_end(key)
+                    return cached
+                if key in self._scan_misses:
+                    return None
+                event = self._scan_inflight.get(key)
+                if event is None:
+                    # First requester for this miss: own the load. Waiters hold
+                    # a direct reference to this event, so it can be set after
+                    # the registry entry is popped.
+                    event = threading.Event()
+                    self._scan_inflight[key] = event
+                    break
+            # Another thread is loading this exact scan: wait for it (never
+            # under the lock) and re-check the cache/miss sets afterwards.
+            event.wait()
+        try:
+            image = None
+            source: Optional[str] = None
+            if self.catalog is not None:
+                from .catalog import resolve_scan
+                record = self.catalog.card_by_key(candidate.language, candidate.card_id)
+                if record is not None and record.image_base:
+                    resolved = resolve_scan(record.image_base)
+                    if resolved is not None:
+                        path, source = resolved
+                        data = np.fromfile(path, dtype=np.uint8)
+                        image = cv2.imdecode(data, cv2.IMREAD_COLOR)
+                        if image is None:
+                            # truncated/corrupt file that passed the magic-byte
+                            # check: treat as a miss, never serve it
+                            path, source, image = None, None, None
+            if image is not None:
+                candidate.scan_source = source
+            nbytes = int(image.nbytes) if image is not None else 0
+            with self._lock:
+                if image is None:
+                    self._scan_misses.add(key)
+                    return None
+                self._scan_cache[key] = image
+                self._scan_cache_bytes += nbytes
+                while self._scan_cache and self._scan_cache_bytes > self.SCAN_CACHE_MAX_BYTES:
+                    _, old = self._scan_cache.popitem(last=False)
+                    self._scan_cache_bytes -= int(old.nbytes)
+            return image
+        finally:
+            with self._lock:
+                self._scan_inflight.pop(key, None)
+            event.set()
 
     # ---------------------------------------------------------------- route B
     def route_b(self, card: NormalizedCard, orientation: str = "0", minimal: bool = False,

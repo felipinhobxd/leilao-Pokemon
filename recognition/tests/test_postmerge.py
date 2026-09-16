@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import inspect
 import json
+from collections import OrderedDict
 import os
 import shutil
 import sys
@@ -1070,3 +1071,64 @@ class TestHoughSingleLineShape(unittest.TestCase):
             _detect_quad_hough(image)
         except TypeError as exc:
             self.fail(f"_detect_quad_hough crashed: {exc}")
+
+
+# --------------------------------------------------------------------------- scan-single-flight
+class TestScanSingleFlight(unittest.TestCase):
+    """Concurrent misses on the same scan key must trigger exactly ONE
+    download+decode (the other threads wait on the event and read the cache)."""
+
+    def test_parallel_misses_load_once(self):
+        import threading
+        import cv2 as cv2_mod
+        recognizer = Recognizer.__new__(Recognizer)
+        recognizer._scan_cache = OrderedDict()
+        recognizer._scan_cache_bytes = 0
+        recognizer._scan_misses = set()
+        recognizer._scan_inflight = {}
+        recognizer._lock = threading.Lock()
+        recognizer.catalog = object()
+        recognizer.SCAN_CACHE_MAX_BYTES = 400 * 1024 * 1024
+        loads = []
+        load_event = threading.Event()
+
+        class FakeRecord:
+            image_base = "https://assets.tcgdex.net/pt/me/me01/001"
+
+        class FakeCatalog:
+            def card_by_key(self, language, card_id):
+                return FakeRecord()
+
+        def fake_resolve(image_base):
+            loads.append(image_base)
+            load_event.wait(timeout=5)  # hold the first load so rivals pile up
+            return "/fake/scan.webp", "high.webp"
+
+        recognizer.catalog = FakeCatalog()
+        import recognizer.pipeline as pipeline_module
+        original = pipeline_module.np.fromfile
+
+        def fake_fromfile(path, dtype=None):
+            # np.fromfile returns an ndarray; cv2.imdecode rejects plain bytes.
+            load_event.set()
+            ok, buf = cv2_mod.imencode(".png", np.zeros((100, 100, 3), np.uint8))
+            return np.frombuffer(buf.tobytes(), dtype=np.uint8)
+
+        pipeline_module.np.fromfile = fake_fromfile
+        import recognizer.catalog as catalog_module
+        catalog_module.resolve_scan = fake_resolve
+        try:
+            results = {}
+            def worker(i):
+                candidate = Candidate(card_id="me01-001", language="pt-BR", set_id="me01",
+                                      set_name="S", name="X", local_id="1", denominator=99, hp=None)
+                results[i] = recognizer._scan_image(candidate)
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
+            for t in threads: t.start()
+            for t in threads: t.join(timeout=10)
+            self.assertEqual(len(loads), 1, f"esperava 1 download, houve {len(loads)}")
+            self.assertEqual(len(results), 4)
+            for image in results.values():
+                self.assertIsNotNone(image)
+        finally:
+            pipeline_module.np.fromfile = original

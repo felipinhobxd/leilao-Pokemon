@@ -690,7 +690,8 @@ class TestMemoryFusionWeight(unittest.TestCase):
         from recognizer.features import Verification
         true_card = self._candidate(card_id="swsh3-106", visual=0.90)
         true_card.verification = Verification(inliers=40, matches=50, inlier_ratio=0.8,
-                                              reprojection_error=2.0, homography=None, method="sift")
+                                              reprojection_error=2.0,
+                                              homography=np.eye(3, dtype=np.float32), method="sift")
         wrong_memory_card = self._candidate(card_id="swsh3-107", visual=0.90)
         wrong_memory_card.memory_similarity = 1.0  # strongest possible memory
         ranked = recognizer.fuse([wrong_memory_card, true_card], self._hints(), [])

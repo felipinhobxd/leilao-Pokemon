@@ -1169,7 +1169,10 @@ class TestScanSourceSurvivesCacheHit(unittest.TestCase):
         """End-to-end intent: the service rewrites imageUrl for non-high.webp
         sources; a cached second identification must keep the same URL."""
         import importlib
-        server = importlib.import_module("recognition_server")
+        try:
+            server = importlib.import_module("recognition_server")
+        except ModuleNotFoundError as exc:  # CI light env: no fastapi/uvicorn
+            self.skipTest(f"recognition_server deps not installed ({exc.name})")
 
         class Result:
             def __init__(self, candidates):

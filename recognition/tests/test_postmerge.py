@@ -1090,17 +1090,27 @@ class TestScanSourceSurvivesCacheHit(unittest.TestCase):
         recognizer = Recognizer.__new__(Recognizer)
         recognizer._scan_cache = OrderedDict()
         recognizer._scan_cache_bytes = 0
-        recognizer._scan_misses = set()
+        recognizer._scan_misses = {}
         recognizer._scan_inflight = {}
         recognizer._lock = threading.Lock()
         recognizer.SCAN_CACHE_MAX_BYTES = max_bytes
+        recognizer._scan_cache_hits = 0
+        recognizer._scan_loads = 0
+        recognizer._scan_miss_hits = 0
+        recognizer._scan_evictions = 0
+        recognizer._sift_cache = OrderedDict()
+        recognizer._sift_cache_bytes = 0
+        recognizer._sift_cache_hits = 0
+        recognizer._sift_extractions = 0
+        recognizer._sift_evictions = 0
+        recognizer.SIFT_CACHE_MAX_BYTES = 128 * 1024 * 1024
         recognizer.catalog = None  # resolve_scan path is monkeypatched below
         return recognizer
 
     def _with_fake_scan(self, recognizer, source: str):
         import recognizer.pipeline as pipeline_module
         original_fromfile = pipeline_module.np.fromfile
-        original_resolve = catalog_module.resolve_scan
+        original_resolve = catalog_module.resolve_scan_classified
 
         class FakeRecord:
             image_base = "https://assets.tcgdex.net/pt/me/me01/001"
@@ -1110,7 +1120,7 @@ class TestScanSourceSurvivesCacheHit(unittest.TestCase):
                 return FakeRecord()
 
         def fake_resolve(image_base):
-            return "/fake/scan.webp", source
+            return (("/fake/scan.webp", source), "ok")
 
         def fake_fromfile(path, dtype=None):
             import cv2 as cv2_mod
@@ -1119,11 +1129,11 @@ class TestScanSourceSurvivesCacheHit(unittest.TestCase):
 
         recognizer.catalog = FakeCatalog()
         pipeline_module.np.fromfile = fake_fromfile
-        catalog_module.resolve_scan = fake_resolve
+        catalog_module.resolve_scan_classified = fake_resolve
 
         def restore():
             pipeline_module.np.fromfile = original_fromfile
-            catalog_module.resolve_scan = original_resolve
+            catalog_module.resolve_scan_classified = original_resolve
         self.addCleanup(restore)
 
     def _candidate(self) -> Candidate:
@@ -1208,9 +1218,13 @@ class TestScanSingleFlight(unittest.TestCase):
         recognizer = Recognizer.__new__(Recognizer)
         recognizer._scan_cache = OrderedDict()
         recognizer._scan_cache_bytes = 0
-        recognizer._scan_misses = set()
+        recognizer._scan_misses = {}
         recognizer._scan_inflight = {}
         recognizer._lock = threading.Lock()
+        recognizer._scan_cache_hits = 0
+        recognizer._scan_loads = 0
+        recognizer._scan_miss_hits = 0
+        recognizer._scan_evictions = 0
         recognizer.catalog = object()
         recognizer.SCAN_CACHE_MAX_BYTES = 400 * 1024 * 1024
         loads = []
@@ -1226,7 +1240,7 @@ class TestScanSingleFlight(unittest.TestCase):
         def fake_resolve(image_base):
             loads.append(image_base)
             load_event.wait(timeout=5)  # hold the first load so rivals pile up
-            return "/fake/scan.webp", "high.webp"
+            return (("/fake/scan.webp", "high.webp"), "ok")
 
         recognizer.catalog = FakeCatalog()
         import recognizer.pipeline as pipeline_module
@@ -1240,7 +1254,7 @@ class TestScanSingleFlight(unittest.TestCase):
 
         pipeline_module.np.fromfile = fake_fromfile
         import recognizer.catalog as catalog_module
-        catalog_module.resolve_scan = fake_resolve
+        catalog_module.resolve_scan_classified = fake_resolve
         try:
             results = {}
             def worker(i):

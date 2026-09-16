@@ -18,6 +18,7 @@ FUSION:
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections import OrderedDict
@@ -28,7 +29,7 @@ import numpy as np
 
 from .config import DEFAULT_EMBEDDING, DEFAULT_CALIBRATION, EMBEDDING_CALIBRATION, TOPK, VERIFY_CANDIDATES
 from .embed import get_model
-from .features import Verification, get_matcher
+from .features import SiftFeatures, Verification, get_matcher
 from .hints import OcrHints, extract_hints, name_similarity
 from .normalize import NormalizedCard, normalize_card, photometric_variants
 from .ocr import PpOcr
@@ -241,15 +242,36 @@ class Recognizer:
         self.index = VisualIndex(embedding_name)
         self.matcher = get_matcher(matcher_name)
         self.ocr = PpOcr.instance()
-        self._scan_cache = OrderedDict()  # key -> decoded scan (FIFO, byte-bounded)
+        self._scan_cache = OrderedDict()  # key -> ScanCacheEntry (FIFO, byte-bounded)
         self._scan_cache_bytes = 0
-        self._scan_misses: set[str] = set()
+        # key -> expiry epoch-seconds. TTL-classified negative cache:
+        # 404 gaps live 6 h, rate-limits 60 s, transient failures 120 s.
+        self._scan_misses: dict[str, float] = {}
         # Single-flight: key -> Event for an IN-PROGRESS scan load. With
         # RECOGNITION_MAX_CONCURRENCY > 1 (or /scan + recognize racing), N
         # threads requesting the same miss would each download/decode it; the
         # first one works and the rest wait on the event, then read the cache.
         self._scan_inflight: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
+        # Cache observability (surfaced on /health so tuning decisions use
+        # numbers, not guesses). hits = decoded-RAM hits; loads = downloads+
+        # decodes actually performed; missHits = negative-cache hits (skipped
+        # loads); evictions = byte-budget evictions.
+        self._scan_cache_hits = 0
+        self._scan_loads = 0
+        self._scan_miss_hits = 0
+        self._scan_evictions = 0
+        # LRU byte-bounded cache of SIFT features extracted from OFFICIAL
+        # SCANS (query features are per-request and never cached here). A
+        # scan's descriptors are deterministic for the lifetime of the decoded
+        # file, so a re-photographed card skips its ~20-60 ms detectAndCompute.
+        # Keyed by language|cardId|scanSource (a re-resolution to a different
+        # quality/mirror is a different image and must not reuse features).
+        self._sift_cache: OrderedDict[str, SiftFeatures] = OrderedDict()
+        self._sift_cache_bytes = 0
+        self._sift_cache_hits = 0
+        self._sift_extractions = 0
+        self._sift_evictions = 0
 
     @property
     def ocr_ready(self) -> bool:
@@ -268,7 +290,84 @@ class Recognizer:
     # 400 entries can hold gigabytes on a memory-tight machine (OOM observed
     # at 3.5 GB RSS). The budget keeps the whole service under ~1 GB of scan
     # memory while still covering the per-request verification working set.
-    SCAN_CACHE_MAX_BYTES = 400 * 1024 * 1024
+    # Tunable via RECOGNITION_SCAN_CACHE_MB on the target machine (256/400/512
+    # are the interesting values; default keeps the measured-safe 400 MB).
+    SCAN_CACHE_MAX_BYTES = int(os.environ.get("RECOGNITION_SCAN_CACHE_MB", "400")) * 1024 * 1024
+
+    # Negative cache with per-reason TTL (epoch-seconds expiry). The old
+    # plain set remembered misses FOREVER: one timeout at 09:00 hid a
+    # perfectly downloadable scan until the process restarted. Classes:
+    #   not-found    every URL in the chain 404'd -> definitive CDN gap, 6 h;
+    #   rate-limited 429                              -> short backoff,  60 s;
+    #   transient    timeout / 5xx / HTML-200 / decode-> retry soon,    120 s.
+    # Every TTL is shorter than the old "forever", so this only ever retries
+    # MORE, never less.
+    MISS_TTL_NOT_FOUND = 6 * 3600.0
+    MISS_TTL_RATE_LIMITED = 60.0
+    MISS_TTL_TRANSIENT = 120.0
+
+    def _miss_ttl(self, reason: str) -> float:
+        if reason == "not-found" or reason == "no-base":
+            return self.MISS_TTL_NOT_FOUND
+        if reason == "rate-limited":
+            return self.MISS_TTL_RATE_LIMITED
+        return self.MISS_TTL_TRANSIENT
+
+    # SIFT feature cache budget. Descriptors are ~1 MB per scan worst case
+    # (2000 kpts x 128 float32) but typically 200-600 KB after the 512 px
+    # prepping; 128 MB covers the per-request verification working set many
+    # times over while staying far below the decoded-scan budget. Tunable via
+    # RECOGNITION_SIFT_CACHE_MB (0 disables the cache entirely).
+    SIFT_CACHE_MAX_BYTES = int(os.environ.get("RECOGNITION_SIFT_CACHE_MB", "128")) * 1024 * 1024
+
+    def _scan_sift_features(self, candidate: "Candidate", scan: np.ndarray) -> Optional[SiftFeatures]:
+        """SIFT features of an official scan, through the LRU cache.
+
+        With the cache disabled (RECOGNITION_SIFT_CACHE_MB=0) the features are
+        still extracted — the QUERY-side reuse (one extract per probe instead
+        of one per candidate) does not depend on this cache at all."""
+        if self.SIFT_CACHE_MAX_BYTES <= 0:
+            return self.matcher.extract(scan)
+        key = f"{candidate.language}|{candidate.card_id}|{candidate.scan_source or '-'}"
+        with self._lock:
+            cached = self._sift_cache.get(key)
+            if cached is not None:
+                self._sift_cache.move_to_end(key)
+                self._sift_cache_hits += 1
+                return cached
+        features = self.matcher.extract(scan)
+        with self._lock:
+            # Another thread may have won the race; keep the first entry to
+            # stay deterministic (identical content either way).
+            if key not in self._sift_cache:
+                self._sift_cache[key] = features
+                self._sift_cache_bytes += features.nbytes
+                self._sift_extractions += 1
+                while self._sift_cache and self._sift_cache_bytes > self.SIFT_CACHE_MAX_BYTES:
+                    _, old = self._sift_cache.popitem(last=False)
+                    self._sift_cache_bytes -= old.nbytes
+                    self._sift_evictions += 1
+            else:
+                self._sift_cache.move_to_end(key)
+        return self._sift_cache[key]
+
+    def cache_stats(self) -> dict:
+        """Cache observability for /health: hit ratios + byte footprints."""
+        with self._lock:
+            return {
+                "scanCache": {
+                    "hits": self._scan_cache_hits, "loads": self._scan_loads,
+                    "negativeHits": self._scan_miss_hits, "evictions": self._scan_evictions,
+                    "entries": len(self._scan_cache), "bytes": self._scan_cache_bytes,
+                    "maxBytes": self.SCAN_CACHE_MAX_BYTES,
+                },
+                "siftFeatureCache": {
+                    "hits": self._sift_cache_hits, "extractions": self._sift_extractions,
+                    "evictions": self._sift_evictions,
+                    "entries": len(self._sift_cache), "bytes": self._sift_cache_bytes,
+                    "maxBytes": self.SIFT_CACHE_MAX_BYTES,
+                },
+            }
 
     def _scan_image(self, candidate: "Candidate") -> Optional[np.ndarray]:
         key = f"{candidate.language}|{candidate.card_id}"
@@ -277,13 +376,19 @@ class Recognizer:
                 cached = self._scan_cache.get(key)
                 if cached is not None:
                     self._scan_cache.move_to_end(key)
+                    self._scan_cache_hits += 1
                     # The candidate that hit the cache is a NEW object: it must
                     # inherit the source the loader discovered, or its
                     # imageUrl regresses to high.webp (404 for low/mirror cards).
                     candidate.scan_source = cached.source
                     return cached.image
-                if key in self._scan_misses:
-                    return None
+                expiry = self._scan_misses.get(key)
+                if expiry is not None:
+                    if time.time() < expiry:
+                        self._scan_miss_hits += 1
+                        return None
+                    # TTL elapsed: this class of failure may have healed — retry
+                    del self._scan_misses[key]
                 event = self._scan_inflight.get(key)
                 if event is None:
                     # First requester for this miss: own the load. Waiters hold
@@ -298,11 +403,12 @@ class Recognizer:
         try:
             image = None
             source: Optional[str] = None
+            reason = "transient"
             if self.catalog is not None:
-                from .catalog import resolve_scan
+                from .catalog import resolve_scan_classified
                 record = self.catalog.card_by_key(candidate.language, candidate.card_id)
                 if record is not None and record.image_base:
-                    resolved = resolve_scan(record.image_base)
+                    resolved, reason = resolve_scan_classified(record.image_base)
                     if resolved is not None:
                         path, source = resolved
                         data = np.fromfile(path, dtype=np.uint8)
@@ -310,19 +416,26 @@ class Recognizer:
                         if image is None:
                             # truncated/corrupt file that passed the magic-byte
                             # check: treat as a miss, never serve it
-                            path, source, image = None, None, None
+                            path, source, image, reason = None, None, None, "transient"
+                elif record is None or not record.image_base:
+                    reason = "no-base"
             if image is not None:
                 candidate.scan_source = source
             nbytes = int(image.nbytes) if image is not None else 0
             with self._lock:
                 if image is None:
-                    self._scan_misses.add(key)
+                    # Remember the miss WITH its class-specific TTL: a 404 gap
+                    # stays cached for hours, a timeout only for two minutes.
+                    self._scan_misses[key] = time.time() + self._miss_ttl(reason)
                     return None
                 self._scan_cache[key] = ScanCacheEntry(image=image, source=source, nbytes=nbytes)
                 self._scan_cache_bytes += nbytes
+                self._scan_misses.pop(key, None)
+                self._scan_loads += 1
                 while self._scan_cache and self._scan_cache_bytes > self.SCAN_CACHE_MAX_BYTES:
                     _, old = self._scan_cache.popitem(last=False)
                     self._scan_cache_bytes -= old.nbytes
+                    self._scan_evictions += 1
             return image
         finally:
             with self._lock:
@@ -428,15 +541,31 @@ class Recognizer:
                 if len(selected) >= topk + 8:
                     break
 
+        # Query SIFT is computed ONCE per probe orientation for the whole
+        # request. The old loop re-detected the query for EVERY candidate
+        # (4x on the fast path, 12-20x on the full path, per probe): same
+        # detector, same input, same descriptors, thrown away each time.
+        # Matchers without extract()/match_features() (akaze, aliked) keep the
+        # legacy per-candidate match() calls.
+        reusable = hasattr(self.matcher, "extract") and hasattr(self.matcher, "match_features")
+        probe_features = [self.matcher.extract(probe) for probe in probe_variants] if reusable else None
+
         for candidate in selected:
             scan = self._scan_image(candidate)
             if scan is None:
                 continue
             best: Optional[Verification] = None
-            for probe in probe_variants:
-                verification = self.matcher.match(probe, scan)
-                if best is None or verification.score > best.score:
-                    best = verification
+            if probe_features is not None:
+                scan_features = self._scan_sift_features(candidate, scan)
+                for query_features in probe_features:
+                    verification = self.matcher.match_features(query_features, scan_features)
+                    if best is None or verification.score > best.score:
+                        best = verification
+            else:
+                for probe in probe_variants:
+                    verification = self.matcher.match(probe, scan)
+                    if best is None or verification.score > best.score:
+                        best = verification
             candidate.verification = best
 
     # ------------------------------------------------------------------ fusion

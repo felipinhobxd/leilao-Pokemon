@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import random
+import re
 import sqlite3
 import threading
 import time
@@ -22,6 +24,51 @@ LANG_CODE = {"pt-BR": "pt", "en": "en", "es": "es", "ja": "ja"}
 CODE_LANG = {v: k for k, v in LANG_CODE.items()}
 
 _lock = threading.Lock()
+
+# Thread-local requests.Session: connection pooling without cross-thread
+# sharing (requests.Session is NOT documented as thread-safe). Each worker
+# thread reuses its own TCP/TLS connections to api/assets.tcgdex.net
+# instead of paying a fresh TLS handshake per download.
+_session_local = threading.local()
+
+
+def _get_session() -> requests.Session:
+    """Per-thread Session with keep-alive pooling."""
+    session = getattr(_session_local, "session", None)
+    if session is None:
+        session = requests.Session()
+        # Conservative pool: many short-lived download threads each hold 1-2
+        # connections; the CDN is httpbin-style HTTP/1.1 so 10 is plenty.
+        adapter = requests.adapters.HTTPAdapter(pool_connections=4, pool_maxsize=4)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        _session_local.session = session
+    return session
+
+
+class HttpRateLimited(RuntimeError):
+    """HTTP 429 that could not be waited out inside _http_get.
+
+    Carries the server-provided Retry-After (seconds) when present so callers
+    can decide how long to back off instead of hammering the CDN."""
+
+    def __init__(self, url: str, retry_after: Optional[float] = None):
+        super().__init__(f"HTTP 429 for {url} (Retry-After: {retry_after})")
+        self.retry_after = retry_after
+
+
+_HTTP_STATUS_RE = re.compile(r"HTTP (\d{3})")
+
+
+def _parse_retry_after(resp) -> Optional[float]:
+    """Retry-After header in delta-seconds form (HTTP-date form is ignored)."""
+    raw = resp.headers.get("Retry-After")
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
 
 
 @dataclass
@@ -42,20 +89,38 @@ class CardRecord:
 
 
 def _http_get(url: str, timeout: float = 30.0, retries: int = 3) -> bytes:
+    """Fetch with failure-class-aware retries:
+
+    - 200            -> payload;
+    - 404            -> FileNotFoundError immediately (definitive, never retried);
+    - 429            -> respect Retry-After when it is short, otherwise raise
+                        HttpRateLimited so callers back off instead of hammering;
+    - 5xx            -> exponential backoff with jitter, bounded retries;
+    - timeout/conn   -> bounded retries with the same backoff;
+    - other 4xx      -> surfaced as RuntimeError after the bounded retries.
+    """
     last = None
     for attempt in range(retries):
         try:
-            resp = requests.get(url, timeout=timeout)
+            resp = _get_session().get(url, timeout=timeout)
             if resp.status_code == 200:
                 return resp.content
             if resp.status_code == 404:
                 raise FileNotFoundError(url)
+            if resp.status_code == 429:
+                retry_after = _parse_retry_after(resp)
+                if attempt + 1 >= retries or (retry_after or 0.0) > 120.0:
+                    raise HttpRateLimited(url, retry_after)
+                # honor a short Retry-After once instead of the default backoff
+                time.sleep(min(retry_after if retry_after is not None else 0.8 * (attempt + 1), 60.0))
+                last = HttpRateLimited(url, retry_after)
+                continue
             last = RuntimeError(f"HTTP {resp.status_code} for {url}")
-        except FileNotFoundError:
+        except (FileNotFoundError, HttpRateLimited):
             raise
         except Exception as exc:  # noqa: BLE001
             last = exc
-        time.sleep(0.8 * (attempt + 1))
+        time.sleep(0.8 * (2 ** attempt) + random.uniform(0.0, 0.4))
     raise RuntimeError(f"Failed to fetch {url}: {last}")
 
 
@@ -143,11 +208,109 @@ def _en_mirror_base(image_base: str) -> Optional[str]:
     return None
 
 
+def _classify_failure(exc: Exception) -> str:
+    """Map a transport exception to a negative-cache class.
+
+    - HttpRateLimited -> "rate-limited" (server asked us to slow down)
+    - FileNotFoundError -> "not-found" (HTTP 404, definitive per URL)
+    - anything else (timeout, conn refused, 5xx, HTTP-date 429) -> "transient"
+    """
+    if isinstance(exc, HttpRateLimited):
+        return "rate-limited"
+    if isinstance(exc, FileNotFoundError):
+        return "not-found"
+    return "transient"
+
+
+def resolve_scan_classified(image_base: Optional[str]) -> tuple[Optional[tuple[str, str]], str]:
+    """Resolve a usable scan AND report why it failed.
+
+    Returns ((path, source) | None, reason) with reason in
+    {"ok", "no-base", "not-found", "transient", "rate-limited"}.
+
+    The reason feeds the pipeline's TTL-classified negative cache:
+    - "not-found"   -> every URL in the chain answered 404: a definitive gap
+                       on the CDN, safe to remember for hours;
+    - "transient"   -> timeout / connection error / 5xx / 200-with-HTML:
+                       the scan may exist, retry soon;
+    - "rate-limited"-> 429: back off and retry later, do not hammer.
+    Priority when several failures mix: rate-limited > transient > not-found
+    (a chain that mixed 404s with timeouts has NOT been proven absent).
+    """
+    if not image_base:
+        return None, "no-base"
+    saw_rate_limited = saw_transient = saw_not_found = False
+
+    def _note(exc: Exception) -> None:
+        nonlocal saw_rate_limited, saw_transient, saw_not_found
+        kind = _classify_failure(exc)
+        if kind == "rate-limited":
+            saw_rate_limited = True
+        elif kind == "transient":
+            saw_transient = True
+        else:
+            saw_not_found = True
+
+    def _finish_fail() -> str:
+        if saw_rate_limited:
+            return "rate-limited"
+        if saw_transient:
+            return "transient"
+        if saw_not_found:
+            return "not-found"
+        return "transient"  # nothing recorded (e.g. only invalid payloads)
+
+    chain = list(SCAN_QUALITY_CHAIN)
+    # 1. own-language cache hit (most common path: zero network)
+    for q in chain:
+        path = scan_path(image_base, q)
+        if _cached_scan_ok(path):
+            return (path, q), "ok"
+        elif os.path.exists(path):
+            _invalidate_cache(path)
+    mirror_base = _en_mirror_base(image_base)
+    # 2. EN-mirror cache hit
+    if mirror_base:
+        for q in chain:
+            cached = scan_path(image_base, f"en-{q}")
+            if _cached_scan_ok(cached):
+                return (cached, f"en-{q}"), "ok"
+            elif os.path.exists(cached):
+                _invalidate_cache(cached)
+    # 3. own-language downloads
+    for q in chain:
+        try:
+            data = _http_get(scan_url(image_base, q), timeout=25.0)
+        except Exception as exc:  # noqa: BLE001
+            _note(exc)
+            continue
+        if not _looks_like_image(data):
+            # HTTP 200 with an HTML error page: not provably absent -> transient
+            saw_transient = True
+            continue
+        return (_cache_scan(image_base, q, data), q), "ok"
+    # 4. EN-mirror download (same artwork, same local id in mirrored sets)
+    if mirror_base:
+        for q in chain:
+            try:
+                data = _http_get(scan_url(mirror_base, q), timeout=25.0)
+            except Exception as exc:  # noqa: BLE001
+                _note(exc)
+                continue
+            if not _looks_like_image(data):
+                saw_transient = True
+                continue
+            return (_cache_scan(image_base, f"en-{q}", data), f"en-{q}"), "ok"
+    return None, _finish_fail()
+
+
 def resolve_scan(image_base: Optional[str]) -> Optional[tuple[str, str]]:
     """Resolve a usable scan for an asset base.
 
     Returns (local_path, source) with source in
     {"high.webp", "low.webp", "en-high.webp", "en-low.webp"}, or None.
+    See resolve_scan_classified() for the failure reason variant used by the
+    pipeline's negative cache.
 
     Order (cache-first, zero network on the hot path):
       1. own-language cache (validated by magic bytes; corrupt entries are
@@ -158,45 +321,7 @@ def resolve_scan(image_base: Optional[str]) -> Optional[tuple[str, str]]:
     Every download is validated by magic bytes so HTML error pages never
     enter the cache.
     """
-    if not image_base:
-        return None
-    chain = list(SCAN_QUALITY_CHAIN)
-    # 1. own-language cache hit (most common path: zero network)
-    for q in chain:
-        path = scan_path(image_base, q)
-        if _cached_scan_ok(path):
-            return path, q
-        elif os.path.exists(path):
-            _invalidate_cache(path)
-    mirror_base = _en_mirror_base(image_base)
-    # 2. EN-mirror cache hit
-    if mirror_base:
-        for q in chain:
-            cached = scan_path(image_base, f"en-{q}")
-            if _cached_scan_ok(cached):
-                return cached, f"en-{q}"
-            elif os.path.exists(cached):
-                _invalidate_cache(cached)
-    # 3. own-language downloads
-    for q in chain:
-        try:
-            data = _http_get(scan_url(image_base, q), timeout=25.0)
-        except Exception:
-            continue
-        if not _looks_like_image(data):
-            continue
-        return _cache_scan(image_base, q, data), q
-    # 4. EN-mirror download (same artwork, same local id in mirrored sets)
-    if mirror_base:
-        for q in chain:
-            try:
-                data = _http_get(scan_url(mirror_base, q), timeout=25.0)
-            except Exception:
-                continue
-            if not _looks_like_image(data):
-                continue
-            return _cache_scan(image_base, f"en-{q}", data), f"en-{q}"
-    return None
+    return resolve_scan_classified(image_base)[0]
 
 
 def ensure_scan(image_base: str, quality: str = "high.webp") -> Optional[str]:

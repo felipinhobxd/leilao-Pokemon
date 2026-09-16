@@ -107,6 +107,7 @@ def main() -> None:
             continue
 
         n = save_records(conn, records)  # additive: partial data never deletes good rows
+        n_scans = sum(1 for r in records if r.image_base)
         if report.failed_sets:
             gaps_payload = json.dumps({
                 "failedSets": report.failed_sets,
@@ -131,11 +132,16 @@ def main() -> None:
             set_meta(conn, f"catalog.updated.{language}", time.strftime("%Y-%m-%dT%H:%M:%S"))
             clear_meta(conn, f"catalog.gaps.{language}")
             suffix = f" (gap retry: +{report.succeeded_sets} set(s))" if sets_filter else ""
-            print(f"[catalog] {language}: {n} cards in {time.time()-started:.1f}s "
+            print(f"[catalog] {language}: {n} cards ({n_scans} with scans, "
+                  f"{n - n_scans} scan not_available) in {time.time()-started:.1f}s "
                   f"({report.succeeded_sets}/{report.expected_sets} sets, complete){suffix}")
 
     total = conn.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
-    print(f"[catalog] total: {total} cards")
+    with_scans = conn.execute("SELECT COUNT(*) FROM cards WHERE image_base != ''").fetchone()[0]
+    not_available = conn.execute(
+        "SELECT COUNT(*) FROM cards WHERE scan_status = 'not_available'").fetchone()[0]
+    print(f"[catalog] total: {total} cards ({with_scans} with official scans, "
+          f"{not_available} scan not_available — still OCR candidates)")
     if incomplete_core:
         print(f"[catalog] INCOMPLETE CORE languages (install blocked): {', '.join(incomplete_core)}")
     if incomplete_optional:

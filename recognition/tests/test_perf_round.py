@@ -472,14 +472,12 @@ class TestBuildCatalogLanguageClasses(unittest.TestCase):
 
     @staticmethod
     def _conn(path):
-        import sqlite3
-        conn = sqlite3.connect(path, check_same_thread=False)
-        conn.execute("CREATE TABLE IF NOT EXISTS cards (id TEXT NOT NULL, language TEXT NOT NULL, "
-                     "set_id TEXT NOT NULL, set_name TEXT, serie_name TEXT, serie_id TEXT, local_id TEXT NOT NULL, "
-                     "name TEXT NOT NULL, hp INTEGER, denominator INTEGER, image_base TEXT, variants TEXT, "
-                     "release_date TEXT, PRIMARY KEY (id, language))")
-        conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
-        return conn
+        # Use the REAL init_db (patched only at the build_catalog namespace
+        # level): the schema — including the scan_status column and the scans
+        # state table — stays in sync with recognizer.catalog forever instead
+        # of a hand-written CREATE TABLE drifting out of date.
+        import recognizer.catalog as cat
+        return cat.init_db(path)
 
     @staticmethod
     def _report(language, failed):

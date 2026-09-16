@@ -13,16 +13,100 @@ Official DirectML EP documentation (onnxruntime.ai, checked 2026-09-17):
   serializes run() behind a lock WHEN the session actually runs on DML;
   CPU sessions stay lock-free.
 
-These options are only conservative for a session that silently falls back
-to CPU: correctness is unaffected, and the CPU path keeps its own defaults.
+Provider demotion (stability over theoretical speed):
+- A provider that produced invalid model output (NaN/inf embeddings) or that
+  was executing when the process died natively (crash journal) is DEMOTED:
+  a marker file records it and `auto` provider selection skips it afterwards.
+- Demotion expires after RECOGNITION_DEMOTION_TTL_HOURS (default 168 = one
+  week) so a driver/runtime upgrade gets a fresh chance.
+- RECOGNITION_PROVIDER_DEMOTION=0 disables the whole mechanism (escape hatch
+  for debugging); an EXPLICIT RECOGNITION_PROVIDERS choice is never filtered
+  (the operator said exactly what they want).
 """
 from __future__ import annotations
 
+import json
 import os
 import threading
+import time
 from typing import Optional
 
 import onnxruntime as ort
+
+# Demotion markers live beside the index data: BASE_DIR from recognizer.config.
+from .config import BASE_DIR
+
+DEMOTION_FILE = os.path.join(BASE_DIR, "provider-demotion.json")
+
+
+def demotion_enabled() -> bool:
+    return os.environ.get("RECOGNITION_PROVIDER_DEMOTION", "1").strip() != "0"
+
+
+def demotion_ttl_seconds() -> float:
+    try:
+        hours = float(os.environ.get("RECOGNITION_DEMOTION_TTL_HOURS", "168"))
+    except ValueError:
+        hours = 168.0
+    return max(0.0, hours) * 3600.0
+
+
+def _load_demotions() -> dict[str, dict]:
+    try:
+        with open(DEMOTION_FILE, encoding="utf-8") as fh:
+            payload = json.load(fh)
+        if isinstance(payload, dict):
+            return {str(k): v for k, v in payload.items() if isinstance(v, dict)}
+    except (OSError, ValueError):
+        pass
+    return {}
+
+
+_demotion_lock = threading.Lock()
+
+
+def demote_provider(provider: str, reason: str) -> None:
+    """Record that `provider` is unstable on this machine (marker file).
+
+    Called when a provider produces invalid model output repeatedly, or when
+    the crash journal shows it was executing when the process died natively.
+    Idempotent; the newest reason wins.
+    """
+    if not demotion_enabled() or not provider or provider in ("", "CPUExecutionProvider", "unknown"):
+        return
+    with _demotion_lock:
+        demotions = _load_demotions()
+        demotions[provider] = {"reason": reason[:300], "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        try:
+            os.makedirs(os.path.dirname(DEMOTION_FILE), exist_ok=True)
+            tmp = DEMOTION_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(demotions, fh, ensure_ascii=False, indent=1)
+            os.replace(tmp, DEMOTION_FILE)
+        except OSError:
+            pass  # best effort: in-process fallback still applies
+
+
+def demoted_providers() -> list[str]:
+    """Providers currently demoted (marker present and not expired)."""
+    if not demotion_enabled():
+        return []
+    ttl = demotion_ttl_seconds()
+    now = time.time()
+    active: list[str] = []
+    for provider, entry in _load_demotions().items():
+        try:
+            stamped = time.mktime(time.strptime(entry.get("at", ""), "%Y-%m-%dT%H:%M:%S"))
+        except ValueError:
+            stamped = now
+        if ttl <= 0 or now - stamped <= ttl:
+            active.append(provider)
+    return active
+
+
+def demotion_report() -> dict:
+    """Raw marker contents for /health (observability)."""
+    return _load_demotions()
 
 
 def preferred_providers() -> list[str]:
@@ -31,7 +115,12 @@ def preferred_providers() -> list[str]:
     RECOGNITION_PROVIDERS=cpu forces the CPU provider (the escape hatch when
     a benchmark on the target machine shows DML slower or unstable for a
     model); auto (default) keeps the GPU-first order. Explicit choices that
-    are not installed fall back to CPU with the runtime's own warning."""
+    are not installed fall back to CPU with the runtime's own warning.
+
+    In `auto` mode, providers marked unstable on this machine (see
+    demote_provider) are skipped: stability beats a theoretical speedup.
+    Explicit choices are NEVER filtered by demotion.
+    """
     forced = os.environ.get("RECOGNITION_PROVIDERS", "auto").strip().lower()
     available = ort.get_available_providers()
     if forced in ("cpu", "cpuexecutionprovider"):
@@ -41,7 +130,14 @@ def preferred_providers() -> list[str]:
     if forced in ("cuda", "cudaexecutionprovider"):
         return [p for p in ("CUDAExecutionProvider", "CPUExecutionProvider") if p in available]
     preferred = ["CUDAExecutionProvider", "DmlExecutionProvider", "CPUExecutionProvider"]
-    return [p for p in preferred if p in available]
+    selected = [p for p in preferred if p in available]
+    skip = set(demoted_providers())
+    if skip:
+        filtered = [p for p in selected if p not in skip]
+        # CPU must remain the final answer; never return an empty list.
+        if filtered or selected:
+            selected = filtered or ["CPUExecutionProvider"]
+    return selected
 
 
 class OrtSession:

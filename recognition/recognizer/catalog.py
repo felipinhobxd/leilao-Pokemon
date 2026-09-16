@@ -96,6 +96,21 @@ class CardRecord:
     image_base: str  # https://assets.tcgdex.net/<lang>/<serie>/<set>/<localId>
     variants: str  # json
     release_date: str
+    # Scan availability class for THIS card (coverage reporting + sync):
+    #   ""                 -> an official scan exists (image_base set)
+    #   "not_available"    -> TCGdex lists the card but publishes no scan for
+    #                          it (promos without images, /tcgp/ redirects).
+    #                          The card is STILL a route-B (OCR/text) candidate:
+    #                          dropping it from the catalog used to make it
+    #                          invisible to identification entirely.
+    scan_status: str = ""
+
+
+# Scan sync states (scans table): the incremental synchronizer's state machine.
+#   validated     -> downloaded (or already cached), magic-bytes OK, sha256 recorded
+#   failed        -> transport/transient failure: retry on the next run
+#   not_available -> no scan published (empty image_base, or every URL 404'd)
+SCAN_STATES = ("validated", "failed", "not_available")
 
 
 def _http_get(url: str, timeout: float = 30.0, retries: int = 3) -> bytes:
@@ -362,12 +377,51 @@ def init_db(db_path: str = CATALOG_DB) -> sqlite3.Connection:
         image_base TEXT,
         variants TEXT,
         release_date TEXT,
+        scan_status TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (id, language)
     )""")
+    # Migration for catalogs built before scan_status existed.
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(cards)")}
+    if "scan_status" not in columns:
+        conn.execute("ALTER TABLE cards ADD COLUMN scan_status TEXT NOT NULL DEFAULT ''")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cards_lang ON cards(language)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cards_name ON cards(name)")
+    # Scan sync state machine: one row per asset base. `validated` rows carry
+    # the sha256 recorded at download time so later runs can detect corrupt
+    # cache files (magic bytes alone miss mid-file corruption).
+    conn.execute("""CREATE TABLE IF NOT EXISTS scans (
+        image_base TEXT PRIMARY KEY,
+        state TEXT NOT NULL,
+        bytes INTEGER,
+        sha256 TEXT,
+        updated_at TEXT
+    )""")
     conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
     return conn
+
+
+def record_scan_state(conn: sqlite3.Connection, image_base: str, state: str,
+                       nbytes: Optional[int] = None, sha256: Optional[str] = None) -> None:
+    """Persist the sync state of one scan (see SCAN_STATES)."""
+    if state not in SCAN_STATES:
+        raise ValueError(f"Unknown scan state {state!r}")
+    with _lock:
+        conn.execute("""INSERT OR REPLACE INTO scans (image_base, state, bytes, sha256, updated_at)
+            VALUES (?,?,?,?,?)""",
+            (image_base, state, nbytes, sha256, time.strftime("%Y-%m-%dT%H:%M:%S")))
+        conn.commit()
+
+
+def get_scan_state(conn: sqlite3.Connection, image_base: str) -> Optional[tuple]:
+    """(state, bytes, sha256) recorded for an asset base, if any."""
+    row = conn.execute("SELECT state, bytes, sha256 FROM scans WHERE image_base = ?", (image_base,)).fetchone()
+    return tuple(row) if row else None
+
+
+def scan_state_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    """Rows per scan state (sync reporting: downloaded/failed/not_available)."""
+    return {state: count for state, count in conn.execute(
+        "SELECT state, COUNT(*) FROM scans GROUP BY state")}
 
 
 @dataclass
@@ -433,9 +487,13 @@ def fetch_language_cards(language: str,
         serie = detail.get("serie") or {}
         for card in detail.get("cards") or []:
             image = card.get("image")
-            if not image or "/tcgp/" in image:
-                continue  # no official scan available
-            variants = card.get("variants") or {}
+            # Coverage: a card WITHOUT a published official scan is still a
+            # real, identifiable card — it stays in the catalog as a route-B
+            # (OCR/text) candidate with scan_status="not_available" instead
+            # of being dropped outright (which made it invisible to any
+            # identification). Cards with scans keep the empty status and the
+            # visual index keeps working exactly as before.
+            usable_image = bool(image) and "/tcgp/" not in image
             records.append(CardRecord(
                 id=card["id"],
                 language=language,
@@ -447,9 +505,10 @@ def fetch_language_cards(language: str,
                 name=card.get("name") or "",
                 hp=int(card["hp"]) if isinstance(card.get("hp"), int) else None,
                 denominator=int(denominator) if denominator else None,
-                image_base=image,
-                variants=json.dumps(variants, ensure_ascii=False),
+                image_base=image if usable_image else "",
+                variants=json.dumps(card.get("variants") or {}, ensure_ascii=False),
                 release_date=detail.get("releaseDate") or "",
+                scan_status="" if usable_image else "not_available",
             ))
     # A gap-set id that vanished from the listing (set renamed/removed) is a
     # definitive failure for the retry: report it instead of silently success.
@@ -466,10 +525,11 @@ def save_records(conn: sqlite3.Connection, records: Iterable[CardRecord]) -> int
         for r in records:
             conn.execute("""INSERT OR REPLACE INTO cards
                 (id, language, set_id, set_name, serie_name, serie_id, local_id, name,
-                 hp, denominator, image_base, variants, release_date)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 hp, denominator, image_base, variants, release_date, scan_status)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (r.id, r.language, r.set_id, r.set_name, r.serie_name, r.serie_id,
-                 r.local_id, r.name, r.hp, r.denominator, r.image_base, r.variants, r.release_date))
+                 r.local_id, r.name, r.hp, r.denominator, r.image_base, r.variants, r.release_date,
+                 getattr(r, "scan_status", "")))
             count += 1
         conn.commit()
     return count
@@ -479,12 +539,13 @@ def load_cards(conn: sqlite3.Connection, languages: Optional[list[str]] = None) 
     langs = languages or list(LANGUAGES)
     placeholders = ",".join("?" for _ in langs)
     rows = conn.execute(f"""SELECT id, language, set_id, set_name, serie_name, serie_id,
-        local_id, name, hp, denominator, image_base, variants, release_date
+        local_id, name, hp, denominator, image_base, variants, release_date, scan_status
         FROM cards WHERE language IN ({placeholders}) ORDER BY language, set_id, local_id""", langs).fetchall()
     return [CardRecord(
         id=row[0], language=row[1], set_id=row[2], set_name=row[3], serie_name=row[4],
         serie_id=row[5], local_id=row[6], name=row[7], hp=row[8], denominator=row[9],
         image_base=row[10] or "", variants=row[11] or "{}", release_date=row[12] or "",
+        scan_status=row[13] if len(row) > 13 else "",
     ) for row in rows]
 
 

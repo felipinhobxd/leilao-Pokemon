@@ -49,6 +49,28 @@ const RECOGNITION_CONCURRENCY = 2;
 const IMAGE_RECOGNITION_STORAGE_KEY = "leilao-pokemon:image-recognition-enabled";
 export const imageRecognitionPreferenceEvent = "leilao-pokemon:image-recognition-change";
 
+/**
+ * Diagnose a failed /recognize call. "Failed to fetch" is a SYMPTOM, never a
+ * cause: the browser raises it for connection refused / service down, which
+ * on this setup means the local Python process died (e.g. the Windows native
+ * crash, exit code 0xC0000005) or never started. Timeouts and real HTTP
+ * errors get their own wording so the user (and the debug panel) can tell
+ * them apart at a glance.
+ */
+function diagnoseServiceFailure(reason: unknown): string {
+  if (reason instanceof DOMException && (reason.name === "AbortError" || reason.name === "TimeoutError")) {
+    return "tempo esgotado (serviço ocupado ou travado)";
+  }
+  if (reason instanceof TypeError) {
+    // fetch() network failure: connection refused / process down / port closed.
+    return "serviço local fora do ar (processo encerrado ou não iniciado — veja o terminal do recognition)";
+  }
+  const message = reason instanceof Error ? reason.message : String(reason);
+  const httpMatch = message.match(/HTTP (\d{3})/);
+  if (httpMatch) return `erro HTTP ${httpMatch[1]} do serviço local`;
+  return message;
+}
+
 export type LocalServiceStatus = "checking" | "online" | "offline";
 
 export type { ServiceCandidate, ServiceHealth, ServiceResult };
@@ -204,8 +226,10 @@ export async function recognizePokemonCard(
     try {
       return await recognizeWithLocalService(file, onProgress);
     } catch (reason) {
-      // Service flaked mid-request: degrade to the browser pipeline instead of failing.
-      onProgress?.(reason instanceof Error ? `↩️ Serviço local falhou (${reason.message}); usando pipeline do navegador…` : "↩️ Serviço local falhou; usando pipeline do navegador…");
+      // Service flaked mid-request: degrade to the browser pipeline instead
+      // of failing. The message names the DIAGNOSED cause (process down vs
+      // HTTP status vs timeout), not just the raw "Failed to fetch" symptom.
+      onProgress?.(`↩️ Serviço local falhou (${diagnoseServiceFailure(reason)}); usando pipeline do navegador…`);
       statusCache = { status: "offline", checkedAt: Date.now() };
     }
   } else {

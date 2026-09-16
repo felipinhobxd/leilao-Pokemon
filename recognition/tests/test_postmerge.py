@@ -20,6 +20,7 @@ Run:  python -m unittest discover -s tests -v   (from recognition/)
 """
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import shutil
@@ -847,3 +848,115 @@ class TestLanguageTwins(unittest.TestCase):
         result = RecognitionResult()
         result.language_status = "uncertain"
         self.assertEqual(result.to_dict()["languageStatus"], "uncertain")
+
+
+# --------------------------------------------------------------------------- fast-path
+class TestAdaptiveFastPath(unittest.TestCase):
+    """Safe fast path: unambiguous cases run a minimal OCR budget, everything
+    that can threaten precision (tight margins, weak quads, lookalikes,
+    language twins needing footer evidence) stays on the full path."""
+
+    def _recognizer(self):
+        recognizer = Recognizer.__new__(Recognizer)
+        recognizer.calibration = EMBEDDING_CALIBRATION["siglip2-base-384"]
+        recognizer.catalog = object()  # present
+        return recognizer
+
+    def _card(self, confidence=0.9):
+        from recognizer.normalize import NormalizedCard
+        image = np.zeros((840, 600, 3), dtype=np.uint8)
+        return NormalizedCard(image=image, rotated180=image, rotation_code=0,
+                              method="quad-contour", confidence=confidence, quad=None)
+
+    def _candidate(self, card_id, language="pt-BR", visual=0.93):
+        candidate = Candidate(card_id=card_id, language=language, set_id="s",
+                              set_name="S", name="X", local_id="1", denominator=99, hp=60)
+        candidate.visual_similarity = visual
+        return candidate
+
+    def test_easy_case_is_eligible(self):
+        recognizer = self._recognizer()
+        candidates = [self._candidate("a", visual=0.945), self._candidate("b", visual=0.90)]
+        self.assertTrue(recognizer._fast_path_eligible(self._card(), candidates))
+
+    def test_tight_visual_margin_blocks_fast_path(self):
+        # Same-artwork reprint of another set: visual gap < 0.02 -> full path.
+        recognizer = self._recognizer()
+        candidates = [self._candidate("a", visual=0.945), self._candidate("b", visual=0.938)]
+        self.assertFalse(recognizer._fast_path_eligible(self._card(), candidates))
+
+    def test_weak_quad_blocks_fast_path(self):
+        recognizer = self._recognizer()
+        candidates = [self._candidate("a", visual=0.945), self._candidate("b", visual=0.90)]
+        self.assertFalse(recognizer._fast_path_eligible(self._card(confidence=0.1), candidates))
+
+    def test_below_strong_headroom_blocks_fast_path(self):
+        recognizer = self._recognizer()
+        candidates = [self._candidate("a", visual=0.912), self._candidate("b", visual=0.85)]
+        self.assertFalse(recognizer._fast_path_eligible(self._card(), candidates))
+
+    def test_language_twin_gap_does_not_block_fast_path(self):
+        # Twins are the SAME card_id: the margin only counts DIFFERENT cards.
+        recognizer = self._recognizer()
+        candidates = [self._candidate("a", "pt-BR", visual=0.945),
+                      self._candidate("a", "en", visual=0.9449),
+                      self._candidate("b", visual=0.90)]
+        self.assertTrue(recognizer._fast_path_eligible(self._card(), candidates))
+
+    def test_missing_catalog_blocks_fast_path(self):
+        recognizer = self._recognizer()
+        recognizer.catalog = None
+        candidates = [self._candidate("a", visual=0.945)]
+        self.assertFalse(recognizer._fast_path_eligible(self._card(), candidates))
+
+    def test_minimal_ocr_skips_deep_band_and_ladder(self):
+        # Structural: minimal mode must not queue the rescue regions or the
+        # denoising variants; the two raw number regions stay (consensus pair).
+        import re
+        from recognizer import ocr as ocr_module
+        source = inspect.getsource(ocr_module.PpOcr.read_card)
+        self.assertIn("if minimal:", source)
+        self.assertIn("number_regions[:2]", source)
+        self.assertIn("name_confd < 0.6", source,
+                      "full path must skip pass 1b when the name read is already solid")
+
+    def test_fast_path_result_is_flagged(self):
+        from recognizer.pipeline import RecognitionResult
+        result = RecognitionResult()
+        result.fast_path = True
+        self.assertTrue(result.to_dict()["fastPath"])
+        self.assertFalse(RecognitionResult().to_dict()["fastPath"])
+
+
+class TestEmbeddingReuse(unittest.TestCase):
+    """Route A's view embeddings must be reusable by the memory lookup: the
+    same request must not embed the raw 0/180 views twice."""
+
+    def test_route_a_returns_raw_rows_for_memory(self):
+        import cv2
+        recognizer = Recognizer.__new__(Recognizer)
+        recognizer.calibration = EMBEDDING_CALIBRATION["siglip2-base-384"]
+        recognizer.topk = 5
+
+        class FakeIndex:
+            def search(self, image, topk, orientations, return_views=False):
+                # views: [img0_raw, img0_gamma, img1_raw, img1_gamma]
+                embeddings = np.stack([np.ones(4, dtype=np.float32) for _ in range(4)])
+                results = [("pt-BR", "a", 0.95, 0)]
+                if return_views:
+                    return results, embeddings, [0, 0, 1, 1]
+                return results
+
+        class FakeCatalog:
+            def card_by_key(self, language, card_id):
+                return None
+
+        recognizer.index = FakeIndex()
+        recognizer.catalog = FakeCatalog()
+        from recognizer.normalize import NormalizedCard
+        image = np.zeros((840, 600, 3), dtype=np.uint8)
+        card = NormalizedCard(image=image, rotated180=cv2.rotate(image, cv2.ROTATE_180),
+                              rotation_code=0, method="quad", confidence=0.9, quad=None)
+        candidates, orientation, view_embeddings, raw_rows = recognizer.route_a(card, return_views=True)
+        self.assertIsNotNone(view_embeddings)
+        self.assertEqual(raw_rows, [0, 2], "raw rows must be the first view of each orientation")

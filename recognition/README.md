@@ -129,6 +129,50 @@ Correções de bugs de revisão independente, cada uma com regressão de comport
 - **URL de imagem utilizável**: candidatos resolvidos via `low.webp`/espelho EN não anunciam mais o `high.webp` do CDN (404) — o serviço aponta para o endpoint local `/scan/{language}/{cardId}`, que serve o que realmente resolveu.
 - **CI testa Python de verdade**: job `recognition-python` roda `compileall` + `unittest discover` (deps leves; benchmarks pesados seguem manuais) e o job Windows valida a sintaxe dos `.ps1`.
 
+## Rodada de performance 2026-09-17 (branch `perf/recognition-redistribution`)
+
+Objetivo: mesma precisão, menos trabalho redundante. Sem troca de modelos, sem ANN, sem quantização, sem mudança de thresholds.
+
+**Correções de bugs**
+- `scan_source` sobrevive ao cache hit de scans decodificados (a 2ª identificação da mesma carta voltava a anunciar `high.webp`, que 404 para cartas resolvidas via `low.webp`/espelho EN).
+- Cache negativo com TTL por classe de falha: 404 vira 6 h, 429 vira 60 s, timeout/5xx vira 120 s (antes era "para sempre" — um único timeout escondia um scan perfeitamente baixável até reiniciar o processo).
+- Instalador: idiomas **CORE** (pt-BR/en) incompletos bloqueiam (exit 1); idiomas **OPCIONAIS** (es/ja) registram gaps em `catalog.gaps.<lang>` e NÃO bloqueiam mais. Re-run com gaps pendentes refaz **apenas os sets falhados** (`sets_filter`); sets que sumiram do listing são reportados, não fake-success.
+
+**Menos trabalho redundante (idêntico em precisão)**
+- SIFT da query: 1 extração por probe por requisição (era 1 por candidato: 4x no fast path, 12-20x no caminho completo). `match()` segue existindo e é byte-idêntico a `extract()`+`match_features()`.
+- Cache LRU de features SIFT dos scans oficiais, com orçamento de bytes e chave `language|cardId|scanSource`.
+- HTTP: `requests.Session` por thread (keep-alive) + retries por classe de falha (404 definitivo, 429 respeita `Retry-After` curto, 5xx/timeout backoff exponencial com jitter).
+
+**Instalação/índice**
+- `build_index.py`: pipeline com producer thread (download+decode sobrepõem inferência, fila limitada `--prefetch`), checkpoint validado ao retomar (rows/ids/next_id) e profiling por fase (download/decode/inferência/checkpoint ms/cartão).
+- `download_scans.py`: ETA suavizada + taxa no progresso.
+
+**DirectML (AMD RX 570 / Windows)**
+- `recognizer/ort_session.py`: factory compartilhada aplicando as restrições oficiais do DirectML EP (`enable_mem_pattern=False` + `ORT_SEQUENTIAL`; rodar com mem-pattern ativo **quebra em runtime**) e serialização de `Run()` por session quando ela roda de fato em DML (Run concorrente no mesmo session DML não é seguro).
+- `RECOGNITION_PROVIDERS=cpu|dml|cuda|auto` — `cpu` força CPU se o benchmark na máquina-alvo mostrar DML mais lento/instável.
+- `scripts/benchmark_runtime.py`: compara CPU vs DML por session e no pipeline completo (warm-up separado do steady-state, mean/P50/P95/max, RSS de pico, memória GPU best-effort, erros visíveis). Rode na máquina-alvo antes de concluir qualquer coisa sobre DML.
+
+**/health e caches**
+- `warm()` carrega também a session do embedding (ready = a próxima foto sai em velocidade total, sem stall de criação de session).
+- `backend.runtimeProviders`: provider REAL por session (embedding/ocrDetector/ocrRecognizer) — o ORT silenciosamente cai para CPU quando o DML não inicializa; listar providers disponíveis não é evidência de GPU.
+- `caches`: contadores de observabilidade (hits/loads/negativeHits/extractions/evictions/entries/bytes) para decidir tuning com números.
+
+**UI (relato: congelamento total durante e após o reconhecimento)**
+- Previews do wizard em ~560 px JPEG (upload continua com o arquivo original); inspector ~1000 px; `loading=lazy` + `decoding=async` em todas as previews.
+- `JSON.stringify` dos detalhes só na primeira abertura do `<details>` (era a cada render, por carta expandida, com várias renders/s).
+- Progresso da UI limitado a ~6 paints/s (o reconhecimento em si não muda).
+- Cornelius (fallback do navegador): inferência ONNX + warp de perspectiva agora em Web Worker (`card-recognition-cornelius.worker.ts`), com fallback inline intacto.
+
+### Variáveis de ambiente novas
+
+| Variável | Default | Efeito |
+|---|---|---|
+| `RECOGNITION_SCAN_CACHE_MB` | `400` | Orçamento de RAM do cache de scans decodificados |
+| `RECOGNITION_SIFT_CACHE_MB` | `128` | Orçamento do cache de features SIFT (`0` desativa) |
+| `RECOGNITION_PROVIDERS` | `auto` | `cpu`/`dml`/`cuda` força o provider das sessions ONNX |
+| `RECOGNITION_EMBED_CHUNK` | `2` | (existente) batch interno do embedding — só mude com benchmark |
+| `RECOGNITION_MAX_CONCURRENCY` | `1` | (existente) paralelismo de reconhecimento no serviço |
+
 ## Instalação (Windows)
 
 ```powershell

@@ -31,6 +31,51 @@ type V11DebugResult = RecognitionResult & {
   evidenceRanking?: unknown;
 };
 
+// The inspector preview is capped at this size: it exists for a human to
+// CONFIRM what was sent, and a ~1000 px JPEG is plenty for that. Rendering
+// the original 12 MP photo here (per expanded card!) was one of the causes
+// of the reported full-page freeze — 20-50 of those decode hundreds of
+// millions of pixels during paint.
+const INSPECTOR_MAX_SIDE = 1000;
+
+async function makeInspectorPreview(file: File): Promise<string> {
+  try {
+    const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+    const scale = Math.min(1, INSPECTOR_MAX_SIDE / Math.max(bitmap.width, bitmap.height));
+    if (scale >= 1) { bitmap.close(); return URL.createObjectURL(file); }
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) { bitmap.close(); return URL.createObjectURL(file); }
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "medium";
+    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, "image/jpeg", 0.85));
+    canvas.width = canvas.height = 0;
+    return blob ? URL.createObjectURL(blob) : URL.createObjectURL(file);
+  } catch {
+    return URL.createObjectURL(file);
+  }
+}
+
+/** JSON details computed ONLY when the user opens the <details> block.
+ * Stringifying the full recognition payload (10 candidates with verification
+ * dictionaries) on EVERY wizard render × every expanded card kept the main
+ * thread busy for hundreds of ms per render — the page could not be clicked. */
+function LazyDetails({ payload }: { payload: () => unknown }) {
+  const [text, setText] = useState<string | null>(null);
+  return (
+    <details onToggle={event => {
+      if ((event.target as HTMLDetailsElement).open && text === null) setText(JSON.stringify(payload(), null, 2));
+    }}>
+      <summary>Detalhes do reconhecimento</summary>
+      <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 }}>{text ?? ""}</pre>
+    </details>
+  );
+}
+
 export default function RecognitionDebug({ file, result, busy }: { file: File; result?: RecognitionResult; busy: boolean }) {
   const [testing, setTesting] = useState(false);
   const [message, setMessage] = useState("");
@@ -38,9 +83,14 @@ export default function RecognitionDebug({ file, result, busy }: { file: File; r
   const v11 = result as V11DebugResult | undefined;
 
   useEffect(() => {
-    const url = URL.createObjectURL(file);
-    setPreview(url);
-    return () => URL.revokeObjectURL(url);
+    let cancelled = false;
+    let url = "";
+    void makeInspectorPreview(file).then(created => {
+      if (cancelled) { URL.revokeObjectURL(created); return; }
+      url = created;
+      setPreview(created);
+    });
+    return () => { cancelled = true; if (url) URL.revokeObjectURL(url); };
   }, [file]);
 
   async function testExactVisual() {
@@ -96,47 +146,45 @@ export default function RecognitionDebug({ file, result, busy }: { file: File; r
   ];
 
   return <section className="wide recognition-inspector">
-    {preview && <div className="recognition-large-preview"><img src={preview} alt="Prévia ampliada da carta para conferência" /><small>A análise usa o arquivo original em alta resolução; esta prévia ampliada é para você conferir o que foi enviado.</small></div>}
+    {preview && <div className="recognition-large-preview"><img src={preview} alt="Prévia ampliada da carta para conferência" loading="lazy" decoding="async" /><small>A análise usa o arquivo original em alta resolução; esta prévia ampliada é para você conferir o que foi enviado.</small></div>}
     <div className="recognition-breakdown" aria-label="Etapas do reconhecimento">
       {fieldRows.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}
     </div>
     <p role="status"><strong>Runtime: reconhecimento v{cardRecognitionRuntime.version}</strong><br />{status}</p>
     <button type="button" className="secondary" disabled={testing || busy} onClick={() => void testExactVisual()}>{testing ? "Comparando scans oficiais…" : "Testar comparação visual exata"}</button>
     <pre aria-live="polite" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 }}>{message}</pre>
-    <details><summary>Detalhes do reconhecimento</summary>
-      <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 }}>{JSON.stringify({
-        runtime: cardRecognitionRuntime,
-        decisao: v11?.decisionStatus,
-        evidenciasIndependentes: v11?.independentEvidence,
-        normalizacao: v11?.normalization,
-        memoriaConfirmada: v11?.recognitionMemory,
-        comparacaoVisualExata: v11?.exactVisual,
-        OCR: {
-          nome: result?.hints.name ?? "",
-          numero: result?.hints.cardNumber ?? "",
-          localId: result?.hints.localId ?? "",
-          denominador: result?.hints.denominator ?? null,
-          idioma: result?.hints.language ?? null,
-          confiancaIdioma: result?.hints.languageConfidence ?? 0,
-        },
-        catalogo: {
-          estrategia: result?.catalogStrategy,
-          setsCandidatos: result?.catalogSetCandidates,
-          origemIndiceSets: result?.catalogSetIndexSource,
-          requests: result?.catalogRequests,
-          consultas: result?.catalogQueries,
-          antesDoFiltro: result?.catalogCandidatesBefore,
-          depoisDoFiltro: result?.catalogCandidatesAfter,
-          limiteAtingido: result?.catalogBudgetExhausted,
-        },
-        visual: {
-          acionada: result?.visualUsed ?? false,
-          estado: result?.visualStatus,
-          motivo: result?.visualReason,
-          backend: result?.visualBackend,
-          erro: result?.visualError,
-        },
-      }, null, 2)}</pre>
-    </details>
+    <LazyDetails payload={() => ({
+      runtime: cardRecognitionRuntime,
+      decisao: v11?.decisionStatus,
+      evidenciasIndependentes: v11?.independentEvidence,
+      normalizacao: v11?.normalization,
+      memoriaConfirmada: v11?.recognitionMemory,
+      comparacaoVisualExata: v11?.exactVisual,
+      OCR: {
+        nome: result?.hints.name ?? "",
+        numero: result?.hints.cardNumber ?? "",
+        localId: result?.hints.localId ?? "",
+        denominador: result?.hints.denominator ?? null,
+        idioma: result?.hints.language ?? null,
+        confiancaIdioma: result?.hints.languageConfidence ?? 0,
+      },
+      catalogo: {
+        estrategia: result?.catalogStrategy,
+        setsCandidatos: result?.catalogSetCandidates,
+        origemIndiceSets: result?.catalogSetIndexSource,
+        requests: result?.catalogRequests,
+        consultas: result?.catalogQueries,
+        antesDoFiltro: result?.catalogCandidatesBefore,
+        depoisDoFiltro: result?.catalogCandidatesAfter,
+        limiteAtingido: result?.catalogBudgetExhausted,
+      },
+      visual: {
+        acionada: result?.visualUsed ?? false,
+        estado: result?.visualStatus,
+        motivo: result?.visualReason,
+        backend: result?.visualBackend,
+        erro: result?.visualError,
+      },
+    })} />
   </section>;
 }

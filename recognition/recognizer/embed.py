@@ -20,6 +20,7 @@ import numpy as np
 import onnxruntime as ort
 
 from .config import MODELS_DIR
+from .ort_session import OrtSession, preferred_providers
 
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
@@ -32,9 +33,7 @@ _SESSION_OPTS.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_A
 
 
 def _providers() -> list[str]:
-    available = ort.get_available_providers()
-    preferred = ["CUDAExecutionProvider", "DmlExecutionProvider", "CPUExecutionProvider"]
-    return [p for p in preferred if p in available]
+    return preferred_providers()
 
 
 class EmbeddingModel:
@@ -42,17 +41,38 @@ class EmbeddingModel:
 
     def __init__(self, name: str, size: int, kind: str, dim: int):
         self.name, self.size, self.kind, self.dim = name, size, kind, dim
-        self._session: Optional[ort.InferenceSession] = None
+        self._session: Optional[OrtSession] = None
         self._lock = threading.Lock()
 
-    def _ensure(self) -> ort.InferenceSession:
+    @property
+    def loaded(self) -> bool:
+        """True once the ONNX session exists (readiness reporting)."""
+        return self._session is not None
+
+    @property
+    def provider(self) -> str:
+        """Actual execution provider of the loaded session ("" if lazy)."""
+        if self._session is None:
+            return ""
+        return self._session.provider
+
+    def warm(self) -> None:
+        """Load the ONNX session eagerly. ready=true must mean the NEXT photo
+        can be served without a multi-second first-inference stall."""
+        self._ensure()
+
+    def _ensure(self) -> OrtSession:
         if self._session is not None:
             return self._session
         with self._lock:
             if self._session is not None:
                 return self._session
             path = self._model_path()
-            self._session = ort.InferenceSession(path, sess_options=_SESSION_OPTS, providers=_providers())
+            # OrtSession: DML-safe options (no mem patterns, sequential
+            # execution) and serialized Run when the session really runs on
+            # DML — see recognizer/ort_session.py and the official DirectML
+            # EP documentation.
+            self._session = OrtSession(path, intra_threads=max(1, (os.cpu_count() or 2)))
             return self._session
 
     def _model_path(self) -> str:

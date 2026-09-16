@@ -23,6 +23,7 @@ import numpy as np
 import onnxruntime as ort
 
 from .config import MODELS_DIR
+from .ort_session import OrtSession
 
 _SESSION_OPTS = ort.SessionOptions()
 _SESSION_OPTS.intra_op_num_threads = max(1, (os.cpu_count() or 2))
@@ -70,6 +71,26 @@ def _artwork_filter(kpts: np.ndarray, width: int, height: int) -> np.ndarray:
     return (x >= ARTWORK_X0) & (x <= ARTWORK_X1) & (y >= ARTWORK_Y0) & (y <= ARTWORK_Y1)
 
 
+@dataclass
+class SiftFeatures:
+    """SIFT keypoints/descriptors of ONE image (prepped space).
+
+    extract() and match_features() split the old match() so a query image is
+    detected ONCE per request instead of once per candidate (the query used to
+    be re-detected 4x on the fast path / 12x on the full path per probe
+    orientation). Values are byte-identical to the old path: same detector,
+    same prepping, same BFMatcher, same ratio test, same artwork filter.
+    """
+    kpts: np.ndarray  # [N, 2] float32 (x, y) in the prepped image space
+    desc: np.ndarray  # [N, 128] float32 (or None when detection failed)
+    width: int        # prepped image width (artwork filter reference)
+    height: int       # prepped image height
+
+    @property
+    def nbytes(self) -> int:
+        return int(self.kpts.nbytes + (self.desc.nbytes if self.desc is not None else 0))
+
+
 class SiftMatcher:
     name = "sift"
 
@@ -85,32 +106,44 @@ class SiftMatcher:
             return image
         return cv2.resize(image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
 
-    def match(self, image_a: np.ndarray, image_b: np.ndarray) -> Verification:
-        prep_a = self._prep(image_a)
-        prep_b = self._prep(image_b)
-        gray_a = cv2.cvtColor(prep_a, cv2.COLOR_BGR2GRAY)
-        gray_b = cv2.cvtColor(prep_b, cv2.COLOR_BGR2GRAY)
-        ka, da = self.detector.detectAndCompute(gray_a, None)
-        kb, db = self.detector.detectAndCompute(gray_b, None)
-        if da is None or db is None or len(ka) < 8 or len(kb) < 8:
+    def extract(self, image: np.ndarray) -> SiftFeatures:
+        """Detect+describe once; reusable across any number of comparisons."""
+        prep = self._prep(image)
+        gray = cv2.cvtColor(prep, cv2.COLOR_BGR2GRAY)
+        kpts, desc = self.detector.detectAndCompute(gray, None)
+        if desc is None or len(kpts) == 0:
+            return SiftFeatures(np.zeros((0, 2), dtype=np.float32), np.zeros((0, 128), dtype=np.float32),
+                                int(prep.shape[1]), int(prep.shape[0]))
+        kpts_xy = np.array([kp.pt for kp in kpts], dtype=np.float32)
+        return SiftFeatures(kpts_xy, desc, int(prep.shape[1]), int(prep.shape[0]))
+
+    def match_features(self, a: SiftFeatures, b: SiftFeatures) -> Verification:
+        """Ratio-test + artwork filter + RANSAC on PRECOMPUTED features.
+
+        Byte-identical results to the old match(image_a, image_b): the ops and
+        their order are unchanged, only the redundant re-detection is gone."""
+        if a.desc is None or b.desc is None or len(a.kpts) < 8 or len(b.kpts) < 8:
             return Verification(0, 0, 0.0, 999.0, None, self.name)
-        raw = self.matcher.knnMatch(da, db, k=2)
+        raw = self.matcher.knnMatch(a.desc, b.desc, k=2)
         good = []
         for pair in raw:
             if len(pair) == 2 and pair[0].distance < 0.75 * pair[1].distance:
                 good.append(pair[0])
         if len(good) < 8:
             return Verification(len(good), len(good), 0.0, 999.0, None, self.name)
-        pts_a = np.array([ka[m.queryIdx].pt for m in good], dtype=np.float32)
-        pts_b = np.array([kb[m.trainIdx].pt for m in good], dtype=np.float32)
+        pts_a = a.kpts[[m.queryIdx for m in good]]
+        pts_b = b.kpts[[m.trainIdx for m in good]]
         # Only artwork-band matches count as identity evidence: trainer/item/energy
         # cards share the outer frame and text layout, which otherwise produces
         # convincing homographies on the WRONG card.
-        mask = _artwork_filter(pts_a, prep_a.shape[1], prep_a.shape[0]) & \
-               _artwork_filter(pts_b, prep_b.shape[1], prep_b.shape[0])
+        mask = _artwork_filter(pts_a, a.width, a.height) & \
+               _artwork_filter(pts_b, b.width, b.height)
         if int(mask.sum()) < 8:
             return Verification(0, len(good), 0.0, 999.0, None, self.name)
         return _ransac_verify(pts_a[mask], pts_b[mask], int(mask.sum()), self.name)
+
+    def match(self, image_a: np.ndarray, image_b: np.ndarray) -> Verification:
+        return self.match_features(self.extract(image_a), self.extract(image_b))
 
 
 class AkazeMatcher:
@@ -164,8 +197,8 @@ class AlikedLightGlueMatcher:
     _instance_lock = threading.Lock()
 
     def __init__(self):
-        self._aliked: Optional[ort.InferenceSession] = None
-        self._lightglue: Optional[ort.InferenceSession] = None
+        self._aliked: Optional[OrtSession] = None
+        self._lightglue: Optional[OrtSession] = None
         self._lock = threading.Lock()
 
     def _ensure(self):
@@ -174,12 +207,10 @@ class AlikedLightGlueMatcher:
         with self._lock:
             if self._aliked is not None:
                 return
-            providers = [p for p in ("CUDAExecutionProvider", "DmlExecutionProvider", "CPUExecutionProvider")
-                         if p in ort.get_available_providers()]
-            self._aliked = ort.InferenceSession(os.path.join(MODELS_DIR, "aliked-n16-top1k-640.onnx"),
-                                                sess_options=_SESSION_OPTS, providers=providers)
-            self._lightglue = ort.InferenceSession(os.path.join(MODELS_DIR, "lightglue-aliked.onnx"),
-                                                   sess_options=_SESSION_OPTS, providers=providers)
+            # OrtSession: DirectML-safe options + serialized Run when the
+            # session really runs on DML (official EP constraints).
+            self._aliked = OrtSession(os.path.join(MODELS_DIR, "aliked-n16-top1k-640.onnx"))
+            self._lightglue = OrtSession(os.path.join(MODELS_DIR, "lightglue-aliked.onnx"))
 
     @staticmethod
     def _prep(image: np.ndarray) -> np.ndarray:

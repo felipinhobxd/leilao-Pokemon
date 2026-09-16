@@ -346,6 +346,30 @@ function jpegBlob(canvas: HTMLCanvasElement) {
 
 export async function normalizeCardWithCornelius(file: File, onProgress?: (message: string) => void) {
   onProgress?.("🧠 Cornelius · detectando os quatro cantos por rede neural…");
+  // Worker path first: the ONNX WASM inference AND the perspective warp both
+  // run OFF the main thread (each is heavy enough to freeze the whole UI for
+  // hundreds of ms per photo when recognition falls back to the browser).
+  const viaWorker = await normalizeWithWorker(file);
+  if (viaWorker) {
+    const { detection, blob } = viaWorker;
+    if (detection.status !== "detected" || !("quad" in detection && detection.quad) || !blob) {
+      return { detection } as const;
+    }
+    onProgress?.("📐 Cornelius · corrigindo perspectiva da carta…");
+    const result: CorneliusNormalization = {
+      file: new File([blob], `cornelius-${file.name.replace(/\.[^.]+$/, "")}.jpg`, { type: "image/jpeg", lastModified: file.lastModified }),
+      blob,
+      width: viaWorker.width ?? NORMALIZED_WIDTH,
+      height: viaWorker.height ?? NORMALIZED_HEIGHT,
+      rotation: 0,
+      method: "cornelius",
+      confidence: normalizedCorneliusConfidence(detection.confidence),
+      quad: detection.quad,
+    };
+    return { detection, normalization: result } as const;
+  }
+  // Inline fallback (no Worker support, or the worker failed to start):
+  // the original main-thread path, unchanged.
   const decoded = await decodeFile(file);
   const canvas = sourceCanvas(decoded);
   try {
@@ -372,4 +396,69 @@ export async function normalizeCardWithCornelius(file: File, onProgress?: (messa
   } finally {
     canvas.width = canvas.height = 0;
   }
+}
+
+// --------------------------------------------------------------------- worker
+type WorkerDetectionOutcome = {
+  detection: {
+    status: "detected" | "absent" | "failed";
+    quad?: CardQuad;
+    confidence: number;
+    sharpness?: number;
+    presence?: number;
+    backend?: string;
+  };
+  blob?: Blob;
+  width?: number;
+  height?: number;
+};
+
+let corneliusWorker: Worker | null = null;
+let workerBroken = false;
+const pending = new Map<number, { resolve: (value: WorkerDetectionOutcome | null) => void }>();
+let workerJobId = 0;
+
+function getCorneliusWorker(): Worker | null {
+  if (workerBroken || typeof Worker === "undefined") return null;
+  if (corneliusWorker) return corneliusWorker;
+  try {
+    corneliusWorker = new Worker(new URL("./card-recognition-cornelius.worker.ts", import.meta.url), { type: "module" });
+    corneliusWorker.onmessage = (event: MessageEvent<{ id: number; error?: string } & WorkerDetectionOutcome>) => {
+      const waiter = pending.get(event.data.id);
+      if (!waiter) return;
+      pending.delete(event.data.id);
+      waiter.resolve(event.data.error ? null : (event.data as WorkerDetectionOutcome));
+    };
+    corneliusWorker.onerror = () => {
+      // Mark broken and fail every waiter: the inline path takes over.
+      workerBroken = true;
+      for (const waiter of pending.values()) waiter.resolve(null);
+      pending.clear();
+      corneliusWorker?.terminate();
+      corneliusWorker = null;
+    };
+    return corneliusWorker;
+  } catch {
+    workerBroken = true;
+    return null;
+  }
+}
+
+async function normalizeWithWorker(file: File, timeoutMs = 60_000): Promise<WorkerDetectionOutcome | null> {
+  const worker = getCorneliusWorker();
+  if (!worker) return null;
+  const id = ++workerJobId;
+  return new Promise<WorkerDetectionOutcome | null>(resolve => {
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      resolve(null); // worker stuck: caller falls back to the inline path
+    }, timeoutMs);
+    pending.set(id, {
+      resolve: value => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+    });
+    worker.postMessage({ id, file });
+  });
 }

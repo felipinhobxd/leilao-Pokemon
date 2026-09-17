@@ -72,3 +72,5 @@ coverage.xml
 *.tar.xz
 *.tar.zst
 ```
+# Next.js build
+.next/

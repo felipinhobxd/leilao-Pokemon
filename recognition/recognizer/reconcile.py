@@ -27,6 +27,12 @@ Cards present only in pokemon-tcg-data are INSERTED (source-tagged, with
 image_alt so the scan chain can fetch their images). Cards present only in
 TCGdex stay (they are already there). The gap report states both directions
 plus the intersection — no source is treated as absolute truth.
+
+Limitless TCG reconciliation (PT-BR):
+- Same card-level matching via (set_id, normalized localId).
+- Accepts alphanumeric localIds like "PROMO-A", "SVP-001", "DEV-01".
+- Backfills image_alt for PT-BR cards without TCGdex scans.
+- Inserts missing PT-BR promos from Limitless not in TCGdex.
 """
 from __future__ import annotations
 
@@ -40,7 +46,7 @@ from typing import Optional
 
 from .catalog import (SOURCES_PTCGDATA, SOURCES_TCGDEX, CardRecord, _lock,
                       record_conflict)
-from .sources import PtcgCard, PtcgSet
+from .sources import PtcgCard, PtcgSet, LimitlessCard, LimitlessSet, SOURCES_LIMITLESS
 
 
 def normalize_local_id(local_id: str) -> str:
@@ -387,7 +393,138 @@ def backfill_alt_images(conn: sqlite3.Connection, language: str, listing: list[d
     return n
 
 
+def reconcile_limitless_ptbr(conn: sqlite3.Connection, listing: list[dict],
+                             limitless_sets: list[LimitlessSet],
+                             cards_by_set: dict[str, list[LimitlessCard]]) -> ReconcileReport:
+    """Reconcile Limitless TCG PT-BR cards against TCGdex primary.
+    
+    Similar to reconcile_ptcgdata but for PT-BR promos and cards with
+    alphanumeric localIds that TCGdex may miss. Inserts missing cards
+    and backfills image_alt for scanless cards.
+    
+    Returns a ReconcileReport with counts of inserted/backfilled cards.
+    """
+    report = ReconcileReport(language="pt-BR", secondary_source=SOURCES_LIMITLESS)
+    matches = match_sets(listing, [
+        PtcgSet(s.set_id, s.name, s.series, s.printed_total, s.total, s.release_date)
+        for s in limitless_sets
+    ])
+    report.matched_sets = len(matches.matched)
+    report.only_primary_sets = matches.only_primary
+    report.only_secondary_sets = matches.only_secondary
+
+    # Existing PT-BR rows indexed by reconciliation key
+    rows = conn.execute(
+        "SELECT id, set_id, local_id, name, denominator, image_base, image_alt, rarity, subtypes, sources, hp "
+        "FROM cards WHERE language='pt-BR'").fetchall()
+    by_key: dict[str, tuple] = {}
+    id_to_key: dict[str, str] = {}
+    for row in rows:
+        key = f"{row[1]}|{normalize_local_id(row[2])}"
+        by_key[key] = row
+        id_to_key[row[0]] = key
+
+    inserts: list[CardRecord] = []
+    with _lock:
+        for lim_set_id, tcgdex_set_id in matches.matched.items():
+            cards = cards_by_set.get(lim_set_id)
+            if cards is None:
+                report.failed_secondary_sets.append(lim_set_id)
+                continue
+            set_info = next((s for s in limitless_sets if s.set_id == lim_set_id), None)
+            for card in cards:
+                norm = normalize_local_id(card.number)
+                if not norm:
+                    continue
+                key = f"{tcgdex_set_id}|{norm}"
+                existing = by_key.get(key)
+                sources_patch = {SOURCES_LIMITLESS: {"number": card.number, "rarity": card.rarity}}
+                if existing is None:
+                    # Card only in Limitless: insert, source-tagged, with image_url
+                    card_id = f"{tcgdex_set_id}-{card.number}"
+                    inserts.append(CardRecord(
+                        id=card_id, language="pt-BR", set_id=tcgdex_set_id,
+                        set_name=(set_info.name if set_info else tcgdex_set_id),
+                        serie_name=(set_info.series if set_info else ""),
+                        serie_id="", local_id=card.number, name=card.name,
+                        hp=card.hp,
+                        denominator=set_info.printed_total if set_info else None,
+                        image_base=card.image_url,  # Use Limitless image as primary for new cards
+                        variants="{}",
+                        release_date=(set_info.release_date if set_info else ""),
+                        scan_status="validated" if card.image_url else "not_available",
+                        canonical_id=f"{tcgdex_set_id}|{card.number}",
+                        rarity=card.rarity,
+                        subtypes=json.dumps(card.subtypes, ensure_ascii=False),
+                        image_alt="",
+                        sources=json.dumps(sources_patch, ensure_ascii=False),
+                    ))
+                    report.cards_only_secondary += 1
+                    report.inserted_secondary_cards += 1
+                    continue
+                # Both sources have the card: enrich + ledger disagreements.
+                (row_id, _sid, _lid, row_name, row_den, row_img, row_alt, row_rarity,
+                 row_subtypes, row_sources, row_hp) = existing
+                report.cards_both += 1
+                updates: dict[str, object] = {}
+                merged_sources = json.loads(row_sources or "{}")
+                merged_sources.update(sources_patch)
+
+                if not row_rarity and card.rarity:
+                    updates["rarity"] = card.rarity
+                    report.enriched_rarity += 1
+                elif row_rarity and card.rarity and row_rarity != card.rarity:
+                    record_conflict(conn, "pt-BR", row_id, SOURCES_TCGDEX, SOURCES_LIMITLESS,
+                                    "rarity", row_rarity, card.rarity, f"kept:{SOURCES_TCGDEX}")
+                    report.conflicts += 1
+                if not row_subtypes or row_subtypes == "[]":
+                    if card.subtypes:
+                        updates["subtypes"] = json.dumps(card.subtypes, ensure_ascii=False)
+                        report.enriched_subtypes += 1
+                if _normalize_name(card.name) != _normalize_name(row_name or ""):
+                    record_conflict(conn, "pt-BR", row_id, SOURCES_TCGDEX, SOURCES_LIMITLESS,
+                                    "name", row_name, card.name, f"kept:{SOURCES_TCGDEX}")
+                    report.conflicts += 1
+                printed_total = None
+                if set_info is not None:
+                    printed_total = set_info.printed_total or None
+                if row_den is None and printed_total is not None:
+                    updates["denominator"] = printed_total
+                elif (row_den is not None and printed_total is not None
+                      and int(row_den) != int(printed_total)):
+                    record_conflict(conn, "pt-BR", row_id, SOURCES_TCGDEX, SOURCES_LIMITLESS,
+                                    "denominator", row_den, printed_total,
+                                    f"kept:{SOURCES_TCGDEX}")
+                    report.conflicts += 1
+                if row_hp is None and card.hp is not None:
+                    updates["hp"] = card.hp
+                # image_alt backfill: only when the row has no TCGdex scan at all
+                if (not row_img) and (not row_alt) and card.image_url:
+                    updates["image_alt"] = card.image_url
+                    report.backfilled_image_alt += 1
+                updates["sources"] = json.dumps(merged_sources, ensure_ascii=False)
+                if updates:
+                    assign = ", ".join(f"{col} = ?" for col in updates)
+                    conn.execute(f"UPDATE cards SET {assign} WHERE id = ? AND language = 'pt-BR'",
+                                 (*updates.values(), row_id))
+        # Cards only in the primary source (present in TCGdex, absent in Limitless)
+        matched_keys = set()
+        for lim_set_id, tcgdex_set_id in matches.matched.items():
+            for card in cards_by_set.get(lim_set_id, []):
+                norm = normalize_local_id(card.number)
+                if norm:
+                    matched_keys.add(f"{tcgdex_set_id}|{norm}")
+        for key, row in by_key.items():
+            if key not in matched_keys:
+                report.cards_only_primary += 1
+        conn.commit()
+    if inserts:
+        from .catalog import save_records
+        save_records(conn, inserts)
+    return report
+
+
 __all__ = [
     "normalize_local_id", "match_sets", "SetMatchReport", "ReconcileReport",
-    "reconcile_ptcgdata", "backfill_alt_images",
+    "reconcile_ptcgdata", "backfill_alt_images", "reconcile_limitless_ptbr",
 ]

@@ -207,6 +207,64 @@ Contexto do relato na máquina-alvo (Windows, Ryzen 5 3500, RX 570 4 GB): o serv
 | `RECOGNITION_EMBED_CHUNK` | `2` | (existente) batch interno do embedding — só mude com benchmark |
 | `RECOGNITION_MAX_CONCURRENCY` | `1` | (existente) paralelismo de reconhecimento no serviço |
 
+## Rodada de catálogo multi-fonte 2026-09-17 (branch `feat/catalog-multisource`)
+
+Objetivo declarado da rodada: EN + JA + pt-BR o mais completo possível, com identidade vs printing, reconciliação de fontes, detecção de lacunas e MAIOR RECALL — sem sacrificar precisão nem latência.
+
+**Fontes (verificadas ao vivo, disponibilidade registrada em `sources.status`)**
+- **TCGdex** (primária): descoberta dinâmica de séries/sets/cartas em todos os idiomas. Nenhum id de set é fixado no código — o listing é relido a cada execução e comparado ao censo por-set (`catalog.sets_census.<lang>`): expansão nova amanhã é detectada e baixada sozinha, sem `--refresh`.
+- **pokemon-tcg-data** (EN): 176 sets / 20.6k cartas com number/rarity/subtypes/imagens — reconciliado contra o TCGdex por chave (idioma, set, localId normalizado). Sets casados por id exato, depois nome+data(±45d)+contagem (sem listas fixas). TG/GG/SV subsets existem só no TCGdex e aparecem como `only-tcgdex` no relatório — nada é forçado.
+- **pokemon.com**: Indapsula (JS challenge) em toda página de carta — não consumível por HTTP; registrado como indisponível com o motivo.
+- **pokemon-card.com** (JA oficial): busca renderizada no cliente, sem JSON público — registrado como indisponível.
+- **cartasdepokemon.com.br**: app client-side com sitemap podre (todas as URLs 404) — registrado como indisponível.
+
+**Números reais do sync completo (2026-09-17, API ao vivo)**
+- pt-BR: 13.907 cartas · 125 sets · scans 12.746 primários **+ 709 espelho de 2a fonte** · 1.161 not_available
+- en: 23.849 cartas · 220 sets · scans 19.666 primários **+ 965 de 2a fonte** · 4.183 not_available · 269 conflitos registrados
+- ja: 12.781 cartas · 184 sets · scans 3.882 · 8.899 not_available · **5 sets "fantasma" upstream** (SM1+, sm2+, SM3+, SM4+, SM5+ — o TCGdex lista com cardCount mas o endpoint responde 503 e as cartas não existem em nenhum outro endpoint; 336 cartas)
+- es: 15.510 cartas (opcional, não-bloqueante)
+- reconcile EN: 174/176 sets casados · 20.484 cartas em ambas · 3.253 só-TCGdex (TG/GG/SV + promos) · 116 só-pokemon-tcg-data (inseridas com fonte marcada) · 20.194 raridades enriquecidas · 852+709 imagens alternativas
+- Total: **66.047 cartas** (vs 37.643 da rodada anterior — en+pt)
+
+**Modelo de dados v2 (migração aditiva, funciona no cards.sqlite existente)**
+- Cada linha é um *printing*; `canonical_id` (set|localId) liga gêmeos de idioma do mesmo set internacional (pt sv01-025 ↔ en sv01-025).
+- Colunas novas: `rarity`, `subtypes`, `canonical_id`, `image_alt`, `sources` (JSON com ids nativos por fonte); tabela `conflicts` (sourceA, sourceB, field, valueA, valueB, resolution — nada é sobrescrito silenciosamente); `scans` ganha `width`/`height`/`source`.
+- Política de merge determinística: imagem TCGdex vence (a cadeia de cache é indexada nela); rarity/subtypes do pokemon-tcg-data quando o TCGdex não tem; nome/denominador conflitantes são registrados e o valor TCGdex mantido (a calibração é dele).
+
+**Backfill de imagens da 2a fonte (o ganho de recall)**
+- Cadeia de resolução por carta: scan próprio → espelho EN do TCGdex → **imagem pokemon-tcg-data (hires → small)**, validada por magic bytes + decode + dimensões mínimas (200x280) + sha256. Cartas sem scan no TCGdex (4.070 en + 1.161 pt) ganham a arte EN equivalente quando existe — entram no índice visual em vez de ficarem invisíveis.
+- pt-BR de sets internacionais (sv01, svp, …): mesma arte, CDN independente — 709 cartas.
+
+**Gaps: detecção, retry e "upstream-unavailable"**
+- `catalog.gaps.<lang>` lista os sets falhos; a próxima execução busca SOMENTE eles (validado ao vivo: ja re-buscou 5/184 sets, o resto "up to date").
+- Set que falha 3 execuções seguidas (503 persistente do lado da fonte) vira `upstream-unavailable`: continua registrado e retentado (self-healing), mas NÃO bloqueia mais a instalação. Validado ao vivo com os 5 sets fantasma do ja.
+- Stamp `catalog.updated.<lang>` só quando TODO set esperado foi buscado; caso contrário o relatório diz `partial` com os gaps explícitos.
+
+**Reconhecimento (mudanças conservadoras, sem tocar thresholds/Top-K/fusão)**
+- `variants` agora é povoado (era vazio em TODAS as 37k cartas — o set endpoint do TCGdex não fornece; per-card/details + pokemon-tcg-data trazem). Rótulo de variante + `rarity` no payload do candidato (metadado de exibição, peso zero na fusão).
+- Números alfanuméricos de colecionador: `TG05/TG30`, `GG07`, `SVP001`, `SM99` parseados como evidência ADICIONAL (só quando o caminho numérico N/M não leu nada; blacklist de HP/PS/GX/…; confusáveis de dígito alinhados pelo prefixo comum do par; `SVP001`→`001` casa com sets promo via tail-match mais fraco). N/M numérico continua com prioridade total.
+- Nomes japoneses: normalização CJK (nomes ja colapsavam para "" — bucket único, rota B cega para ja).
+
+**A/B benchmark (mesmas fixtures n=74, mesmos modelos, mesmo processo sandbox)**
+- BASE 7952c97 vs NEW: Top1 89,2→95,9 · Top3 94,6→100 · Top5 97,3→100 · name 95,9→100 · set 94,6→98,6 · N/M 91,9→98,6 · idioma 95,9→97,3 · IDENTIFICADO 36,5→40,5 · **falseHigh 0→0** · P50 13,1s→11,0s · P95 20,6s→20,1s.
+- Zero regressões por fixture; 5 melhorias — todas nas classes-alvo (cartas só-2a-fonte e subsets TG).
+- Escala do índice (medido, busca Top-50 de 4 views, dim 768): 25k linhas 10 ms → 66k 32 ms → 150k 80 ms. O catálogo grande não destrói a latência (rota A continua brute-force; SIFT só no Top-12).
+- Bug real corrigido no caminho: checkpoints do `build_index.py` nunca disparavam com batch=8 (`processed % 500 == 0` é inalcançável em passos de 8) — build interrompido recomeçava do zero apesar da promessa de retomável.
+
+### Variáveis de ambiente novas (além das da rodada de estabilidade)
+
+| Variável | Default | Efeito |
+|---|---|---|
+| `RECOGNITION_CATALOG_CARD_DETAILS` | `1` | `0` desativa o enriquecimento per-card (rarity/variants via endpoint individual do TCGdex; incremental, só linhas sem rarity) |
+| `INDEX_CHECKPOINT_EVERY` | `500` | Intervalo mínimo de cartas entre checkpoints do índice |
+
+### Ferramentas da rodada
+- `scripts/build_catalog.py`: sync incremental multi-fonte + reconciliação + relatório de cobertura (`catalog.coverage.<lang>`) + `--no-card-details` / `--details-limit`.
+- `scripts/download_scans.py`: sincronizador com validação completa (magic bytes + decode + dimensões + sha256) e estados por scan.
+- `scripts/smoke_catalog_round.py`: smoke E2E ao vivo (fontes reais, slice limitado).
+- `scripts/benchmark_index_scaling.py`: escala da busca vs tamanho do catálogo.
+- `tests/test_catalog_round.py`: 41 testes (descoberta incremental, resume, gaps, corrupt, checksum, reconciliação, conflitos, EN/JA/pt, números alfanuméricos, identidade/printing, variantes/rarity).
+
 ## Instalação (Windows)
 
 ```powershell

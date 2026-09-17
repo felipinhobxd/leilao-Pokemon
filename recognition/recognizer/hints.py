@@ -38,28 +38,32 @@ NUMBER_LOOSE_RE = re.compile(r"\b(\d{1,3})\D{1,3}(\d{2,3})\b")
 HP_RE = re.compile(r"(?:(\d{2,3})\s*(?:PS|Ps|ps|HP|hp))|(?:(?:PS|Ps|ps|HP|hp)\s*(\d{2,3}))")
 
 # Alphanumeric collector numbers: subsets and promos print "TG05/TG30",
-# "GG07/GG70", "SVP001", "SM99" instead of plain "25/165". Both sides of the
-# pair must share the letter prefix (that is the subset's numbering scheme —
-# a mismatched prefix is OCR noise, not a number). The solo form requires
-# >= 2 letters so HP/PS readings ("PS60") and stats tokens never match.
-NUMBER_ALNUM_PAIR_RE = re.compile(r"\b([A-Za-z]{1,4}\d{1,3})\s*[/|lI]\s*([A-Za-z]{1,4}\d{1,3})\b")
-NUMBER_ALNUM_SOLO_RE = re.compile(r"\b([A-Za-z]{2,4}\d{2,3})\b")
+# "GG07/GG70", "SVP001", "SM99" instead of plain "25/165". The digit part
+# may contain OCR confusables (O/I/l/S/B/Z read where 0/1/1/5/8/2 was
+# printed — "TG3O"), which the common-prefix alignment below resolves. The
+# solo form requires >= 2 letters so HP/PS readings ("PS60") and stats
+# tokens never match.
+NUMBER_ALNUM_PAIR_RE = re.compile(
+    r"\b([A-Za-z]{1,4}[0-9OIlSBZ]{1,3})\s*[/|lI]\s*([A-Za-z]{1,4}[0-9OIlSBZ]{1,3})\b")
+NUMBER_ALNUM_SOLO_RE = re.compile(r"\b([A-Za-z]{2,4}[0-9OIlSBZ]{1,3})\b")
 # Tokens that look like alphanumeric numbers but never are (HP readings in
-# pt-BR/en, rarity suffixes read as words).
-_ALNUM_BLACKLIST = {"PS", "HP", "GX", "VMAX", "VSTAR", "SP", "TIP"}
+# pt-BR/en, rarity suffixes read as words, "No." labels).
+_ALNUM_BLACKLIST = {"PS", "HP", "GX", "VMAX", "VSTAR", "SP", "TIP", "NO"}
 
 
-def _alnum_confusable_fix(token: str) -> str:
-    """OCR digit confusables inside the DIGIT segment only: O->0, I/l->1,
-    S->5, B->8, Z->2. The letter prefix is left untouched (it is the subset
-    code and must stay verbatim)."""
-    match = re.match(r"^([A-Z]+)(.*)$", token)
-    if not match:
-        return token
-    prefix, rest = match.groups()
-    fixed = (rest.replace("O", "0").replace("I", "1").replace("l", "1")
-                 .replace("S", "5").replace("B", "8").replace("Z", "2"))
-    return prefix + fixed
+def _digit_confusables(segment: str) -> str:
+    """OCR digit confusables: O->0, I/l->1, S->5, B->8, Z->2."""
+    return (segment.replace("O", "0").replace("I", "1").replace("l", "1")
+                  .replace("S", "5").replace("B", "8").replace("Z", "2"))
+
+
+def _common_prefix(a: str, b: str) -> str:
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return a[:n]
 
 
 def _normalize(value: str) -> str:
@@ -210,16 +214,22 @@ def extract_hints(ocr: OcrResult) -> OcrHints:
                 continue
             pair = NUMBER_ALNUM_PAIR_RE.search(text)
             if pair:
-                left = _alnum_confusable_fix(pair.group(1).upper())
-                right = _alnum_confusable_fix(pair.group(2).upper())
-                left_prefix = re.match(r"^[A-Z]+", left).group(0)
-                right_prefix = re.match(r"^[A-Z]+", right).group(0)
-                if left_prefix == right_prefix and left_prefix not in _ALNUM_BLACKLIST:
-                    alnum = (left, right, float(line.confidence))
+                left_raw = pair.group(1).upper()
+                right_raw = pair.group(2).upper()
+                left_prefix = re.match(r"^[A-Z]+", left_raw).group(0)
+                right_prefix = re.match(r"^[A-Z]+", right_raw).group(0)
+                # The two sides share the subset's numbering scheme, so their
+                # letter prefixes must agree. When one side misread DIGIT
+                # confusables as letters ("TGO5" vs "TG3O"), aligning on the
+                # LONGEST COMMON prefix recovers both ("TG05"/"TG30").
+                common = _common_prefix(left_prefix, right_prefix)
+                if common and common not in _ALNUM_BLACKLIST:
+                    left = common + _digit_confusables(left_raw[len(common):])
+                    alnum = (left, None, float(line.confidence))
                     break
             solo = NUMBER_ALNUM_SOLO_RE.search(text)
             if solo:
-                token = _alnum_confusable_fix(solo.group(1).upper())
+                token = solo.group(1).upper()
                 prefix = re.match(r"^[A-Z]+", token).group(0)
                 if prefix not in _ALNUM_BLACKLIST:
                     # Solo: slightly weaker evidence (no denominator to

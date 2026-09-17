@@ -35,7 +35,11 @@ CODE_LANG = {v: k for k, v in LANG_CODE.items()}
 CORE_LANGUAGES = ("pt-BR", "en", "ja")
 OPTIONAL_LANGUAGES = ("es",)
 
-_lock = threading.Lock()
+_lock = threading.RLock()
+# RLock (reentrant): the reconciler runs INSIDE the write lock and calls
+# record_conflict/save_records helpers that acquire it again — a plain Lock
+# deadlocked there. Reentrancy is same-thread only; cross-thread semantics
+# (mutual exclusion) are unchanged.
 
 # Thread-local requests.Session: connection pooling without cross-thread
 # sharing (requests.Session is NOT documented as thread-safe). Each worker
@@ -275,15 +279,15 @@ def _ptcg_url(alt_url: str, quality: str) -> Optional[str]:
     the small variant is the same path without the _hires suffix."""
     if not alt_url:
         return None
-    if "/_hires" in alt_url:
-        stem = alt_url[: alt_url.index("/_hires")]
-        suffix = alt_url[alt_url.rindex("."):] if "." in alt_url[alt_url.rindex("/"):] else ".png"
-        return f"{stem}{suffix}" if quality == "small" else alt_url
+    dot = alt_url.rfind(".")
+    suffix = alt_url[dot:] if dot > alt_url.rfind("/") else ".png"
+    if "_hires" in alt_url:
+        stem = alt_url[: alt_url.index("_hires")]
+        return alt_url if quality == "hires" else f"{stem}{suffix}"
     # stored as the plain (small) url: hi-res is the derived one
     if quality == "small":
         return alt_url
-    dot = alt_url.rfind(".")
-    return f"{alt_url[:dot]}_hires{alt_url[dot:]}" if dot > 0 else None
+    return f"{alt_url[:dot]}_hires{suffix}" if dot > 0 else None
 
 
 def _ptcg_cache_path(alt_url: str, quality: str) -> str:

@@ -143,11 +143,26 @@ def match_sets(primary_sets: list[dict], ptcg_sets: list[PtcgSet]) -> SetMatchRe
             used_primary.add(good[0])
             by_name[_normalize_name(p.name)] = [s for s in candidates if s != good[0]]
 
-    # Pass 3: unambiguous name match
+    # Pass 3: unambiguous name match. The date guard still applies when both
+    # sides publish a date: "Base" 1999 and a hypothetical modern "Base" are
+    # NOT the same set, whatever the name says.
+    def _dates_compatible(primary: dict, p: PtcgSet) -> bool:
+        p_date = _parse_release_date(p.release_date)
+        s_date = _parse_release_date(primary.get("releaseDate") or "")
+        if not p_date or not s_date:
+            return True  # unknown dates cannot contradict
+        try:
+            delta = abs(time.mktime(time.strptime(p_date, "%Y%m%d"))
+                        - time.mktime(time.strptime(s_date, "%Y%m%d")))
+        except ValueError:
+            return True
+        return delta <= 45 * 86400
+
     for p in ptcg_sets:
         if p.set_id in report.matched:
             continue
-        candidates = [s for s in by_name.get(_normalize_name(p.name), []) if s not in used_primary]
+        candidates = [s for s in by_name.get(_normalize_name(p.name), [])
+                      if s not in used_primary and _dates_compatible(by_id[s], p)]
         if len(candidates) == 1:
             report.matched[p.set_id] = candidates[0]
             used_primary.add(candidates[0])

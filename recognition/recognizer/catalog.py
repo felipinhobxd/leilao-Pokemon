@@ -47,6 +47,10 @@ _lock = threading.RLock()
 # instead of paying a fresh TLS handshake per download.
 _session_local = threading.local()
 
+# Global semaphore to limit concurrent HTTP requests across all workers.
+# Prevents Cloudflare 429 by capping simultaneous connections to 5.
+_http_semaphore = threading.Semaphore(5)
+
 
 def _get_session() -> requests.Session:
     """Per-thread Session with keep-alive pooling."""
@@ -141,17 +145,23 @@ SOURCES_TCGDEX = "tcgdex"
 SOURCES_PTCGDATA = "pokemon-tcg-data"
 
 
-def _http_get(url: str, timeout: float = 30.0, retries: int = 3) -> bytes:
-    """Fetch with failure-class-aware retries:
+def _http_get(url: str, timeout: float = 30.0, retries: int = 4) -> bytes:
+    """Fetch with failure-class-aware retries and exponential backoff:
 
     - 200            -> payload;
     - 404            -> FileNotFoundError immediately (definitive, never retried);
-    - 429            -> respect Retry-After when it is short, otherwise raise
-                        HttpRateLimited so callers back off instead of hammering;
+    - 429/503        -> respect Retry-After header when present; otherwise
+                        exponential backoff: 5s, 15s, 45s, 120s (max 4 attempts);
     - 5xx            -> exponential backoff with jitter, bounded retries;
     - timeout/conn   -> bounded retries with the same backoff;
     - other 4xx      -> surfaced as RuntimeError after the bounded retries.
+    
+    Backoff sequence: 5s, 15s, 45s, 120s (capped at 4 retries total).
+    When Retry-After header is present (429/503), it is honored instead of
+    the default backoff, up to a maximum of 120 seconds.
     """
+    # Exponential backoff sequence: 5s, 15s, 45s, 120s
+    backoff_sequence = [5.0, 15.0, 45.0, 120.0]
     last = None
     for attempt in range(retries):
         try:
@@ -160,20 +170,32 @@ def _http_get(url: str, timeout: float = 30.0, retries: int = 3) -> bytes:
                 return resp.content
             if resp.status_code == 404:
                 raise FileNotFoundError(url)
-            if resp.status_code == 429:
+            if resp.status_code in (429, 503):
                 retry_after = _parse_retry_after(resp)
-                if attempt + 1 >= retries or (retry_after or 0.0) > 120.0:
-                    raise HttpRateLimited(url, retry_after)
-                # honor a short Retry-After once instead of the default backoff
-                time.sleep(min(retry_after if retry_after is not None else 0.8 * (attempt + 1), 60.0))
-                last = HttpRateLimited(url, retry_after)
+                if retry_after is not None:
+                    # Honor server-provided Retry-After (capped at 120s)
+                    wait_time = min(retry_after, 120.0)
+                    print(f"[http] rate-limited on {url}, waiting {wait_time:.1f}s (Retry-After)")
+                    time.sleep(wait_time)
+                    last = HttpRateLimited(url, retry_after)
+                    continue
+                # No Retry-After header: use exponential backoff
+                if attempt + 1 >= retries:
+                    raise HttpRateLimited(url, None)
+                wait_time = backoff_sequence[attempt] if attempt < len(backoff_sequence) else 120.0
+                print(f"[http] rate-limited on {url}, backoff {wait_time:.1f}s")
+                time.sleep(wait_time)
+                last = HttpRateLimited(url, None)
                 continue
             last = RuntimeError(f"HTTP {resp.status_code} for {url}")
         except (FileNotFoundError, HttpRateLimited):
             raise
         except Exception as exc:  # noqa: BLE001
             last = exc
-        time.sleep(0.8 * (2 ** attempt) + random.uniform(0.0, 0.4))
+        # Exponential backoff with jitter for other failures
+        wait_time = backoff_sequence[attempt] if attempt < len(backoff_sequence) else 120.0
+        jitter = random.uniform(0.0, 0.4 * wait_time)
+        time.sleep(wait_time + jitter)
     raise RuntimeError(f"Failed to fetch {url}: {last}")
 
 
@@ -198,7 +220,9 @@ SCAN_QUALITY_CHAIN = ("high.webp", "low.webp")
 
 # Image magic bytes (JPEG / WebP / PNG / GIF) with a minimum plausible size
 # for a card scan; anything else (HTML error pages, redirects) is rejected.
-_MIN_SCAN_BYTES = 4096
+# Reduced from 4096 to 1024 to accept valid PNGs/WebPs of simple cards
+# (energy, old trainers) that compress below 4 KB.
+_MIN_SCAN_BYTES = 1024
 
 
 def _magic_ok(head: bytes) -> bool:
@@ -221,7 +245,7 @@ def _looks_like_image(data: bytes) -> bool:
 
 def _cached_scan_ok(path: str) -> bool:
     """Cache-hit validation: a previously downloaded file must still look like
-    an image (>= 4 KB + magic bytes). The CDN returns HTTP 200 + HTML for some
+    an image (>= 1 KB + magic bytes). The CDN returns HTTP 200 + HTML for some
     missing scans; older caches and interrupted writes can hold such garbage,
     and `exists && size > 0` happily serves it back forever.
     """
@@ -385,10 +409,11 @@ def resolve_scan_classified(image_base: Optional[str],
                     return (cached, f"en-{q}"), "ok"
                 elif os.path.exists(cached):
                     _invalidate_cache(cached)
-        # 3. own-language downloads
+        # 3. own-language downloads (with semaphore to limit concurrency)
         for q in chain:
             try:
-                data = _http_get(scan_url(image_base, q), timeout=25.0)
+                with _http_semaphore:
+                    data = _http_get(scan_url(image_base, q), timeout=25.0)
             except Exception as exc:  # noqa: BLE001
                 _note(exc)
                 continue
@@ -401,7 +426,8 @@ def resolve_scan_classified(image_base: Optional[str],
         if mirror_base:
             for q in chain:
                 try:
-                    data = _http_get(scan_url(mirror_base, q), timeout=25.0)
+                    with _http_semaphore:
+                        data = _http_get(scan_url(mirror_base, q), timeout=25.0)
                 except Exception as exc:  # noqa: BLE001
                     _note(exc)
                     continue
@@ -424,7 +450,8 @@ def resolve_scan_classified(image_base: Optional[str],
             if not url:
                 continue
             try:
-                data = _http_get(url, timeout=25.0)
+                with _http_semaphore:
+                    data = _http_get(url, timeout=25.0)
             except Exception as exc:  # noqa: BLE001
                 _note(exc)
                 continue

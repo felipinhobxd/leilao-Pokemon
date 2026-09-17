@@ -68,7 +68,7 @@ class TestNegativeCacheTTL(unittest.TestCase):
         calls = {"n": 0}
         original = catalog_module.resolve_scan_classified
 
-        def fake(image_base):
+        def fake(image_base, alt_url=None):
             result = outcomes[min(calls["n"], len(outcomes) - 1)]
             calls["n"] += 1
             return result
@@ -77,6 +77,7 @@ class TestNegativeCacheTTL(unittest.TestCase):
 
         class FakeRecord:
             image_base = "https://assets.tcgdex.net/pt/me/me01/001"
+            image_alt = ""
 
         class FakeCatalog:
             def card_by_key(self, language, card_id):
@@ -438,9 +439,13 @@ if __name__ == "__main__":
 
 # --------------------------------------------------------------------- build_catalog classes
 class TestBuildCatalogLanguageClasses(unittest.TestCase):
-    """Optional-language gaps must NEVER block the install; core gaps must."""
+    """Optional-language gaps must NEVER block the install; core gaps must.
 
-    def _run_main(self, tmp_db, languages, fetch_side_effects):
+    Since the 2026-09 catalog round, CORE = (pt-BR, en, ja) — EN + JA +
+    pt-BR is the declared objective — and OPTIONAL = (es).
+    """
+
+    def _run_main(self, tmp_db, languages, fetch_side_effects, sets=("s1", "s2", "s3")):
         """Run build_catalog.main() against a temp DB with mocked fetching."""
         import recognizer.catalog as cat
         import scripts.build_catalog as bc
@@ -455,13 +460,21 @@ class TestBuildCatalogLanguageClasses(unittest.TestCase):
                 raise outcome
             return outcome
 
-        argv = ["build_catalog.py", "--languages", languages]
+        def fake_listing(language):
+            return [{"id": sid, "cardCount": {"total": 5, "official": 5}} for sid in sets]
+
+        argv = ["build_catalog.py", "--languages", languages, "--no-card-details"]
         # Patch the build_catalog module namespace: it from-imports init_db,
         # so patching recognizer.catalog.init_db would leave the REAL default
         # DB in play (test pollution). Same reasoning for the return path:
         # every query re-opens the temp DB through this patched constructor.
         with patch.object(bc, "init_db", return_value=self._conn(tmp_db)), \
              patch.object(bc, "fetch_language_cards", side_effect=fake_fetch), \
+             patch.object(bc, "fetch_sets_listing", side_effect=fake_listing), \
+             patch.object(bc, "probe_sources",
+                          return_value={"tcgdex": {"available": False, "note": "offline test"},
+                                        "pokemon-tcg-data": {"available": False,
+                                                             "note": "offline test"}}), \
              patch.object(sys, "argv", argv):
             try:
                 bc.main()
@@ -497,11 +510,11 @@ class TestBuildCatalogLanguageClasses(unittest.TestCase):
             db = os.path.join(tmp, "t.sqlite")
             effects = {
                 "pt-BR": (cards("pt-BR"), self._report("pt-BR", [])),
-                "ja": (cards("ja"), self._report("ja", ["set-broken"])),
+                "es": (cards("es"), self._report("es", ["set-broken"])),
             }
-            code, calls, conn = self._run_main(db, "pt-BR,ja", effects)
+            code, calls, conn = self._run_main(db, "pt-BR,es", effects)
             self.assertEqual(code, 0, "gap em idioma OPCIONAL não pode bloquear a instalação")
-            gaps = conn.execute("SELECT value FROM meta WHERE key='catalog.gaps.ja'").fetchone()
+            gaps = conn.execute("SELECT value FROM meta WHERE key='catalog.gaps.es'").fetchone()
             self.assertIsNotNone(gaps, "gap do idioma opcional deve ser registrado")
             self.assertIn("set-broken", gaps[0])
             stamp = conn.execute("SELECT value FROM meta WHERE key='catalog.updated.pt-BR'").fetchone()
@@ -534,23 +547,33 @@ class TestBuildCatalogLanguageClasses(unittest.TestCase):
                                image_base="https://x/y", variants="{}", release_date="")]
         with tempfile.TemporaryDirectory() as tmp:
             db = os.path.join(tmp, "t.sqlite")
-            # First run: ja fails one set.
+            # First run: ja (CORE since the catalog round) fails one set —
+            # blocks, but saves the good rows and records the gap.
             effects = {"ja": (cards("ja"), self._report("ja", ["set-broken"]))}
             code, _, conn = self._run_main(db, "ja", effects)
-            self.assertEqual(code, 0)
-            # Second run: ja has a stamp? No — stamp only written when complete.
-            # Simulate the recorded gap driving a retry: same DB, gaps present.
+            self.assertEqual(code, 1, "ja é CORE: gap bloqueia")
+            # Second run: the recorded gap drives a retry of ONLY that set.
             effects2 = {"ja": (cards("ja"), self._report("ja", []))}
             argv_calls = []
             import scripts.build_catalog as bc
             from unittest.mock import patch
+
+            def fake_listing(language):
+                return [{"id": sid, "cardCount": {"total": 5, "official": 5}}
+                        for sid in ("s1", "s2", "s3")]
 
             def fake_fetch(language, sets_filter=None):
                 argv_calls.append(sets_filter)
                 return effects2[language]
             with patch.object(bc, "init_db", return_value=conn), \
                  patch.object(bc, "fetch_language_cards", side_effect=fake_fetch), \
-                 patch.object(sys, "argv", ["build_catalog.py", "--languages", "ja"]):
+                 patch.object(bc, "fetch_sets_listing", side_effect=fake_listing), \
+                 patch.object(bc, "probe_sources",
+                              return_value={"tcgdex": {"available": False, "note": "offline test"},
+                                            "pokemon-tcg-data": {"available": False,
+                                                                 "note": "offline test"}}), \
+                 patch.object(sys, "argv", ["build_catalog.py", "--languages", "ja",
+                                            "--no-card-details"]):
                 bc.main()
             self.assertEqual(argv_calls, [["set-broken"]],
                              "gap retry deve buscar APENAS os sets falhados")

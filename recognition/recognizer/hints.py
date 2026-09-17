@@ -37,8 +37,41 @@ NUMBER_RE = re.compile(r"(\d{1,3})\s*[/|lI]\s*(\d{1,3})")
 NUMBER_LOOSE_RE = re.compile(r"\b(\d{1,3})\D{1,3}(\d{2,3})\b")
 HP_RE = re.compile(r"(?:(\d{2,3})\s*(?:PS|Ps|ps|HP|hp))|(?:(?:PS|Ps|ps|HP|hp)\s*(\d{2,3}))")
 
+# Alphanumeric collector numbers: subsets and promos print "TG05/TG30",
+# "GG07/GG70", "SVP001", "SM99" instead of plain "25/165". The digit part
+# may contain OCR confusables (O/I/l/S/B/Z read where 0/1/1/5/8/2 was
+# printed — "TG3O"), which the common-prefix alignment below resolves. The
+# solo form requires >= 2 letters so HP/PS readings ("PS60") and stats
+# tokens never match.
+NUMBER_ALNUM_PAIR_RE = re.compile(
+    r"\b([A-Za-z]{1,4}[0-9OIlSBZ]{1,3})\s*[/|lI]\s*([A-Za-z]{1,4}[0-9OIlSBZ]{1,3})\b")
+NUMBER_ALNUM_SOLO_RE = re.compile(r"\b([A-Za-z]{2,4}[0-9OIlSBZ]{1,3})\b")
+# Tokens that look like alphanumeric numbers but never are (HP readings in
+# pt-BR/en, rarity suffixes read as words, "No." labels).
+_ALNUM_BLACKLIST = {"PS", "HP", "GX", "VMAX", "VSTAR", "SP", "TIP", "NO"}
+
+
+def _digit_confusables(segment: str) -> str:
+    """OCR digit confusables: O->0, I/l->1, S->5, B->8, Z->2."""
+    return (segment.replace("O", "0").replace("I", "1").replace("l", "1")
+                  .replace("S", "5").replace("B", "8").replace("Z", "2"))
+
+
+def _common_prefix(a: str, b: str) -> str:
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return a[:n]
+
 
 def _normalize(value: str) -> str:
+    # CJK-aware: Japanese names must not collapse to "" (see store.py). An
+    # empty normalization has meant "no name evidence" everywhere since the
+    # beginning, so preserving the glyphs extends the same semantics to ja.
+    if re.search(r"[ぁ-んァ-ン一-龯]", value or ""):
+        return re.sub(r"[^ぁ-んァ-ン一-龯ーA-Za-z0-9♀♂]+", " ", (value or "").strip()).strip()
     decomposed = unicodedata.normalize("NFD", value)
     stripped = "".join(ch for ch in decomposed if unicodedata.category(ch) != "Mn")
     return re.sub(r"[^a-z0-9♀♂]+", " ", stripped.lower()).strip()
@@ -167,6 +200,48 @@ def extract_hints(ocr: OcrResult) -> OcrHints:
         except ValueError:
             pass
         hints.number_confidence = best_number[2]
+    else:
+        # Alphanumeric collector numbers (subset/promo schemes). These never
+        # collide with the numeric parses above (they REQUIRE a letter
+        # prefix), so this is pure ADDITIONAL evidence for cards the numeric
+        # path cannot read at all. Preference: pair form with matching
+        # prefixes (TG05/TG30 — carries its own denominator), then solo form
+        # (SVP001 — number without denominator).
+        alnum = None
+        for line in sorted(ocr.lines, key=lambda l: -l.confidence):
+            text = line.text.strip()
+            if not text:
+                continue
+            pair = NUMBER_ALNUM_PAIR_RE.search(text)
+            if pair:
+                left_raw = pair.group(1).upper()
+                right_raw = pair.group(2).upper()
+                left_prefix = re.match(r"^[A-Z]+", left_raw).group(0)
+                right_prefix = re.match(r"^[A-Z]+", right_raw).group(0)
+                # The two sides share the subset's numbering scheme, so their
+                # letter prefixes must agree. When one side misread DIGIT
+                # confusables as letters ("TGO5" vs "TG3O"), aligning on the
+                # LONGEST COMMON prefix recovers both ("TG05"/"TG30").
+                common = _common_prefix(left_prefix, right_prefix)
+                if common and common not in _ALNUM_BLACKLIST:
+                    left = common + _digit_confusables(left_raw[len(common):])
+                    alnum = (left, None, float(line.confidence))
+                    break
+            solo = NUMBER_ALNUM_SOLO_RE.search(text)
+            if solo:
+                token = solo.group(1).upper()
+                prefix = re.match(r"^[A-Z]+", token).group(0)
+                if prefix not in _ALNUM_BLACKLIST:
+                    # Solo: slightly weaker evidence (no denominator to
+                    # corroborate the read).
+                    alnum = (token, None, float(line.confidence) * 0.85)
+                    break
+        if alnum is not None:
+            hints.local_id = alnum[0]
+            # The pair denominator ("TG30") is NOT an int: hints.denominator
+            # stays None so the N/M fusion evidence remains inert instead of
+            # fabricated — the local-id equality alone carries the match.
+            hints.number_confidence = alnum[2]
 
     language, language_conf = detect_language(ocr.text)
     hints.language, hints.language_confidence = language, language_conf

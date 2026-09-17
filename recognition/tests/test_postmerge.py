@@ -1114,12 +1114,13 @@ class TestScanSourceSurvivesCacheHit(unittest.TestCase):
 
         class FakeRecord:
             image_base = "https://assets.tcgdex.net/pt/me/me01/001"
+            image_alt = ""
 
         class FakeCatalog:
             def card_by_key(self, language, card_id):
                 return FakeRecord()
 
-        def fake_resolve(image_base):
+        def fake_resolve(image_base, alt_url=None):
             return (("/fake/scan.webp", source), "ok")
 
         def fake_fromfile(path, dtype=None):
@@ -1235,12 +1236,13 @@ class TestScanSingleFlight(unittest.TestCase):
 
         class FakeRecord:
             image_base = "https://assets.tcgdex.net/pt/me/me01/001"
+            image_alt = ""
 
         class FakeCatalog:
             def card_by_key(self, language, card_id):
                 return FakeRecord()
 
-        def fake_resolve(image_base):
+        def fake_resolve(image_base, alt_url=None):
             loads.append(image_base)
             load_event.wait(timeout=5)  # hold the first load so rivals pile up
             return (("/fake/scan.webp", "high.webp"), "ok")

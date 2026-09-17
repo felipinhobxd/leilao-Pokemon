@@ -11,8 +11,17 @@ from typing import Optional
 from .catalog import CardRecord, init_db, load_cards
 from .hints import OcrHints, name_similarity
 
+# Japanese card names (kana + kanji) must survive normalization: the old
+# [a-z0-9] filter mapped EVERY ja name to "" (one giant bucket, no route-B
+# name matching at all for ja cards). CJK ranges are kept as-is so
+# "ピカチュウ" indexes and matches against an OCR read of the same glyphs.
+_CJK_RE = re.compile(r"[ぁ-んァ-ン一-龯]")
+
 
 def _normalize(value: str) -> str:
+    if _CJK_RE.search(value or ""):
+        # Japanese read: keep CJK glyphs, drop latin punctuation noise.
+        return re.sub(r"[^ぁ-んァ-ン一-龯ーA-Za-z0-9♀♂]+", " ", (value or "").strip()).strip()
     decomposed = unicodedata.normalize("NFD", value)
     stripped = "".join(ch for ch in decomposed if unicodedata.category(ch) != "Mn")
     return re.sub(r"[^a-z0-9♀♂]+", " ", stripped.lower()).strip()
@@ -61,9 +70,19 @@ class CatalogStore:
                             scored.append((similarity * 55.0 * hints.name_confidence, card))
 
         if hints.local_id and hints.number_confidence >= 0.5:
+            # Alphanumeric reads ("SVP001", "TG05") carry a letter prefix the
+            # catalog may or may not store (TG subsets DO store "TG05"; promo
+            # sets store plain "001"). Exact match keeps the full-strength
+            # bonus; a tail-only digit match ("SVP001" -> "001") is a weaker
+            # signal — the prefix identified the SUBSET, the tail the card.
+            read = hints.local_id
+            read_tail = re.sub(r"^[A-Za-z]+", "", read) if not read.isdigit() else ""
             for card in self.cards:
-                if card.local_id.lstrip("0") == hints.local_id.lstrip("0"):
-                    bonus = 30.0 * hints.number_confidence
+                exact = card.local_id.lstrip("0") == read.lstrip("0")
+                tail_only = (not exact and read_tail
+                             and read_tail.lstrip("0") == card.local_id.lstrip("0"))
+                if exact or tail_only:
+                    bonus = 30.0 * hints.number_confidence if exact else 12.0 * hints.number_confidence
                     if hints.denominator and card.denominator == hints.denominator:
                         bonus += 25.0
                     if hints.language and card.language == hints.language:

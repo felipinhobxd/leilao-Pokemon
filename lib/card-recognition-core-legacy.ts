@@ -42,6 +42,8 @@ export type RecognitionCandidate = {
   hp: number | null;
   image: string | null;
   variant?: string;
+  /** Rarity as published by the catalog source (display-only metadata). */
+  rarity?: string;
   score: number;
   evidence?: CandidateEvidence;
   visualSimilarity?: number;

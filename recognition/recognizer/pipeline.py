@@ -61,6 +61,9 @@ class Candidate:
     ocr_full_number_match: bool = False
     image_url: str = ""
     variant: Optional[str] = None
+    # Rarity as published by the catalog source ("Rare", "Illustration
+    # Rare", …). Display metadata — it NEVER influences fusion scores.
+    rarity: str = ""
     # Which scan source actually resolved for this candidate
     # ("high.webp" | "low.webp" | "en-high.webp" | "en-low.webp" | None).
     # Transient metadata: candidates whose source is NOT the standard
@@ -97,6 +100,7 @@ class Candidate:
             "ocrHpMatch": self.ocr_hp_match,
             "imageUrl": self.image_url,
             "variant": self.variant,
+            "rarity": self.rarity or None,
             "memorySimilarity": round(self.memory_similarity, 4) if self.memory_similarity >= 0 else None,
         }
 
@@ -167,19 +171,28 @@ def candidate_from_record(record) -> "Candidate":
     """Build a Candidate from a CardRecord, including scan URL + variant."""
     import json as _json
     variant = None
+    rarity = getattr(record, "rarity", "") or ""
     try:
         variants = _json.loads(record.variants or "{}")
-        available = [["normal", "Normal"], ["holo", "Holo"], ["reverse", "Reverse Holo"]]
+        available = [["firstEdition", "1st Edition"], ["holo", "Holo"],
+                     ["reverse", "Reverse Holo"], ["normal", "Normal"],
+                     ["wPromo", "Promo (W)"]]
         labels = [label for key, label in available if variants.get(key) is True]
-        variant = labels[0] if len(labels) == 1 else None
+        variant = labels[0] if len(labels) == 1 else (", ".join(labels) if labels else None)
     except Exception:
         variant = None
+    if variant is None and rarity:
+        # No per-variant flags (set listing only): a distinctive rarity is
+        # better display metadata than nothing. Never fabricated — it comes
+        # verbatim from the source that published it.
+        variant = rarity
     return Candidate(
         card_id=record.id, language=record.language, set_id=record.set_id,
         set_name=record.set_name, name=record.name, local_id=record.local_id,
         denominator=record.denominator, hp=record.hp,
         image_url=f"{record.image_base}/high.webp" if record.image_base else "",
         variant=variant,
+        rarity=rarity,
     )
 
 
@@ -446,8 +459,10 @@ class Recognizer:
             if self.catalog is not None:
                 from .catalog import resolve_scan_classified
                 record = self.catalog.card_by_key(candidate.language, candidate.card_id)
-                if record is not None and record.image_base:
-                    resolved, reason = resolve_scan_classified(record.image_base)
+                alt_url = (getattr(record, "image_alt", "") or "") if record is not None else ""
+                base = record.image_base if (record is not None and record.image_base) else None
+                if base or alt_url:
+                    resolved, reason = resolve_scan_classified(base, alt_url or None)
                     if resolved is not None:
                         path, source = resolved
                         data = np.fromfile(path, dtype=np.uint8)
@@ -456,7 +471,7 @@ class Recognizer:
                             # truncated/corrupt file that passed the magic-byte
                             # check: treat as a miss, never serve it
                             path, source, image, reason = None, None, None, "transient"
-                elif record is None or not record.image_base:
+                else:
                     reason = "no-base"
             if image is not None:
                 candidate.scan_source = source

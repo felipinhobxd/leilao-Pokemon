@@ -115,6 +115,11 @@ def main() -> None:
     processed = 0
     downloaded = 0
     next_id = len(existing)
+    # Last periodic-checkpoint position. The old `processed % 500 == 0` test
+    # NEVER fired with batch=8 (processed jumps 8k and skips 500 — the only
+    # multiples of 200 it can hit), so an interrupted build silently lost all
+    # progress despite the "resumable" promise. Threshold instead of modulo.
+    last_checkpoint = 0
 
     def producer(work_queue: "queue.Queue") -> None:
         """Download + decode ahead of the inference loop. Bounded by the
@@ -126,7 +131,10 @@ def main() -> None:
             if key in existing:
                 continue
             t0 = time.perf_counter()
-            path = ensure_scan(card.image_base, "high.webp")
+            # Full chain incl. the second-source (pokemon-tcg-data) backfill:
+            # a card with no TCGdex scan but an alt image still gets indexed.
+            path = ensure_scan(card.image_base, "high.webp",
+                               getattr(card, "image_alt", "") or None)
             timing["download"] += time.perf_counter() - t0
             if not path:
                 continue
@@ -149,7 +157,7 @@ def main() -> None:
     worker.start()
 
     def flush(batch: list[tuple[str, np.ndarray]]) -> None:
-        nonlocal processed, next_id
+        nonlocal processed, next_id, last_checkpoint
         if not batch:
             return
         t0 = time.perf_counter()
@@ -163,8 +171,9 @@ def main() -> None:
         if processed % 200 == 0:
             rate = processed / max(0.001, time.time() - started)
             print(f"[index] {processed} cards ({rate:.1f}/s)", flush=True)
-        if processed % checkpoint_every == 0:
+        if processed - last_checkpoint >= checkpoint_every:
             _checkpoint(out_path, matrix, ids, next_id, timing)
+            last_checkpoint = processed
             print(f"[index] checkpoint at {next_id} cards", flush=True)
 
     while True:

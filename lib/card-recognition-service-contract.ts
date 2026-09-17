@@ -38,6 +38,10 @@ export type ServiceCandidate = {
   ocrHpMatch?: boolean;
   imageUrl?: string;
   variant?: string | null;
+  // Rarity as published by the catalog source ("Rare", "Illustration
+  // Rare", …). Display metadata from the multi-source catalog; never used
+  // for scoring.
+  rarity?: string | null;
 };
 
 export type ServiceResult = {
@@ -110,6 +114,7 @@ export function mapServiceCandidate(candidate: ServiceCandidate, serviceBase: st
     hp: candidate.hp ?? null,
     image: resolveServiceImageUrl(candidate.imageUrl, serviceBase),
     variant: candidate.variant ?? undefined,
+    rarity: candidate.rarity ?? undefined,
     score: Math.max(0, Math.round(candidate.score ?? 0)),
     evidence: {
       // Full N/M agreement is its own evidence tier: a localId alone matching

@@ -7,8 +7,10 @@ Integration (models + catalog): set RECOGNITION_E2E=1 and run test_e2e separatel
 """
 from __future__ import annotations
 
+import io
 import os
 import sys
+import tempfile
 import unittest
 
 import cv2
@@ -212,6 +214,74 @@ class TestCatalog(unittest.TestCase):
         candidates = store.text_candidates(hints)
         ids = [c.card_id for c in candidates]
         self.assertIn("me01-091", ids[:5], "busca por nome Shroodle deve incluir me01-091 no top-5")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
+
+
+class TestDecodeDimensions(unittest.TestCase):
+    """Testes para _decode_dimensions do download_scans.py (PIL + OpenCV fallback)."""
+    
+    def test_decode_small_webp_via_pil(self):
+        """WebP de ~2KB deve ser decodificado via PIL quando cv2.imdecode falha."""
+        from PIL import Image
+        
+        # Criar um WebP válido de pequenas dimensões (~2KB)
+        img = Image.new('RGB', (200, 280), color=(73, 109, 137))
+        
+        with tempfile.NamedTemporaryFile(suffix='.webp', delete=False) as f:
+            img.save(f, format='WEBP', quality=80)
+            temp_path = f.name
+        
+        try:
+            # Verificar que o arquivo tem menos de 4KB (o limiar antigo)
+            size = os.path.getsize(temp_path)
+            
+            # Importar a função testada
+            sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+            from download_scans import _decode_dimensions
+            
+            dims = _decode_dimensions(temp_path)
+            
+            # Deve retornar dimensões válidas
+            self.assertIsNotNone(dims, "_decode_dimensions deve retornar dimensões para WebP válido")
+            self.assertEqual(dims[0], 200)
+            self.assertEqual(dims[1], 280)
+        finally:
+            os.unlink(temp_path)
+    
+    def test_decode_png_small(self):
+        """PNG pequeno (< 4KB) deve ser aceito com novo limiar de 1KB."""
+        from PIL import Image
+        
+        # Criar PNG simples de ~1-2KB
+        img = Image.new('RGB', (200, 280), color=(255, 255, 255))
+        
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
+            img.save(f, format='PNG', optimize=True)
+            temp_path = f.name
+        
+        try:
+            size = os.path.getsize(temp_path)
+            
+            sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+            from download_scans import _decode_dimensions
+            
+            dims = _decode_dimensions(temp_path)
+            
+            self.assertIsNotNone(dims, f"_decode_dimensions deve aceitar PNG de {size} bytes")
+            self.assertEqual(dims[0], 200)
+            self.assertEqual(dims[1], 280)
+        finally:
+            os.unlink(temp_path)
+    
+    def test_min_scan_bytes_is_1024(self):
+        """Verificar que o limiar mínimo foi reduzido para 1024 bytes."""
+        sys.path.insert(0, os.path.dirname(__file__))
+        from recognizer.catalog import _MIN_SCAN_BYTES
+        
+        self.assertEqual(_MIN_SCAN_BYTES, 1024, "Limiar deve ser 1024 bytes para aceitar cartas simples")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import { readBotStatus } from "@/lib/whatsapp-status";
 import { authorize, failure, HttpError } from "@/lib/backend";
+import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 
@@ -10,6 +11,63 @@ function isOnline(heartbeat: unknown) {
   if (typeof heartbeat !== "string") return false;
   const time = Date.parse(heartbeat);
   return Number.isFinite(time) && Date.now() - time <= 35_000;
+}
+
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const REDIS_HOST = process.env.REDIS_HOST || "localhost";
+const REDIS_PORT = Number(process.env.REDIS_PORT) || 6379;
+const REDIS_PASSWORD = process.env.REDIS_PASSWORD || undefined;
+
+function getDb() {
+  const SUPABASE_URL = process.env.SUPABASE_URL;
+  const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required");
+  }
+  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+}
+
+async function enqueueDispatch(auctionId: string, userId: string) {
+  const { Queue } = await import("bullmq");
+  const db = getDb();
+  
+  const connection = {
+    host: REDIS_HOST,
+    port: REDIS_PORT,
+    password: REDIS_PASSWORD,
+  };
+
+  const queue = new Queue("whatsapp-dispatches", { connection });
+
+  const { data: dispatch, error: dispatchError } = await db
+    .from("whatsapp_dispatches")
+    .select("*")
+    .eq("auction_id", auctionId)
+    .in("status", ["pending", "scheduled"])
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (dispatchError || !dispatch) {
+    throw new Error("dispatch_not_found");
+  }
+
+  await queue.add("send-dispatch", { dispatch, userId }, {
+    attempts: 5,
+    backoff: {
+      type: "exponential",
+      delay: 5000,
+    },
+    removeOnComplete: { age: 3600 },
+    removeOnFail: { age: 86400 },
+  });
+
+  await queue.close();
+
+  return dispatch;
 }
 
 export async function GET(request: Request) {

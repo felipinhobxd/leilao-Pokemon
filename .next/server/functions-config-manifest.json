@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "functions": {
+    "/api/auctions/batch": {},
+    "/api/auctions/new": {},
+    "/api/auctions/new/status": {},
+    "/api/auctions/queue": {},
+    "/api/card-recognition/memory": {},
+    "/api/card-recognition/scan": {},
+    "/api/cards/image": {},
+    "/api/cards/image/authorize": {},
+    "/api/commands": {},
+    "/api/dashboard": {},
+    "/api/export": {},
+    "/api/whatsapp/bootstrap": {},
+    "/api/whatsapp/bot": {},
+    "/api/whatsapp/groups": {},
+    "/api/whatsapp/schedules": {}
+  }
+}

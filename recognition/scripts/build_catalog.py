@@ -58,8 +58,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from recognizer.catalog import (CORE_LANGUAGES, OPTIONAL_LANGUAGES, LANG_CODE,
                                 fetch_language_cards, fetch_sets_listing, get_meta,
                                 init_db, save_records, set_meta, sets_census)
-from recognizer.reconcile import backfill_alt_images, reconcile_ptcgdata
-from recognizer.sources import (fetch_ptcgdata_all, fetch_tcgdex_card_details,
+from recognizer.reconcile import backfill_alt_images, reconcile_ptcgdata, reconcile_limitless_ptbr
+from recognizer.sources import (fetch_ptcgdata_all, fetch_limitless_all, fetch_tcgdex_card_details,
                                 probe_sources)
 
 LISTING_FAILED_MARKER = "__listing_failed__"
@@ -384,6 +384,30 @@ def main() -> None:
         set_meta(conn, "catalog.gaps.pokemon-tcg-data", json.dumps({
             "error": "source unavailable", "at": time.strftime("%Y-%m-%dT%H:%M:%S")}))
 
+    # ---- third source: Limitless TCG (PT-BR promos + alphanumeric localIds) --
+    limitless_sets = limitless_cards = None
+    if source_status.get("limitless-tcg", {}).get("available") and "pt-BR" in languages:
+        try:
+            print("[catalog] fetching Limitless TCG (PT-BR) …")
+            limitless_sets, limitless_cards = fetch_limitless_all("pt-BR",
+                on_set=lambda sid, n, i, total: print(
+                    f"\r[catalog] Limitless TCG {i}/{total} sets", end="", flush=True)
+                if i % 20 == 0 or i == total else None)
+            print(f"\n[catalog] Limitless TCG: {len(limitless_sets)} sets, "
+                  f"{sum(len(v) for v in limitless_cards.values())} cards (PT-BR)")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[catalog] Limitless TCG fetch FAILED ({exc}) — "
+                  f"PT-BR stays single-source this run, gaps recorded")
+            set_meta(conn, "catalog.gaps.limitless-tcg", json.dumps({
+                "error": str(exc)[:300], "at": time.strftime("%Y-%m-%dT%H:%M:%S")}))
+    else:
+        if "pt-BR" in languages:
+            print("[catalog] Limitless TCG unavailable or PT-BR not requested — "
+                  "PT-BR stays single-source this run")
+            set_meta(conn, "catalog.gaps.limitless-tcg", json.dumps({
+                "error": "source unavailable or language not requested",
+                "at": time.strftime("%Y-%m-%dT%H:%M:%S")}))
+
     if ptcg_sets is not None:
         # EN: full reconciliation (merge + conflicts + gap report)
         try:
@@ -407,9 +431,27 @@ def main() -> None:
                 pt_listing = fetch_sets_listing("pt-BR")
                 n = backfill_alt_images(conn, "pt-BR", pt_listing, ptcg_sets, ptcg_cards)
                 print(f"[catalog] pt-BR: {n} scanless card(s) gained a second-source "
-                      f"artwork mirror (image_alt)")
+                      f"artwork mirror (image_alt) from pokemon-tcg-data")
             except Exception as exc:  # noqa: BLE001
-                print(f"[catalog] pt-BR image backfill FAILED ({exc})")
+                print(f"[catalog] pt-BR image backfill from pokemon-tcg-data FAILED ({exc})")
+
+    # ---- Limitless TCG reconciliation for PT-BR -------------------------------
+    if limitless_sets is not None and "pt-BR" in languages:
+        try:
+            pt_listing = fetch_sets_listing("pt-BR")
+            report = reconcile_limitless_ptbr(conn, pt_listing, limitless_sets, limitless_cards)
+            set_meta(conn, "catalog.coverage.pt-BR-limitless", json.dumps(report.to_dict(), ensure_ascii=False))
+            print(f"[catalog] reconcile PT-BR (Limitless): sets matched={report.matched_sets} "
+                  f"only-tcgdex={len(report.only_primary_sets)} "
+                  f"only-limitless={len(report.only_secondary_sets)} | cards "
+                  f"both={report.cards_both} only-tcgdex={report.cards_only_primary} "
+                  f"only-limitless={report.cards_only_secondary} | conflicts={report.conflicts} "
+                  f"rarity+={report.enriched_rarity} alt-image+={report.backfilled_image_alt} "
+                  f"inserted={report.inserted_secondary_cards}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[catalog] PT-BR reconciliation with Limitless FAILED ({exc}) — gaps recorded")
+            set_meta(conn, "catalog.gaps.reconcile-pt-BR-limitless", json.dumps({
+                "error": str(exc)[:300], "at": time.strftime("%Y-%m-%dT%H:%M:%S")}))
 
     # ---- per-card details pass (rarity/variants) ----------------------------
     if card_details:

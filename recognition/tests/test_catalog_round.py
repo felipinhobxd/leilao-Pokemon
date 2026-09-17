@@ -46,8 +46,9 @@ from recognizer.catalog import (CardRecord, init_db, load_cards, record_conflict
 from recognizer.hints import extract_hints, name_similarity
 from recognizer.ocr import OcrLine, OcrResult
 from recognizer.reconcile import (backfill_alt_images, match_sets,
-                                  normalize_local_id, reconcile_ptcgdata)
-from recognizer.sources import PtcgCard, PtcgSet
+                                  normalize_local_id, reconcile_ptcgdata,
+                                  reconcile_limitless_ptbr)
+from recognizer.sources import PtcgCard, PtcgSet, LimitlessCard, LimitlessSet
 
 
 def _png_bytes(width: int = 640, height: int = 896) -> bytes:
@@ -694,6 +695,143 @@ class TestCoverage(unittest.TestCase):
                             "FROM conflicts").fetchall()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0][2], "name")
+
+
+class TestLimitlessPTBR(unittest.TestCase):
+    """Test Limitless TCG reconciliation for PT-BR promos and alphanumeric localIds."""
+
+    def test_alphanumeric_localids_are_inserted(self):
+        """Promos with alphanumeric localIds (PROMO-A, SVP-001) are inserted."""
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        conn = init_db(os.path.join(tmp, "t.sqlite"))
+
+        # Insert a base PT-BR card from TCGdex
+        base_card = CardRecord(
+            id="sv01-1", language="pt-BR", set_id="sv01",
+            set_name="Scarlet & Violet", serie_name="SV", serie_id="",
+            local_id="1", name="Bulbassauro", hp=60, denominator=198,
+            image_base="https://assets.tcgdex.net/.../sv01-1.png",
+            variants="{}", release_date="2023-03-31",
+            scan_status="validated", canonical_id="sv01|1",
+            rarity="Common", subtypes='["Basic"]',
+            image_alt="", sources=json.dumps({"tcgdex": {"id": "sv01-1"}})
+        )
+        save_records(conn, [base_card])
+
+        # Simulate Limitless data with promos NOT in TCGdex
+        limitless_sets = [
+            LimitlessSet(
+                set_id="promo-br", name="Promos Brasileiros",
+                series="Promos", printed_total=50, total=50,
+                release_date="2020-01-01", language="pt-BR"
+            )
+        ]
+        limitless_cards = {
+            "promo-br": [
+                LimitlessCard(
+                    set_id="promo-br", set_name="Promos Brasileiros",
+                    series="Promos", number="PROMO-A",  # Alphanumeric!
+                    name="Charizard Promo Devir", language="pt-BR",
+                    rarity="Promo", subtypes=["Promo"],
+                    image_url="https://limitlesstcg.com/.../promo-a.png",
+                    hp=120, printed_total=50, release_date="2005-06-15",
+                    illustrator="Mitsuhiro Arita"
+                ),
+                LimitlessCard(
+                    set_id="promo-br", set_name="Promos Brasileiros",
+                    series="Promos", number="SVP-001",  # Another alphanumeric
+                    name="Pikachu SVP", language="pt-BR",
+                    rarity="Promo", subtypes=["Basic"],
+                    image_url="https://limitlesstcg.com/.../svp-001.png",
+                    hp=70, printed_total=50, release_date="2023-01-20",
+                    illustrator=""
+                ),
+            ]
+        }
+
+        listing = [{"id": "promo-br", "name": "Promos Brasileiros",
+                    "series": "Promos", "releaseDate": "2020-01-01",
+                    "cardCount": {"official": 50}}]
+
+        report = reconcile_limitless_ptbr(conn, listing, limitless_sets, limitless_cards)
+
+        # Verify insertion
+        self.assertEqual(report.inserted_secondary_cards, 2)
+        self.assertEqual(report.cards_only_secondary, 2)
+
+        # Verify cards are in DB with correct localIds
+        promo_a = conn.execute(
+            "SELECT local_id FROM cards WHERE id='promo-br-PROMO-A'"
+        ).fetchone()[0]
+        svp_001 = conn.execute(
+            "SELECT local_id FROM cards WHERE id='promo-br-SVP-001'"
+        ).fetchone()[0]
+
+        self.assertEqual(promo_a, "PROMO-A")
+        self.assertEqual(svp_001, "SVP-001")
+
+        # Verify image URLs were set
+        img_a = conn.execute(
+            "SELECT image_base FROM cards WHERE id='promo-br-PROMO-A'"
+        ).fetchone()[0]
+        self.assertTrue(img_a and ("limitlesstcg" in img_a.lower() or "promo-a" in img_a.lower()))
+
+    def test_backfill_image_alt_for_scanless_cards(self):
+        """Limitless backfills image_alt for PT-BR cards without scans."""
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        conn = init_db(os.path.join(tmp, "t.sqlite"))
+
+        # Insert a PT-BR card WITHOUT image (scan not_available)
+        scanless_card = CardRecord(
+            id="sv01-150", language="pt-BR", set_id="sv01",
+            set_name="Scarlet & Violet", serie_name="SV", serie_id="",
+            local_id="150", name="Energia Grass", hp=None, denominator=198,
+            image_base="",  # No scan!
+            variants="{}", release_date="2023-03-31",
+            scan_status="not_available", canonical_id="sv01|150",
+            rarity="", subtypes='["Energy"]',
+            image_alt="", sources=json.dumps({"tcgdex": {"id": "sv01-150"}})
+        )
+        save_records(conn, [scanless_card])
+
+        # Limitless has the same card with image
+        limitless_sets = [
+            LimitlessSet(
+                set_id="sv01", name="Scarlet & Violet",
+                series="SV", printed_total=198, total=198,
+                release_date="2023-03-31", language="pt-BR"
+            )
+        ]
+        limitless_cards = {
+            "sv01": [
+                LimitlessCard(
+                    set_id="sv01", set_name="Scarlet & Violet",
+                    series="SV", number="150",
+                    name="Energia Grass", language="pt-BR",
+                    rarity="", subtypes=["Energy"],
+                    image_url="https://limitlesstcg.com/.../sv01-150.png",
+                    hp=None, printed_total=198, release_date="2023-03-31",
+                    illustrator=""
+                ),
+            ]
+        }
+
+        listing = [{"id": "sv01", "name": "Scarlet & Violet",
+                    "series": "SV", "releaseDate": "2023-03-31",
+                    "cardCount": {"official": 198}}]
+
+        report = reconcile_limitless_ptbr(conn, listing, limitless_sets, limitless_cards)
+
+        # Verify backfill
+        self.assertEqual(report.backfilled_image_alt, 1)
+
+        # Check image_alt was set
+        img_alt = conn.execute(
+            "SELECT image_alt FROM cards WHERE id='sv01-150'"
+        ).fetchone()[0]
+        self.assertTrue(img_alt and ("limitlesstcg" in img_alt.lower() or "sv01-150" in img_alt.lower()))
 
 
 if __name__ == "__main__":

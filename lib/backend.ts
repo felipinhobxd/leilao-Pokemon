@@ -2,7 +2,7 @@ import { Timing } from "./timing";
 import { createServerSupabaseClient } from "./supabase-server";
 
 export class HttpError extends Error {
-  constructor(public status: number, message: string) { super(message); }
+  constructor(public status: number, message: string, public headers?: Record<string, string>) { super(message); }
 }
 export async function authorize(request: Request, write = false, timing = new Timing()) {
   const token = request.headers.get("authorization")?.match(/^Bearer (.+)$/)?.[1];
@@ -22,7 +22,13 @@ export async function authorize(request: Request, write = false, timing = new Ti
 }
 
 export function failure(error: unknown) {
-  if (error instanceof HttpError) return Response.json({ error: error.message }, { status: error.status });
+  if (error instanceof HttpError) {
+    const headersInit: Record<string, string> = {};
+    if (error.headers) {
+      Object.assign(headersInit, error.headers);
+    }
+    return Response.json({ error: error.message }, { status: error.status, headers: headersInit });
+  }
   const unconfigured = error instanceof Error && error.message === "supabase_not_configured";
   return Response.json({ error: unconfigured ? "Supabase ainda não configurado no servidor." : "Não foi possível concluir a operação." }, { status: unconfigured ? 503 : 500 });
 }

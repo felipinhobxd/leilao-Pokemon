@@ -84,6 +84,25 @@ export async function POST(request: Request) {
     const lotNumber = auction.lot_number === null || auction.lot_number === "" || auction.lot_number === undefined ? null : Number(auction.lot_number);
     if (lotNumber != null && (!Number.isSafeInteger(lotNumber) || lotNumber <= 0)) throw new HttpError(400, "Número do lote inválido.");
 
+    // Validação 4.3: Verificar se a carta referenciada existe no catálogo
+    // Se cardNumber e collection forem fornecidos, validar existência no Supabase
+    if (cardNumber && collection) {
+      const { data: existingCard, error: cardLookupError } = await db
+        .from("cards")
+        .select("id")
+        .eq("card_number", cardNumber)
+        .eq("collection", collection)
+        .maybeSingle();
+      
+      if (cardLookupError) {
+        console.error("Erro ao validar carta:", cardLookupError);
+      }
+      
+      if (!existingCard) {
+        throw new HttpError(400, `Carta não encontrada no catálogo: ${collection} #${cardNumber}. Verifique o número e a coleção.`);
+      }
+    }
+
     const payload = {
       eventId,
       card: {

@@ -19,9 +19,8 @@ State machine (scans table, see recognizer/catalog.SCAN_STATES):
                    scan re-downloaded in the same run (data healing).
 
 Image validation chain (HTTP 200 alone means nothing):
-- magic bytes (JPEG/WebP/PNG/GIF) + minimum size (4 KB);
-- full decode via cv2.imdecode (a truncated file that passes the magic
-  check is still rejected);
+- magic bytes (JPEG/WebP/PNG/GIF) + minimum size (1 KB);
+- full decode via PIL.Image.open() with OpenCV fallback;
 - minimum dimensions (200x280: a scan downscaled to death is useless for
   SIFT verification);
 - sha256 recorded at validation time (later runs detect bit-rot).
@@ -42,6 +41,7 @@ import hashlib
 import math
 import os
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -51,10 +51,25 @@ from recognizer.catalog import (MIN_SCAN_HEIGHT, MIN_SCAN_WIDTH, get_scan_state,
                                 init_db, load_cards, record_scan_state,
                                 resolve_scan_classified, scan_path,
                                 scan_state_counts, _cached_scan_ok,
-                                SCAN_QUALITY_CHAIN)
+                                SCAN_QUALITY_CHAIN, _get_db_connection)
 
-_state_lock = __import__("threading").Lock()
-_pending_writes: list[tuple] = []
+# Thread-local database connection for worker threads
+_worker_db_local = threading.local()
+
+
+def _get_worker_db() -> sqlite3.Connection:
+    """Get or create thread-local DB connection for worker threads."""
+    conn = getattr(_worker_db_local, 'connection', None)
+    if conn is None:
+        conn = _get_db_connection()
+        _worker_db_local.connection = conn
+    return conn
+
+
+def _sync_card_with_semaphore(card, force: bool = False) -> str:
+    """Wrapper that acquires the HTTP semaphore before calling sync_card."""
+    # resolve_scan_classified now uses the internal semaphore
+    return sync_card(card, force=force)
 
 
 def _fmt_duration(seconds: float) -> str:
@@ -83,7 +98,26 @@ def _sha256_of(path: str) -> str | None:
 
 def _decode_dimensions(path: str) -> tuple[int, int] | None:
     """Full decode + dimension check. None when the file is not a usable
-    image (truncated, zero-dimension, or below the SIFT-useful floor)."""
+    image (truncated, zero-dimension, or below the SIFT-useful floor).
+    
+    Uses PIL.Image.open() FIRST (with img.load() to force decode) for maximum
+    format compatibility (WebP with alpha/VP8X, PNG, JPEG, GIF), falling back
+    to OpenCV only if PIL fails. This handles WebPs that cv2.imdecode rejects
+    in some Linux/Docker environments.
+    """
+    # Try PIL first — it handles WebP/VP8X, PNG with alpha, and other formats
+    # that cv2.imdecode may reject depending on build flags/environment.
+    try:
+        from PIL import Image
+        with Image.open(path) as img:
+            img.load()  # Force full decode (catches truncated files)
+            width, height = img.size
+            if width >= MIN_SCAN_WIDTH and height >= MIN_SCAN_HEIGHT:
+                return width, height
+    except Exception:
+        pass  # Fall through to OpenCV fallback
+    
+    # Fallback to OpenCV for environments where PIL is unavailable or fails
     import cv2
     import numpy as np
     try:
@@ -168,18 +202,26 @@ def sync_card(card, force: bool = False) -> str:
 def _queue_write(scan_key: str, state: str, nbytes: int | None, sha: str | None,
                  width: int | None = None, height: int | None = None,
                  source: str = "") -> None:
-    with _state_lock:
-        _pending_writes.append((scan_key, state, nbytes, sha, width, height, source))
+    """Queue a scan state write for batch flush (thread-safe)."""
+    # Each worker thread has its own pending_writes list via thread-local storage
+    if not hasattr(_worker_db_local, 'pending_writes'):
+        _worker_db_local.pending_writes = []
+    _worker_db_local.pending_writes.append((scan_key, state, nbytes, sha, width, height, source))
 
 
-def _flush_writes() -> None:
-    with _state_lock:
-        writes, _pending_writes[:] = list(_pending_writes), []
+def _flush_worker_writes() -> None:
+    """Flush pending writes for the current thread."""
+    if not hasattr(_worker_db_local, 'pending_writes'):
+        return
+    writes = _worker_db_local.pending_writes
+    _worker_db_local.pending_writes = []
+    conn = _get_worker_db()
     for scan_key, state, nbytes, sha, width, height, source in writes:
-        record_scan_state(_conn, scan_key, state, nbytes, sha, width, height, source)
+        record_scan_state(conn, scan_key, state, nbytes, sha, width, height, source)
+    conn.commit()
 
 
-_conn = None  # set in main(); sqlite connections are per-process by design
+_conn = None  # set in main(); kept for backwards compatibility
 
 
 def main() -> None:
@@ -192,7 +234,7 @@ def main() -> None:
     args = parser.parse_args()
 
     languages = [x.strip() for x in args.languages.split(",") if x.strip()]
-    _conn = init_db()
+    _conn = init_db()  # Main thread connection for loading cards and final stats
     cards = load_cards(_conn, languages)
     if args.limit:
         cards = cards[: args.limit]
@@ -209,6 +251,8 @@ def main() -> None:
     smoothed_rate = 0.0
 
     def work(card):
+        # Each worker thread uses its own DB connection via _get_worker_db()
+        # resolve_scan_classified uses the internal HTTP semaphore
         return sync_card(card, force=args.force)
 
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
@@ -229,9 +273,11 @@ def main() -> None:
                 print(f"[scans] {i}/{len(cards)} ok={counts['validated']} "
                       f"failed={counts['failed']} not_available={counts['not_available']} "
                       f"({rate:.1f}/s · ETA {eta})", flush=True)
-                _flush_writes()
+                # Flush all worker threads' pending writes
+                _flush_worker_writes()
 
-    _flush_writes()
+    # Final flush of all worker threads
+    _flush_worker_writes()
     elapsed = time.time() - started
     print(f"[scans] finished in {elapsed:.1f}s: "
           f"validated={counts['validated']} failed={counts['failed']} "

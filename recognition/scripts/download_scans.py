@@ -51,22 +51,25 @@ from recognizer.catalog import (MIN_SCAN_HEIGHT, MIN_SCAN_WIDTH, get_scan_state,
                                 init_db, load_cards, record_scan_state,
                                 resolve_scan_classified, scan_path,
                                 scan_state_counts, _cached_scan_ok,
-                                SCAN_QUALITY_CHAIN)
+                                SCAN_QUALITY_CHAIN, _get_db_connection)
 
-# Semaphore to limit concurrent HTTP requests to TCGdex/CDN (prevents 429s)
-# Note: The semaphore is also defined in recognizer/catalog.py for internal use.
-# This local definition is kept for backwards compatibility but the catalog module
-# now manages rate limiting internally via _http_semaphore.
-_http_semaphore = threading.Semaphore(5)
+# Thread-local database connection for worker threads
+_worker_db_local = threading.local()
 
-_state_lock = threading.Lock()
-_pending_writes: list[tuple] = []
+
+def _get_worker_db() -> sqlite3.Connection:
+    """Get or create thread-local DB connection for worker threads."""
+    conn = getattr(_worker_db_local, 'connection', None)
+    if conn is None:
+        conn = _get_db_connection()
+        _worker_db_local.connection = conn
+    return conn
 
 
 def _sync_card_with_semaphore(card, force: bool = False) -> str:
     """Wrapper that acquires the HTTP semaphore before calling sync_card."""
-    with _http_semaphore:
-        return sync_card(card, force=force)
+    # resolve_scan_classified now uses the internal semaphore
+    return sync_card(card, force=force)
 
 
 def _fmt_duration(seconds: float) -> str:
@@ -199,18 +202,26 @@ def sync_card(card, force: bool = False) -> str:
 def _queue_write(scan_key: str, state: str, nbytes: int | None, sha: str | None,
                  width: int | None = None, height: int | None = None,
                  source: str = "") -> None:
-    with _state_lock:
-        _pending_writes.append((scan_key, state, nbytes, sha, width, height, source))
+    """Queue a scan state write for batch flush (thread-safe)."""
+    # Each worker thread has its own pending_writes list via thread-local storage
+    if not hasattr(_worker_db_local, 'pending_writes'):
+        _worker_db_local.pending_writes = []
+    _worker_db_local.pending_writes.append((scan_key, state, nbytes, sha, width, height, source))
 
 
-def _flush_writes() -> None:
-    with _state_lock:
-        writes, _pending_writes[:] = list(_pending_writes), []
+def _flush_worker_writes() -> None:
+    """Flush pending writes for the current thread."""
+    if not hasattr(_worker_db_local, 'pending_writes'):
+        return
+    writes = _worker_db_local.pending_writes
+    _worker_db_local.pending_writes = []
+    conn = _get_worker_db()
     for scan_key, state, nbytes, sha, width, height, source in writes:
-        record_scan_state(_conn, scan_key, state, nbytes, sha, width, height, source)
+        record_scan_state(conn, scan_key, state, nbytes, sha, width, height, source)
+    conn.commit()
 
 
-_conn = None  # set in main(); sqlite connections are per-process by design
+_conn = None  # set in main(); kept for backwards compatibility
 
 
 def main() -> None:
@@ -223,7 +234,7 @@ def main() -> None:
     args = parser.parse_args()
 
     languages = [x.strip() for x in args.languages.split(",") if x.strip()]
-    _conn = init_db()
+    _conn = init_db()  # Main thread connection for loading cards and final stats
     cards = load_cards(_conn, languages)
     if args.limit:
         cards = cards[: args.limit]
@@ -240,7 +251,8 @@ def main() -> None:
     smoothed_rate = 0.0
 
     def work(card):
-        # sync_card already uses the semaphore internally via resolve_scan_classified
+        # Each worker thread uses its own DB connection via _get_worker_db()
+        # resolve_scan_classified uses the internal HTTP semaphore
         return sync_card(card, force=args.force)
 
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
@@ -261,9 +273,11 @@ def main() -> None:
                 print(f"[scans] {i}/{len(cards)} ok={counts['validated']} "
                       f"failed={counts['failed']} not_available={counts['not_available']} "
                       f"({rate:.1f}/s · ETA {eta})", flush=True)
-                _flush_writes()
+                # Flush all worker threads' pending writes
+                _flush_worker_writes()
 
-    _flush_writes()
+    # Final flush of all worker threads
+    _flush_worker_writes()
     elapsed = time.time() - started
     print(f"[scans] finished in {elapsed:.1f}s: "
           f"validated={counts['validated']} failed={counts['failed']} "

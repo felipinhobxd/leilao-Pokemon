@@ -47,9 +47,28 @@ _lock = threading.RLock()
 # instead of paying a fresh TLS handshake per download.
 _session_local = threading.local()
 
+# Thread-local SQLite connection: each worker thread opens its own connection
+# to avoid "database is locked" errors under concurrent load. SQLite WAL mode
+# handles concurrency natively when each thread has its own connection.
+_db_local = threading.local()
+
 # Global semaphore to limit concurrent HTTP requests across all workers.
 # Prevents Cloudflare 429 by capping simultaneous connections to 5.
 _http_semaphore = threading.Semaphore(5)
+
+
+def _get_db_connection(db_path: str = CATALOG_DB) -> sqlite3.Connection:
+    """Get or create a thread-local SQLite connection.
+    
+    Each worker thread gets its own connection to avoid locking conflicts.
+    WAL mode is enabled for better concurrent read/write performance.
+    """
+    conn = getattr(_db_local, 'connection', None)
+    if conn is None:
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        _db_local.connection = conn
+    return conn
 
 
 def _get_session() -> requests.Session:
@@ -504,6 +523,12 @@ MIN_SCAN_HEIGHT = 280
 
 
 def init_db(db_path: str = CATALOG_DB) -> sqlite3.Connection:
+    """Initialize the database schema and return a connection.
+    
+    DEPRECATED for multi-threaded use: callers should use _get_db_connection()
+    to get a thread-local connection. This function remains for backwards
+    compatibility with single-threaded scripts.
+    """
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")

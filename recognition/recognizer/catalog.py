@@ -192,8 +192,11 @@ def _http_get(url: str, timeout: float = 30.0, retries: int = 4) -> bytes:
             if resp.status_code in (429, 503):
                 retry_after = _parse_retry_after(resp)
                 if retry_after is not None:
-                    # Honor server-provided Retry-After (capped at 120s)
-                    wait_time = min(retry_after, 120.0)
+                    # Honor server-provided Retry-After, but raise immediately if > 120s
+                    if retry_after > 120.0:
+                        print(f"[http] rate-limited on {url}, Retry-After={retry_after}s exceeds max, raising")
+                        raise HttpRateLimited(url, retry_after)
+                    wait_time = retry_after
                     print(f"[http] rate-limited on {url}, waiting {wait_time:.1f}s (Retry-After)")
                     time.sleep(wait_time)
                     last = HttpRateLimited(url, retry_after)

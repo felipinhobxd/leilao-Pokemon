@@ -36,6 +36,17 @@ from recognizer.catalog import ensure_scan, init_db, load_cards
 SEED = 20260915
 
 
+def _ensure_scan_any(card):
+    """Resolve a usable scan through the full chain (primary -> EN mirror ->
+    second-source alt image), so cards whose ONLY image is the pokemon-tcg-data
+    backfill can also become fixtures (they are the recall-gain cases)."""
+    alt = getattr(card, "image_alt", "") or None
+    try:
+        return ensure_scan(card.image_base, "high.webp", alt)
+    except TypeError:  # older signature without alt_url
+        return ensure_scan(card.image_base, "high.webp")
+
+
 def load_scan_bgr(path: str) -> np.ndarray | None:
     data = np.fromfile(path, dtype=np.uint8)
     return cv2.imdecode(data, cv2.IMREAD_COLOR)
@@ -221,6 +232,7 @@ def main() -> None:
             from recognizer.catalog import scan_path
             cards = [c for c in cards if os.path.exists(scan_path(c.image_base, "high.webp"))]
         pools[language] = cards
+    cards_all = [c for lang_cards in full.values() for c in lang_cards]
     all_pt = full["pt-BR"]      # anchors search the full pool (their scans download on demand)
     pt_local = pools.get("pt-BR", [])
     all_en = full.get("en", [])
@@ -256,6 +268,49 @@ def main() -> None:
     for card in en_sample + ja_sample:
         anchors.append((card, f"lang-{card.language}-{card.id}", {}))
 
+    # -------------------------------------------------- representative categories
+    # The 2026-09 catalog round: fixtures must cover the card classes the
+    # multi-source catalog makes identifiable/retrievable — promos, subsets
+    # (Trainer/Galarian Gallery), secrets, old eras, reprints (same name in
+    # multiple sets), and second-source-only images (image_alt cards).
+    def by_predicate(pool, predicate, count=1):
+        return [c for c in pool if predicate(c)][:count]
+
+    alt_cards = by_predicate(
+        cards_all, lambda c: not c.image_base and getattr(c, "image_alt", ""), 4)
+    for i, card in enumerate(alt_cards):
+        anchors.append((card, f"altsrc-{i:02d}-{card_key(card)}",
+                        {"note": "imagem só existe na 2a fonte (pokemon-tcg-data)"}))
+
+    tg_cards = by_predicate(cards_all, lambda c: c.set_id.endswith(("tg", "gg"))
+                            and c.local_id[:1].isalpha() and c.local_id[:1].isupper(), 2)
+    for i, card in enumerate(tg_cards):
+        anchors.append((card, f"subset-{i:02d}-{card_key(card)}",
+                        {"note": "número de subconjunto (TG/GG)"}))
+
+    promo_cards = by_predicate(cards_all, lambda c: c.set_id in ("svp", "swshp", "SV-P"), 2)
+    for i, card in enumerate(promo_cards):
+        anchors.append((card, f"promo-{i:02d}-{card_key(card)}", {"note": "promo"}))
+
+    old_cards = by_predicate(cards_all, lambda c: c.set_id in ("base1", "me01", "SM1S"), 3)
+    for i, card in enumerate(old_cards):
+        anchors.append((card, f"old-{i:02d}-{card_key(card)}", {"note": "era antiga"}))
+
+    # Secret-ish: highest localIds of a modern set
+    modern = [c for c in cards_all if c.set_id == "sv01" and c.local_id.isdigit()]
+    for i, card in enumerate(sorted(modern, key=lambda c: -int(c.local_id))[:2]):
+        anchors.append((card, f"secret-{i:02d}-{card_key(card)}", {"note": "número alto/secret"}))
+
+    # Reprint/similar artwork: same name in 2+ sets of one language
+    names = {}
+    for c in cards_all:
+        if c.image_base:
+            names.setdefault((c.language, c.name), []).append(c)
+    reprints = [(k, v) for k, v in names.items() if len({c.set_id for c in v}) >= 2][:2]
+    for i, (_, group) in enumerate(reprints):
+        anchors.append((group[0], f"reprint-{i:02d}-{card_key(group[0])}",
+                        {"note": f"arte/nome repetido em {len({c.set_id for c in group})} sets"}))
+
     # random population from the available pools
     anchor_keys = {(a[0].language, a[0].id) for a in anchors}
     population = [c for c in pt_local if (c.language, c.id) not in anchor_keys]
@@ -265,9 +320,23 @@ def main() -> None:
     os.makedirs(args.out, exist_ok=True)
     entries = []
     for card, tag, extra in chosen:
-        path = ensure_scan(card.image_base, "high.webp")
+        path = _ensure_scan_any(card)
         if not path:
             continue
+        # Truth must match the PRINT in the image, not the catalog row we
+        # started from: a pt-BR card whose only image is the EN mirror or the
+        # pokemon-tcg-data backfill produces a photo of the EN print — its
+        # ground truth is the EN twin (same set + localId), otherwise a
+        # correct EN identification counts as a false positive in the bench.
+        if card.language != "en":
+            basename = os.path.basename(path)
+            own_print = basename in ("high.webp", "low.webp")
+            if not own_print:  # en-mirror ("en-*.webp") or ptcg/ alt image
+                twin = next((c for c in cards_all
+                             if c.language == "en" and c.set_id == card.set_id
+                             and c.local_id == card.local_id), None)
+                if twin is not None:
+                    card = twin
         scan = load_scan_bgr(path)
         if scan is None:
             continue

@@ -41,23 +41,32 @@ Write-Host "== [3/5] Modelos ONNX (core) ==" -ForegroundColor Cyan
 & .\.venv\Scripts\python.exe scripts\download_models.py
 if ($LASTEXITCODE -ne 0) { Write-Error "Falha ao baixar modelos"; exit 1 }
 
-Write-Host "== [4/5] Catalogo TCGdex local + scans ==" -ForegroundColor Cyan
-# Catalogo: todos os idiomas (metadados sao pequenos e uteis para OCR).
-# Scans: pt-BR (acervo principal do usuario) + en; es/ja ficam apenas no
-# catalogo (scans pesam ~3 GB e raramente sao usados).
-& .\.venv\Scripts\python.exe scripts\build_catalog.py --languages pt-BR,en,es,ja
+Write-Host "== [4/5] Catalogo multi-fonte (TCGdex + pokemon-tcg-data) + scans ==" -ForegroundColor Cyan
+# Catalogo: pt-BR/en/ja sao CORE (bloqueiam se incompletos), es e opcional.
+# A sincronizacao e INCREMENTAL: novas expansoes sao detectadas sozinhas e
+# so os sets novos/falhados sao re-buscados. pokemon-tcg-data reconcilia o
+# EN (rarity/subtypes + imagens alternativas para cartas sem scan TCGdex).
+# --no-card-details: o enriquecimento per-card (rarity/variants pt/ja,
+# ~1 request/carta) fica para uma execucao manual posterior:
+#   .\.venv\Scripts\python.exe scripts\build_catalog.py
+& .\.venv\Scripts\python.exe scripts\build_catalog.py --languages pt-BR,en,ja,es --no-card-details
 if ($LASTEXITCODE -ne 0) { Write-Error "Falha ao construir catalogo"; exit 1 }
-& .\.venv\Scripts\python.exe scripts\download_scans.py --languages pt-BR,en --workers 16
+# Scans: pt-BR (acervo principal) + en + ja (objetivo EN+JA+pt-BR).
+# Cartas sem scan TCGdex ganham imagem da segunda fonte quando existir.
+& .\.venv\Scripts\python.exe scripts\download_scans.py --languages pt-BR,en,ja --workers 16
 
 Write-Host "== [5/5] Indice de embeddings SigLIP2 ==" -ForegroundColor Cyan
 # batch=8 foi validado (16/32 causam OOM em maquinas com pouca RAM).
 # --only-missing torna o build retomavel: pode interromper e rodar de novo.
-# pt-BR primeiro para o servico ficar util cedo; en em seguida no mesmo arquivo.
+# pt-BR primeiro para o servico ficar util cedo; en e ja em seguida.
 & .\.venv\Scripts\python.exe scripts\build_index.py --model siglip2-base-384 --batch 8 --languages pt-BR --only-missing
 if ($LASTEXITCODE -ne 0) { Write-Error "Falha no indice pt-BR"; exit 1 }
 Write-Host "Indice pt-BR pronto. Construindo en (pode interromper e retomar)..." -ForegroundColor Cyan
 & .\.venv\Scripts\python.exe scripts\build_index.py --model siglip2-base-384 --batch 8 --languages pt-BR,en --only-missing
 if ($LASTEXITCODE -ne 0) { Write-Error "Falha no indice en"; exit 1 }
+Write-Host "Indice en pronto. Construindo ja (pode interromper e retomar)..." -ForegroundColor Cyan
+& .\.venv\Scripts\python.exe scripts\build_index.py --model siglip2-base-384 --batch 8 --languages pt-BR,en,ja --only-missing
+if ($LASTEXITCODE -ne 0) { Write-Error "Falha no indice ja"; exit 1 }
 
 Write-Host ""
 Write-Host "Instalacao concluida. Inicie o servico com:" -ForegroundColor Green

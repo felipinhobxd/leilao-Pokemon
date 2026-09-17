@@ -376,6 +376,38 @@ class TestIncrementalSync(unittest.TestCase):
         stamp = db.execute("SELECT value FROM meta WHERE key='catalog.updated.ja'").fetchone()
         self.assertIsNotNone(stamp, "run completa estampa")
 
+    def test_persistent_upstream_failure_unblocks_after_budget(self):
+        """A set that fails every run (source-side 503, like the ja '+' sets)
+        must stop blocking the install after UPSTREAM_UNAVAILABLE_AFTER
+        consecutive attempts — recorded + retried, never silently dropped."""
+        import scripts.build_catalog as bc
+        db = self._db()
+        effects = {"ja": (self._cards("ja"), self._report("ja", ["s2"]))}
+        codes = []
+        for _ in range(bc.UPSTREAM_UNAVAILABLE_AFTER - 1):
+            code, _ = self._run(db, effects, {"ja": ["s1", "s2"]})
+            codes.append(code)
+        self.assertTrue(all(c == 1 for c in codes), "primeiras tentativas bloqueiam")
+        # The UPSTREAM_UNAVAILABLE_AFTER-th consecutive failure crosses the
+        # budget: still partial, no longer blocking.
+        code, _ = self._run(db, effects, {"ja": ["s1", "s2"]})
+        self.assertEqual(code, 0, "gap upstream-unavailable não bloqueia a instalação")
+        gaps = json.loads(db.execute(
+            "SELECT value FROM meta WHERE key='catalog.gaps.ja'").fetchone()[0])
+        self.assertTrue(gaps["upstreamLimited"])
+        self.assertGreaterEqual(gaps["attempts"]["s2"], bc.UPSTREAM_UNAVAILABLE_AFTER)
+        stamp = db.execute("SELECT value FROM meta WHERE key='catalog.updated.ja'").fetchone()
+        self.assertIsNone(stamp, "partial (upstream) never gets the complete stamp")
+        # The gap is still retried on the next run (self-healing) and heals.
+        code, calls = self._run(db, {"ja": (self._cards("ja"), self._report("ja", []))},
+                                {"ja": ["s1", "s2"]})
+        self.assertEqual(code, 0)
+        self.assertEqual(calls[0][1], ["s2"], "gap upstream continua sendo retentado")
+        row = db.execute("SELECT value FROM meta WHERE key='catalog.gaps.ja'").fetchone()
+        self.assertIsNone(row, "gap curado é removido inteiramente")
+        stamp = db.execute("SELECT value FROM meta WHERE key='catalog.updated.ja'").fetchone()
+        self.assertIsNotNone(stamp, "cura completa estampa o idioma")
+
 
 # --------------------------------------------------------------------- scan backfill chain
 class TestAltImageChain(unittest.TestCase):

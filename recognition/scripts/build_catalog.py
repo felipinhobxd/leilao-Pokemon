@@ -64,6 +64,17 @@ from recognizer.sources import (fetch_ptcgdata_all, fetch_tcgdex_card_details,
 
 LISTING_FAILED_MARKER = "__listing_failed__"
 
+# A set that fails this many CONSECUTIVE runs is classified
+# "upstream-unavailable": the endpoint is broken on the source side (e.g.
+# TCGdex currently returns HTTP 503 for the ja "SM1+"-style subset set ids
+# and their cards are absent from the global listing too). Such a gap is
+# still recorded and still retried on every run (in case the source heals),
+# but it no longer BLOCKS a core language — a permanently broken upstream
+# endpoint must not make the install impossible. Verified live 2026-09-17:
+# 5 ja sets (SM1+, sm2+, SM3+, SM4+, SM5+ / 336 cards) are listing-only
+# ghosts on api.tcgdex.net.
+UPSTREAM_UNAVAILABLE_AFTER = 3
+
 
 def clear_meta(conn, key: str) -> None:
     conn.execute("DELETE FROM meta WHERE key = ?", (key,))
@@ -162,8 +173,25 @@ def _sync_language(conn, language: str, refresh: bool, verbose: bool = True) -> 
 
     n_scans = sum(1 for r in records if r.image_base)
     if report.failed_sets:
+        # Consecutive-failure accounting: sets failing every run become
+        # "upstream-unavailable" after UPSTREAM_UNAVAILABLE_AFTER attempts
+        # (recorded, retried, but no longer install-blocking).
+        try:
+            previous = json.loads(gaps or "{}")
+        except json.JSONDecodeError:
+            previous = {}
+        attempts = dict(previous.get("attempts") or {})
+        for sid in report.failed_sets:
+            attempts[sid] = int(attempts.get(sid, 0)) + 1
+        for sid in list(attempts):
+            if sid not in report.failed_sets:
+                attempts.pop(sid)  # healed: reset its counter
+        upstream_limited = all(n >= UPSTREAM_UNAVAILABLE_AFTER for n in attempts.values()) \
+            and bool(attempts)
         set_meta(conn, f"catalog.gaps.{language}", json.dumps({
             "failedSets": report.failed_sets,
+            "attempts": attempts,
+            "upstreamLimited": upstream_limited,
             "expected": report.expected_sets,
             "succeeded": report.succeeded_sets,
             "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -172,7 +200,11 @@ def _sync_language(conn, language: str, refresh: bool, verbose: bool = True) -> 
         if verbose:
             print(f"[catalog] {language}: {len(records)} cards saved but INCOMPLETE — "
                   f"{len(report.failed_sets)}/{report.expected_sets} sets failed ({preview})")
-        return "partial"
+            if upstream_limited:
+                print(f"[catalog] {language}: every failing set is upstream-unavailable "
+                      f"(>{UPSTREAM_UNAVAILABLE_AFTER} consecutive attempts) — recorded as a "
+                      f"source-side gap, NOT blocking the install")
+        return "partial-upstream" if upstream_limited else "partial"
     set_meta(conn, f"catalog.updated.{language}", time.strftime("%Y-%m-%dT%H:%M:%S"))
     clear_meta(conn, f"catalog.gaps.{language}")
     if verbose:
@@ -323,11 +355,13 @@ def main() -> None:
                 incomplete_core.append(language)
             else:
                 incomplete_optional.append(language)
-        elif outcome == "partial":
+        elif outcome == "partial":  # transport-failure gaps still block core
             if language in CORE_LANGUAGES:
                 incomplete_core.append(language)
             else:
                 incomplete_optional.append(language)
+        # "partial-upstream": every remaining gap is source-side broken —
+        # recorded + retried, but deliberately NOT install-blocking.
 
     # ---- second source: pokemon-tcg-data (EN reconcile + pt backfill) -------
     ptcg_sets = ptcg_cards = None
@@ -403,6 +437,13 @@ def main() -> None:
         print("[catalog] run again to retry only the gaps")
     if incomplete_optional:
         print(f"[catalog] incomplete OPTIONAL languages (non-blocking): {', '.join(incomplete_optional)}")
+    for language in languages:
+        if status.get(language) == "partial-upstream":
+            gaps = json.loads(get_meta(conn, f"catalog.gaps.{language}") or "{}")
+            print(f"[catalog] {language}: PARTIAL (upstream-unavailable sets: "
+                  f"{', '.join(gaps.get('failedSets', [])[:8])}"
+                  f"{'…' if len(gaps.get('failedSets', [])) > 8 else ''}) — "
+                  f"source-side gap, retried on every run, not blocking")
     if incomplete_core:
         sys.exit(1)
 

@@ -163,6 +163,37 @@ Objetivo: mesma precisão, menos trabalho redundante. Sem troca de modelos, sem 
 - Progresso da UI limitado a ~6 paints/s (o reconhecimento em si não muda).
 - Cornelius (fallback do navegador): inferência ONNX + warp de perspectiva agora em Web Worker (`card-recognition-cornelius.worker.ts`), com fallback inline intacto.
 
+## Rodada de estabilidade 2026-09-17 (branch `fix/crash-stability-catalog`)
+
+Contexto do relato na máquina-alvo (Windows, Ryzen 5 3500, RX 570 4 GB): o serviço local morria com `3221225477` (`0xC0000005`, access violation nativa) logo após `RuntimeWarning: invalid value encountered in multiply/divide` vindos de `embed.py` — output do SigLIP2 com NaN. O checkout local rodava o PR #17, onde a seleção de provider era GPU-first com as opções de session defaults (`enable_mem_pattern=True`), exatamente a combinação que a documentação oficial do DirectML EP diz não suportar; o PR #18 já havia corrigido as opções de session, mas não existia validação numérica nem fallback de provider.
+
+**Estabilidade numérica (a imagem ruim não pode matar o processo)**
+- Todo chunk de embedding é validado: shape/dtype, finitude antes da norma, norma > `1e-6`, finitude depois da normalização. Qualquer violação levanta `InvalidEmbeddingError` com diagnóstico completo (stage, model, provider, shapes, min/max/mean, contagens de NaN/inf) — nunca `nan_to_num`, nunca propagação silenciosa para cosine/retrieval/fusion/memória.
+- Fail-safe por requisição: embedding inválido desabilita SOMENTE a rota visual daquele request; OCR/candidatos textuais seguem e a decisão reflete honestamente a evidência faltante (`visualError` no payload). O processo continua vivo.
+- Índice com linhas NaN/inf falha rápido no load com instrução de rebuild (uma linha NaN envenena cada argmax).
+- CTC do OCR: probabilidades não-finitas leem nada (nunca um caractere errado); confiança não-finita é descartada.
+
+**Demotion de provider (estabilidade > velocidade teórica)**
+- 2 outputs inválidos no mesmo provider não-CPU (configurável) reconstrói a session em CPU e grava `provider-demotion.json`; a seleção `auto` pula providers demotidos por até 168 h (`RECOGNITION_DEMOTION_TTL_HOURS`), `RECOGNITION_PROVIDER_DEMOTION=0` desativa o mecanismo e `RECOGNITION_PROVIDERS=dml` explícito nunca é filtrado.
+- **Crash journal**: `last-request.json` escrito no início de cada request e removido no fim. Se o arquivo sobreviver, o processo anterior morreu no meio de um request — os providers que executavam são demotidos no próximo startup. Um crash nativo não se repete na mesma foto.
+- `/health` (v1.3.0): bloco `stability` com `invalidEmbeddings`, `providerDemotions`, `previousRunCrashed`, e `backend.demotedProviders`.
+- `npm start`: restart supervisionado e limitado do serviço local (máx. 2 em 10 min) — crash nativo recupera em CPU em vez de deixar o site sem o pipeline forte.
+
+**Failed to fetch diagnosticado**
+- O fallback do navegador agora distingue a causa: processo morto (TypeError do fetch), timeout (AbortError/TimeoutError) e erro HTTP (status). "Failed to fetch" era o sintoma do crash do processo, não um diagnóstico.
+
+**Congelamento restante do navegador (P0)**
+- Causa raiz: o pipeline de OCR do navegador (`card-recognition-ppocr.ts`) rodava com `execution: "main"` — 4 passes de inferência WASM + realce por pixel POR CARTA na main thread. Com o serviço local morto e 20+ cartas, a página travava por completo.
+- Correção: `card-recognition-ppocr.worker.ts` hospeda o pipeline inteiro (load do SDK, recortes, realce, 4 passes, pós-processamento) num Web Worker dedicado; o caminho inline permanece como fallback (sem Worker / erro / timeout). Mesmo SDK, mesmo modelo, mesmos passes — só a thread muda.
+
+**Reconhecimento OFF (teste que falhava só na máquina do usuário)**
+- Causa: o regex do teste usava `\n` mas o checkout Windows com `autocrlf` grava `\r\n` em disco. Comportamento OFF real estava correto; o teste agora normaliza line endings e também afirma que o guard precede o registro in-flight e o probe de health.
+
+**Cobertura do catálogo (TCGdex)**
+- A fonte já era a TCGdex com todos os sets (en=220/pt=125/es=156/ja=184, sem truncamento). O gargalo real: cartas SEM scan publicado (~10% dos promos, ex. 22/307 do swshp) eram descartadas do DB — invisíveis até para OCR. Agora são gravadas com `scan_status="not_available"` e continuam candidatas de rota B (OCR/texto); o índice visual não muda (sem scan, sem embedding) — zero risco de regressão de precisão.
+- `download_scans.py` agora é um sincronizador com máquina de estados na tabela `scans`: `validated` (com sha256 gravado no download; re-runs pulam com zero rede), `failed` (retry no próximo run), `not_available` (gap de catálogo, sem retry). Corrupção detectada por sha256 leva a re-download no mesmo run.
+- `scripts/stress_service.py`: benchmark de longa duração (20/50/100 requests consecutivos) medindo processo vivo, mean/P50/P95/max, decisões, embeddings inválidos e crescimento de RSS; exit non-zero em qualquer falha.
+
 ### Variáveis de ambiente novas
 
 | Variável | Default | Efeito |
@@ -170,6 +201,9 @@ Objetivo: mesma precisão, menos trabalho redundante. Sem troca de modelos, sem 
 | `RECOGNITION_SCAN_CACHE_MB` | `400` | Orçamento de RAM do cache de scans decodificados |
 | `RECOGNITION_SIFT_CACHE_MB` | `128` | Orçamento do cache de features SIFT (`0` desativa) |
 | `RECOGNITION_PROVIDERS` | `auto` | `cpu`/`dml`/`cuda` força o provider das sessions ONNX |
+| `RECOGNITION_PROVIDER_DEMOTION` | `1` | `0` desativa o mecanismo de demotion de provider instável |
+| `RECOGNITION_DEMOTION_TTL_HOURS` | `168` | Horas que um provider demotido fica fora da seleção `auto` |
+| `RECOGNITION_PROVIDER_DEMOTION_AFTER` | `2` | Outputs inválidos no mesmo provider antes do demotion |
 | `RECOGNITION_EMBED_CHUNK` | `2` | (existente) batch interno do embedding — só mude com benchmark |
 | `RECOGNITION_MAX_CONCURRENCY` | `1` | (existente) paralelismo de reconhecimento no serviço |
 

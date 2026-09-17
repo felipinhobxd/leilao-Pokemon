@@ -28,7 +28,7 @@ from typing import Optional
 import numpy as np
 
 from .config import DEFAULT_EMBEDDING, DEFAULT_CALIBRATION, EMBEDDING_CALIBRATION, TOPK, VERIFY_CANDIDATES
-from .embed import get_model
+from .embed import InvalidEmbeddingError, get_model
 from .features import SiftFeatures, Verification, get_matcher
 from .hints import OcrHints, extract_hints, name_similarity
 from .normalize import NormalizedCard, normalize_card, photometric_variants
@@ -138,6 +138,11 @@ class RecognitionResult:
     evidence: list[str] = field(default_factory=list)
     elapsed_ms: int = 0
     timings: dict = field(default_factory=dict)
+    # Set when the visual route was DISABLED for this request because the
+    # embedding failed numerical validation (NaN/inf/zero-norm). The OCR
+    # route still ran; the decision honestly reflects the missing evidence
+    # instead of a fabricated similarity.
+    visual_error: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -150,6 +155,7 @@ class RecognitionResult:
             "orientation": self.orientation,
             "languageStatus": self.language_status,
             "fastPath": self.fast_path,
+            "visualError": self.visual_error,
             "hints": self.hints.to_dict() if self.hints else None,
             "evidence": self.evidence,
             "elapsedMs": self.elapsed_ms,
@@ -188,6 +194,14 @@ class VisualIndex:
         data = np.load(path, allow_pickle=True)
         self.matrix = data["matrix"].astype(np.float32)
         self.ids = list(map(str, data["ids"]))
+        # A NaN/inf row in the index poisons EVERY query that touches it (a
+        # NaN similarity wins argmax silently). Fail fast at load with an
+        # actionable message instead of serving garbage rankings.
+        if self.matrix.size and not np.isfinite(self.matrix).all():
+            bad = int((~np.isfinite(self.matrix)).any(axis=1).sum())
+            raise RuntimeError(
+                f"index '{embedding_name}' contains {bad} non-finite row(s) (NaN/inf) — "
+                f"rebuild it with: python scripts/build_index.py --model {embedding_name}")
         self.id_to_row = {cid: i for i, cid in enumerate(self.ids)}
         self.model = get_model(embedding_name)
 
@@ -841,8 +855,20 @@ class Recognizer:
         # Route A: visual retrieval (independent of OCR). The multi-view
         # embeddings come back so the memory lookup below can REUSE the raw
         # rows instead of embedding the same two views again per request.
+        # FAIL-SAFE (P0): an invalid embedding (NaN/inf/zero-norm from a bad
+        # provider) disables ONLY the visual route for THIS request — the
+        # OCR route still runs and the decision honestly reflects the missing
+        # evidence. One bad image must never kill the service process.
         t0 = time.time()
-        route_a_candidates, orientation, view_embeddings, raw_rows = self.route_a(card, return_views=True)
+        route_a_candidates: list[Candidate] = []
+        orientation = "0"
+        view_embeddings = None
+        raw_rows: list[int] = []
+        try:
+            route_a_candidates, orientation, view_embeddings, raw_rows = self.route_a(card, return_views=True)
+        except InvalidEmbeddingError as exc:
+            result.visual_error = str(exc)
+            print(f"[recognize] visual route disabled for this request: {exc}", flush=True)
         timings["route_a_retrieval"] = (time.time() - t0) * 1000
         result.route_a_ok = bool(route_a_candidates)
 

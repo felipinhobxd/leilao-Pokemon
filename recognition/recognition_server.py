@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import io
+import json
 import os
 import sys
 import threading
@@ -45,12 +46,15 @@ from PIL import Image
 import cv2
 
 from recognizer import memory as memory_module
-from recognizer.config import (DEFAULT_EMBEDDING, RECOGNITION_MAX_CONCURRENCY,
+from recognizer.config import (BASE_DIR, DEFAULT_EMBEDDING, RECOGNITION_MAX_CONCURRENCY,
                                SERVICE_HOST, SERVICE_PORT, allowed_origins)
+from recognizer.journal import (JOURNAL_PATH, journal_check_previous_crash,
+                                journal_clear, journal_write)
+from recognizer.ort_session import demotion_report
 from recognizer.pipeline import Recognizer
 from recognizer.store import CatalogStore
 
-app = FastAPI(title="Pokemon Card Recognition (local)", version="1.1.0")
+app = FastAPI(title="Pokemon Card Recognition (local)", version="1.3.0")
 
 # The site runs on localhost dev/production ports; the deployed Vercel panel
 # is added via RECOGNITION_ALLOWED_ORIGINS (comma-separated). Never "*".
@@ -75,10 +79,22 @@ async def private_network_access(request, call_next):
     return response
 
 
-_state = {"recognizer": None, "store": None, "started": 0, "requests": 0, "errors": 0}
+_state = {"recognizer": None, "store": None, "started": 0, "requests": 0, "errors": 0,
+           "journal_crash": False, "invalid_embeddings": 0}
 _lock = threading.Lock()
 _executor: ThreadPoolExecutor | None = None
 _executor_lock = threading.Lock()
+
+
+def _journal_check_previous_crash() -> None:
+    """Startup wrapper: surface the recovered crash entry (see recognizer.journal)."""
+    entry = journal_check_previous_crash()
+    if entry:
+        print(f"[service] CRASH RECOVERY: previous process died while processing request "
+              f"{entry.get('id')} at {entry.get('at')} (providers: {entry.get('providers') or 'unknown'}) — "
+              f"they were demoted; the service will run on the next provider in line",
+              flush=True)
+        _state["journal_crash"] = True
 
 
 def get_executor() -> ThreadPoolExecutor:
@@ -142,7 +158,7 @@ def health():
         # means the process is alive).
         "ready": ready,
         "service": "pokemon-card-recognition",
-        "version": "1.2.0",
+        "version": "1.3.0",
         "uptimeSec": int(time.time() - _state["started"]),
         "requests": _state["requests"],
         "errors": _state["errors"],
@@ -152,10 +168,23 @@ def health():
             # back to CPU when DML/CUDA cannot init, so availableProviders is
             # NOT evidence of GPU use. Fallbacks are visible here per model.
             "runtimeProviders": recognizer.runtime_providers() if recognizer else {},
+            "demotedProviders": demotion_report(),
             "embedding": os.environ.get("RECOGNITION_EMBEDDING", DEFAULT_EMBEDDING),
             "matcher": os.environ.get("RECOGNITION_MATCHER", "sift"),
             "ocr": "ppocrv6-medium",
             "maxConcurrency": RECOGNITION_MAX_CONCURRENCY,
+        },
+        "stability": {
+            # Numerical-stability observability (P0 crash round): invalid
+            # embeddings rejected by validation, provider demotions performed
+            # by this process, and whether the previous process died mid-request.
+            "invalidEmbeddings": (recognizer.index.model.invalid_outputs
+                                  if recognizer and recognizer.index is not None
+                                  and recognizer.index.model is not None else 0),
+            "providerDemotions": (recognizer.index.model.demotions
+                                  if recognizer and recognizer.index is not None
+                                  and recognizer.index.model is not None else []),
+            "previousRunCrashed": _state["journal_crash"],
         },
         "catalog": {"cards": catalog_size, "indexSize": index_size},
         "modelsLoaded": models_loaded,
@@ -197,7 +226,16 @@ async def recognize(file: UploadFile = File(...)):
         def work():
             started = time.time()
             waited = started - queued_at  # time spent behind other cards
-            result = recognizer.recognize(bgr)
+            # Crash journal: if the process dies natively inside a provider,
+            # this entry tells the next startup exactly who was executing.
+            request_id = f"req-{_state['requests']}"
+            journal_write(JOURNAL_PATH, request_id, recognizer.runtime_providers())
+            try:
+                result = recognizer.recognize(bgr)
+            finally:
+                journal_clear(JOURNAL_PATH)
+            if result.visual_error:
+                _state["invalid_embeddings"] += 1
             return result, time.time() - started, waited
 
         loop = asyncio.get_running_loop()
@@ -311,6 +349,7 @@ def main() -> None:
     parser.add_argument("--preload", action="store_true", help="load models at startup")
     args = parser.parse_args()
     _state["started"] = time.time()
+    _journal_check_previous_crash()
     if args.preload:
         get_recognizer()
     print(f"[service] listening on http://{args.host}:{args.port} (local only) "

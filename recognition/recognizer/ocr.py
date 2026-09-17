@@ -202,6 +202,11 @@ class PpOcr:
         return np.ascontiguousarray(np.transpose(norm, (2, 0, 1))[np.newaxis], dtype=np.float32)
 
     def _ctc_decode(self, probs: np.ndarray) -> tuple[str, float]:
+        # NaN/inf in the rec probabilities (bad provider output) would make
+        # argmax pick an arbitrary index silently and poison line confidences.
+        # A non-finite distribution carries no information: read nothing.
+        if not np.isfinite(probs).all():
+            return "", 0.0
         best = probs.argmax(axis=1)
         confs = probs.max(axis=1)
         chars: list[str] = []
@@ -216,6 +221,8 @@ class PpOcr:
             prev = idx
         text = "".join(chars).strip()
         confidence = float(np.mean(confidences)) if confidences else 0.0
+        if not np.isfinite(confidence):
+            return "", 0.0
         return text, confidence
 
     def _recognize_batch(self, bgr: np.ndarray, boxes: list[np.ndarray], region: str) -> list[OcrLine]:

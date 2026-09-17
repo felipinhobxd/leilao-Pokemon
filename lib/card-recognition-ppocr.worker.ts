@@ -1,11 +1,33 @@
-"use client";
+// PP-OCRv6 worker: the ENTIRE browser OCR pipeline OFF the main thread.
+//
+// Why this exists: the browser fallback pipeline used to create the SDK
+// pipeline with `execution: "main"`, so every recognition of every card ran
+// FOUR WASM inference passes (top-name, top-hp, bottom-number, full card)
+// plus per-pixel contrast enhancement ON THE MAIN THREAD — hundreds of ms of
+// blocking compute per card, times 20-50 cards = the reported "page frozen,
+// nothing clickable during/after recognition".
+//
+// The SDK's own worker mode was not used because it builds its worker from a
+// cross-origin CDN URL (blocked as a dedicated worker by same-origin rules);
+// instead this module hosts the SDK INSIDE our own same-origin worker, with
+// `execution: "main"` meaning the worker's own thread.
+//
+// Keep the crop regions, contrast constants, pass order and ALL the hint
+// post-processing in SYNC with card-recognition-ppocr.ts — they are
+// deliberately duplicated here because the main-thread module is a
+// "use client" module and workers cannot import those. Same inputs must
+// produce the same outcome; only the thread changes.
 
-import { buildOcrHints, extractCardNumber, stringSimilarity, type OcrHints, type RecognitionLanguage } from "./card-recognition-core";
+import {
+  buildOcrHints,
+  extractCardNumber,
+  stringSimilarity,
+  type OcrHints,
+  type RecognitionLanguage,
+} from "./card-recognition-core-legacy.ts";
 
 const SDK_VERSION = "0.2.0";
-const LOADER_PATH = `/card-recognition/ppocrv6-loader.mjs?v=${SDK_VERSION}`;
-const READY_EVENT = "leilao:ppocrv6-ready";
-const ERROR_EVENT = "leilao:ppocrv6-error";
+const SDK_URL = `https://cdn.jsdelivr.net/npm/web-sdk-pp-ocrv6@${SDK_VERSION}/+esm`;
 const LOAD_TIMEOUT_MS = 45_000;
 
 type PpPoint = { readonly x: number; readonly y: number };
@@ -27,10 +49,6 @@ type PpPipeline = {
   dispose(): Promise<void>;
 };
 type PpSdk = { createOCR(options: Record<string, unknown>): PpPipeline };
-type PpGlobal = typeof globalThis & {
-  __LEILAO_PPOCRV6__?: PpSdk;
-  __LEILAO_PPOCRV6_ERROR__?: string;
-};
 
 type OcrPass = {
   label: string;
@@ -49,154 +67,52 @@ export type PpOcrOutcome = {
   error?: string;
 };
 
-let sdkPromise: Promise<PpSdk> | null = null;
+type JobRequest = { id: number; file: File };
+type JobResponse = { id: number } & (
+  | { progress: string }
+  | { outcome: PpOcrOutcome }
+  | { error: string }
+);
+
 let pipelinePromise: Promise<PpPipeline> | null = null;
-let progressSink: ((message: string) => void) | undefined;
 
-function state() {
-  return globalThis as PpGlobal;
+function post(message: JobResponse) {
+  (self as unknown as Worker).postMessage(message);
 }
 
-// --------------------------------------------------------------------- worker
-// The whole OCR pipeline (SDK load, crops, contrast enhancement, 4 inference
-// passes, hint post-processing) runs in a dedicated Worker so the browser
-// fallback never freezes the page. The inline path below stays as the
-// fallback for browsers without Worker/OffscreenCanvas support or when the
-// worker itself fails to start (same architecture as the Cornelius worker).
-type WorkerJobResult = { outcome?: PpOcrOutcome; error?: string };
-
-let ppocrWorker: Worker | null = null;
-let workerBroken = false;
-const workerPending = new Map<number, {
-  resolve: (value: WorkerJobResult | null) => void;
-  onProgress?: (message: string) => void;
-}>();
-let workerJobId = 0;
-
-function getPpocrWorker(): Worker | null {
-  if (workerBroken || typeof Worker === "undefined") return null;
-  if (ppocrWorker) return ppocrWorker;
-  try {
-    ppocrWorker = new Worker(new URL("./card-recognition-ppocr.worker.ts", import.meta.url), { type: "module", name: "ppocrv6-ocr" });
-    ppocrWorker.onmessage = (event: MessageEvent<{ id: number; progress?: string; outcome?: PpOcrOutcome; error?: string }>) => {
-      const waiter = workerPending.get(event.data.id);
-      if (!waiter) return;
-      if (typeof event.data.progress === "string") {
-        waiter.onProgress?.(event.data.progress);
-        return;
-      }
-      workerPending.delete(event.data.id);
-      waiter.resolve(event.data.error ? { error: event.data.error } : { outcome: event.data.outcome });
-    };
-    ppocrWorker.onerror = () => {
-      // Mark broken and fail every waiter: the inline path takes over.
-      workerBroken = true;
-      for (const waiter of workerPending.values()) waiter.resolve(null);
-      workerPending.clear();
-      ppocrWorker?.terminate();
-      ppocrWorker = null;
-    };
-    return ppocrWorker;
-  } catch {
-    workerBroken = true;
-    return null;
-  }
-}
-
-async function runOcrWithWorker(file: File, onProgress?: (message: string) => void,
-                                timeoutMs = 180_000): Promise<WorkerJobResult | null> {
-  const worker = getPpocrWorker();
-  if (!worker) return null;
-  const id = ++workerJobId;
-  return new Promise<WorkerJobResult | null>(resolve => {
-    const timer = setTimeout(() => {
-      // Stalled worker (e.g. a CDN hang beyond the SDK's own load timeout):
-      // hand the job to the inline path instead of waiting forever.
-      workerPending.delete(id);
-      resolve(null);
-    }, timeoutMs);
-    workerPending.set(id, {
-      resolve: value => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      onProgress,
-    });
-    worker.postMessage({ id, file });
-  });
-}
-
-function shutdownPpocrWorker() {
-  workerBroken = true;
-  for (const waiter of workerPending.values()) waiter.resolve(null);
-  workerPending.clear();
-  ppocrWorker?.terminate();
-  ppocrWorker = null;
-}
-
-function loadSdk() {
-  if (typeof window === "undefined") return Promise.reject(new Error("PP-OCRv6 só funciona no navegador."));
-  if (state().__LEILAO_PPOCRV6__) return Promise.resolve(state().__LEILAO_PPOCRV6__!);
-  if (sdkPromise) return sdkPromise;
-  sdkPromise = new Promise<PpSdk>((resolve, reject) => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const cleanup = () => {
-      clearTimeout(timer);
-      window.removeEventListener(READY_EVENT, ready);
-      window.removeEventListener(ERROR_EVENT, failed);
-    };
-    const ready = () => {
-      const sdk = state().__LEILAO_PPOCRV6__;
-      cleanup();
-      if (sdk) resolve(sdk);
-      else reject(new Error("PP-OCRv6 carregou sem expor createOCR."));
-    };
-    const failed = () => {
-      cleanup();
-      reject(new Error(state().__LEILAO_PPOCRV6_ERROR__ || "Não foi possível carregar PP-OCRv6."));
-    };
-    window.addEventListener(READY_EVENT, ready, { once: true });
-    window.addEventListener(ERROR_EVENT, failed, { once: true });
-    const existing = document.querySelector<HTMLScriptElement>(`script[data-ppocrv6="${SDK_VERSION}"]`);
-    if (!existing) {
-      const script = document.createElement("script");
-      script.type = "module";
-      script.src = LOADER_PATH;
-      script.dataset.ppocrv6 = SDK_VERSION;
-      script.onerror = failed;
-      document.head.appendChild(script);
-    }
-    timer = setTimeout(() => failed(), LOAD_TIMEOUT_MS);
-  }).catch(error => {
-    sdkPromise = null;
-    throw error;
-  });
-  return sdkPromise;
-}
-
-function getPipeline() {
-  pipelinePromise ??= loadSdk().then(async sdk => {
+function getPipeline(onProgress: (message: string) => void): Promise<PpPipeline> {
+  pipelinePromise ??= (async () => {
+    const sdk = (await import(/* webpackIgnore: true */ SDK_URL)) as PpSdk;
     const pipeline = sdk.createOCR({
       model: { det: "medium", rec: "medium" },
       backend: "wasm",
+      // "main" INSIDE this worker == the worker's own thread. The heavy
+      // inference never touches the page's main thread.
       execution: "main",
       allowFallback: false,
       wasmPaths: "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/",
       onProgress: (event: { phase?: string; component?: string; progress?: number }) => {
         const percent = typeof event.progress === "number" ? ` ${Math.round(event.progress * 100)}%` : "";
         const component = event.component ? ` ${event.component}` : "";
-        if (event.phase === "download") progressSink?.(`📥 PP-OCRv6 Medium${component}${percent}`);
-        else if (event.phase === "load") progressSink?.(`🧠 Carregando PP-OCRv6 Medium${component}${percent}`);
+        if (event.phase === "download") onProgress(`📥 PP-OCRv6 Medium${component}${percent}`);
+        else if (event.phase === "load") onProgress(`🧠 Carregando PP-OCRv6 Medium${component}${percent}`);
       },
     });
     await pipeline.load();
     return pipeline;
-  }).catch(error => {
-    pipelinePromise = null;
-    throw error;
-  });
+  })();
+  const guard = pipelinePromise;
+  // Load timeout guard: a stalled CDN must not hang the job forever.
+  const timer = setTimeout(() => {
+    void guard.then(p => p.dispose()).catch(() => undefined);
+  }, LOAD_TIMEOUT_MS + 60_000);
+  void pipelinePromise.then(() => clearTimeout(timer), () => clearTimeout(timer));
   return pipelinePromise;
 }
+
+// ------------------------------------------------------------------ processing
+// Everything below mirrors card-recognition-ppocr.ts verbatim (constants and
+// math); only the canvas plumbing is OffscreenCanvas instead of DOM canvas.
 
 function centerY(line: PpLine) {
   if (!line.polygon.length) return 0;
@@ -249,21 +165,11 @@ function refineLanguage(hints: OcrHints, text: string): OcrHints {
   return hints;
 }
 
-async function decodeImage(file: File): Promise<ImageBitmap | HTMLImageElement> {
-  if (typeof createImageBitmap === "function") return createImageBitmap(file, { imageOrientation: "from-image" });
-  const url = URL.createObjectURL(file);
-  try {
-    const image = new Image();
-    image.decoding = "async";
-    image.src = url;
-    await image.decode();
-    return image;
-  } finally {
-    URL.revokeObjectURL(url);
-  }
+async function decodeImage(file: File): Promise<ImageBitmap> {
+  return createImageBitmap(file, { imageOrientation: "from-image" });
 }
 
-function enhanceGray(context: CanvasRenderingContext2D, width: number, height: number, contrast: number) {
+function enhanceGray(context: OffscreenCanvasRenderingContext2D, width: number, height: number, contrast: number) {
   const image = context.getImageData(0, 0, width, height);
   for (let index = 0; index < image.data.length; index += 4) {
     const gray = image.data[index] * 0.299 + image.data[index + 1] * 0.587 + image.data[index + 2] * 0.114;
@@ -275,13 +181,9 @@ function enhanceGray(context: CanvasRenderingContext2D, width: number, height: n
   context.putImageData(image, 0, 0);
 }
 
-function canvasFile(canvas: HTMLCanvasElement, name: string) {
-  return new Promise<File>((resolve, reject) => {
-    canvas.toBlob(blob => {
-      if (!blob) return reject(new Error("Não foi possível preparar a região para PP-OCRv6."));
-      resolve(new File([blob], name, { type: "image/png" }));
-    }, "image/png");
-  });
+async function canvasFile(canvas: OffscreenCanvas, name: string) {
+  const blob = await canvas.convertToBlob({ type: "image/png" });
+  return new File([blob], name, { type: "image/png" });
 }
 
 async function buildTargetedInputs(file: File) {
@@ -292,9 +194,10 @@ async function buildTargetedInputs(file: File) {
     const crop = async (label: string, y0: number, y1: number, scale: number, contrast: number, x0 = 0, x1 = 1) => {
       const sourceY = Math.round(height * y0);
       const sourceHeight = Math.max(1, Math.round(height * (y1 - y0)));
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.max(1, Math.round(width * (x1 - x0) * scale));
-      canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+      const canvas = new OffscreenCanvas(
+        Math.max(1, Math.round(width * (x1 - x0) * scale)),
+        Math.max(1, Math.round(sourceHeight * scale)),
+      );
       const context = canvas.getContext("2d", { willReadFrequently: true });
       if (!context) throw new Error("Canvas indisponível para PP-OCRv6.");
       context.imageSmoothingEnabled = true;
@@ -310,7 +213,7 @@ async function buildTargetedInputs(file: File) {
       await crop("bottom-number", 0.80, 1.00, 2.5, 1.20),
     ];
   } finally {
-    if ("close" in image && typeof image.close === "function") image.close();
+    image.close();
   }
 }
 
@@ -340,33 +243,16 @@ async function readPass(pipeline: PpPipeline, label: string, input: File, index:
   return { label, result, lines: cleanLines(result.lines) };
 }
 
-export async function runPpOcr(file: File, onProgress?: (message: string) => void): Promise<PpOcrOutcome> {
-  // Worker path first: model load, region crops, contrast enhancement and
-  // all four WASM inference passes run OFF the main thread. Same SDK, same
-  // model, same passes, same post-processing — only the thread changes.
-  const viaWorker = await runOcrWithWorker(file, onProgress);
-  if (viaWorker) {
-    if (viaWorker.outcome) return viaWorker.outcome;
-    if (viaWorker.error) {
-      // The worker itself failed (e.g. CDN unreachable): fall through to the
-      // inline path, which reports its own error on failure.
-      onProgress?.(`↩️ Worker de OCR falhou (${viaWorker.error}); tentando na thread principal…`);
-    }
-  }
-  return runPpOcrInline(file, onProgress);
-}
-
-async function runPpOcrInline(file: File, onProgress?: (message: string) => void): Promise<PpOcrOutcome> {
+async function runOcr(file: File, onProgress: (message: string) => void): Promise<PpOcrOutcome> {
   const started = performance.now();
-  progressSink = onProgress;
   try {
-    onProgress?.("🔤 PP-OCRv6 Medium · leitura de alta precisão em múltiplas regiões…");
-    const pipeline = await getPipeline();
+    onProgress("🔤 PP-OCRv6 Medium · leitura de alta precisão em múltiplas regiões…");
+    const pipeline = await getPipeline(onProgress);
     let targeted: Awaited<ReturnType<typeof buildTargetedInputs>> = [];
     try {
       targeted = await buildTargetedInputs(file);
     } catch {
-      onProgress?.("↩️ Não foi possível preparar recortes; seguindo com a carta inteira.");
+      onProgress("↩️ Não foi possível preparar recortes; seguindo com a carta inteira.");
     }
 
     const inputs = [...targeted, { label: "carta inteira", file }];
@@ -377,7 +263,7 @@ async function runPpOcrInline(file: File, onProgress?: (message: string) => void
         passes.push(await readPass(pipeline, input.label, input.file, index + 1, inputs.length, onProgress));
       } catch (error) {
         if (inputs.length === 1) throw error;
-        onProgress?.(`↩️ PP-OCRv6 não conseguiu ler ${input.label}; mantendo os outros passes.`);
+        onProgress(`↩️ PP-OCRv6 não conseguiu ler ${input.label}; mantendo os outros passes.`);
       }
     }
 
@@ -434,26 +320,12 @@ async function runPpOcrInline(file: File, onProgress?: (message: string) => void
       elapsedMs: Math.round(performance.now() - started),
       error: error instanceof Error ? error.message : String(error),
     };
-  } finally {
-    progressSink = undefined;
   }
 }
 
-export async function shutdownPpOcr() {
-  shutdownPpocrWorker();
-  const pipeline = await pipelinePromise?.catch(() => null);
-  pipelinePromise = null;
-  sdkPromise = null;
-  if (pipeline) await pipeline.dispose().catch(() => undefined);
-}
-
-export const ppOcrRuntime = {
-  sdk: `web-sdk-pp-ocrv6@${SDK_VERSION}`,
-  model: "PP-OCRv6 Medium det+rec",
-  strategy: "full-card+top-name+bottom-number",
-  backend: "wasm/cpu",
-  execution: "dedicated-worker (inline fallback)",
-  inference: "local-browser",
-  modelCache: "sdk-indexeddb",
-  sdkLoader: LOADER_PATH,
+self.onmessage = (event: MessageEvent<JobRequest>) => {
+  const { id, file } = event.data;
+  void runOcr(file, message => post({ id, progress: message }))
+    .then(outcome => post({ id, outcome }))
+    .catch(error => post({ id, error: error instanceof Error ? error.message : String(error) }));
 };

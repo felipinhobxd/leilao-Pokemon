@@ -2,9 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
-const local = fs.readFileSync(new URL("../lib/card-recognition-local.ts", import.meta.url), "utf8");
-const toggle = fs.readFileSync(new URL("../app/auctions/new/recognition-toggle.tsx", import.meta.url), "utf8");
-const page = fs.readFileSync(new URL("../app/auctions/new/page.tsx", import.meta.url), "utf8");
+// Source assertions must be line-ending agnostic: a Windows checkout with
+// core.autocrlf=true stores CRLF on disk, and a `\n`-anchored regex fails
+// there while passing on Linux CI (the exact "117 pass / 1 fail only on the
+// user's machine" asymmetry reported on 2026-09-16). Normalizing at read
+// time keeps every assertion below just as strict on both platforms.
+const readSource = (url) => fs.readFileSync(new URL(url, import.meta.url), "utf8").replace(/\r\n/g, "\n");
+
+const local = readSource("../lib/card-recognition-local.ts");
+const toggle = readSource("../app/auctions/new/recognition-toggle.tsx");
+const page = readSource("../app/auctions/new/page.tsx");
 
 test("image recognition can be disabled before uploads", () => {
   assert.match(toggle, /Reconhecimento de imagens:/);
@@ -21,13 +28,19 @@ test("preference persists locally and page shows toggle before wizard", () => {
 });
 
 test("disabled recognition performs zero work and never marks not-found", () => {
-  const wizard = fs.readFileSync(new URL("../app/auctions/new/bulk-wizard.tsx", import.meta.url), "utf8");
+  const wizard = readSource("../app/auctions/new/bulk-wizard.tsx");
   // The idle-scan effect must check the preference BEFORE calling identifyCard.
   assert.match(wizard, /if \(!imageRecognitionEnabled\(\)\) return;\n    for \(const card of cards\)/);
-  // identifyCard itself bails out before any state change or request.
+  // identifyCard itself bails out before ANY work: the guard must precede the
+  // in-flight registration (the first state change of the function).
   const identify = wizard.slice(wizard.indexOf("async function identifyCard"), wizard.indexOf("async function identifyCard") + 900);
+  assert.ok(identify.indexOf("if (!imageRecognitionEnabled()) return;") < identify.indexOf("recognitionInFlight.current.add(id)"),
+    "o guard precisa vir antes de qualquer registro de trabalho");
   assert.ok(identify.indexOf("if (!imageRecognitionEnabled()) return;") < identify.indexOf('recognitionStage: "queued"'),
     "o guard precisa vir antes de qualquer mudança de estado");
+  // recognizePokemonCard (the shared entry point) also refuses BEFORE probing
+  // the service: OFF means zero network requests, not even /health.
+  assert.ok(local.indexOf("if (!imageRecognitionEnabled())") < local.indexOf("const status = await probeLocalService()"));
   // A result that lands after the user switched OFF is dropped (back to idle),
   // never turned into not-found / expanded.
   assert.match(wizard, /Disabled while this request was running/);

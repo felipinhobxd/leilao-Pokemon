@@ -3,19 +3,33 @@
 """Incremental scan synchronizer: download official scans + record sync states.
 
 Usage:
-    python scripts/download_scans.py [--languages pt-BR,en] [--workers 12]
+    python scripts/download_scans.py [--languages pt-BR,en,ja] [--workers 12]
 
 State machine (scans table, see recognizer/catalog.SCAN_STATES):
-- validated     -> a usable scan sits in the local cache (magic bytes OK and,
-                   when previously recorded, sha256 matches). Re-runs SKIP
-                   these entirely: zero network, zero re-hashing of the world.
+- validated     -> a usable scan sits in the local cache (magic bytes OK,
+                   decodes, dimensions plausible, sha256 matches the record).
+                   Re-runs SKIP these entirely: zero network, zero re-hashing.
 - failed         -> transient/rate-limited failure: retried on the next run.
-- not_available  -> TCGdex publishes no scan (empty image_base or every URL
-                   in the chain 404'd). Not retried until the catalog changes
-                   (a gap is a catalog fact, not a transport failure).
+- not_available  -> no scan published by ANY source (empty image_base AND
+                   empty image_alt, or every URL in the chain 404'd). Not
+                   retried until the catalog changes (a gap is a catalog
+                   fact, not a transport failure).
 - corrupt        -> a previously validated file whose bytes no longer match
                    the recorded sha256: the cache entry is DELETED and the
                    scan re-downloaded in the same run (data healing).
+
+Image validation chain (HTTP 200 alone means nothing):
+- magic bytes (JPEG/WebP/PNG/GIF) + minimum size (4 KB);
+- full decode via cv2.imdecode (a truncated file that passes the magic
+  check is still rejected);
+- minimum dimensions (200x280: a scan downscaled to death is useless for
+  SIFT verification);
+- sha256 recorded at validation time (later runs detect bit-rot).
+
+Resolution chain per card (see recognizer/catalog.resolve_scan_classified):
+TCGdex own language -> EN mirror -> pokemon-tcg-data alt image (hi-res,
+then small). The alt image is the LAST resort: it only serves cards with
+no TCGdex scan at all, raising visual-index coverage.
 
 Progress reporting includes a rate and an ETA estimate (exponentially
 smoothed so a single fast/slow batch does not swing the projection), and the
@@ -33,9 +47,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from recognizer.catalog import (get_scan_state, init_db, load_cards, record_scan_state,
-                                resolve_scan_classified, scan_path, scan_state_counts,
-                                _cached_scan_ok, SCAN_QUALITY_CHAIN)
+from recognizer.catalog import (MIN_SCAN_HEIGHT, MIN_SCAN_WIDTH, get_scan_state,
+                                init_db, load_cards, record_scan_state,
+                                resolve_scan_classified, scan_path,
+                                scan_state_counts, _cached_scan_ok,
+                                SCAN_QUALITY_CHAIN)
 
 _state_lock = __import__("threading").Lock()
 _pending_writes: list[tuple] = []
@@ -65,6 +81,24 @@ def _sha256_of(path: str) -> str | None:
         return None
 
 
+def _decode_dimensions(path: str) -> tuple[int, int] | None:
+    """Full decode + dimension check. None when the file is not a usable
+    image (truncated, zero-dimension, or below the SIFT-useful floor)."""
+    import cv2
+    import numpy as np
+    try:
+        data = np.fromfile(path, dtype=np.uint8)  # unicode-safe on Windows
+    except OSError:
+        return None
+    image = cv2.imdecode(data, cv2.IMREAD_COLOR)
+    if image is None or image.ndim != 3:
+        return None
+    height, width = image.shape[:2]
+    if width < MIN_SCAN_WIDTH or height < MIN_SCAN_HEIGHT:
+        return None
+    return width, height
+
+
 def _resolved_cache_path(image_base: str) -> str | None:
     """First cache path (own language or EN-mirror naming) that validates."""
     for quality in SCAN_QUALITY_CHAIN:
@@ -79,48 +113,70 @@ def _resolved_cache_path(image_base: str) -> str | None:
 
 def sync_card(card, force: bool = False) -> str:
     """Bring ONE card's scan to a terminal state. Returns the state."""
-    if not card.image_base:
-        # Catalog says no scan is published: record once, no network at all.
+    # The scan's stable identifier: the TCGdex asset base when there is one,
+    # otherwise the second-source URL (never empty — every catalog row with
+    # any image possibility must be trackable).
+    scan_key = card.image_base or getattr(card, "image_alt", "") or ""
+    if not scan_key:
+        # No source publishes any image for this card: record once, no network.
         return "not_available"
 
-    recorded = get_scan_state(_conn, card.image_base)
+    recorded = get_scan_state(_conn, scan_key)
     if (not force and recorded is not None and recorded[0] == "validated"
-            and recorded[2]):
+            and len(recorded) > 2 and recorded[2]):
         # Fast path: validated before + sha256 recorded. Verify the local file
         # still matches (detects corruption/bit-rot without re-downloading).
-        path = _resolved_cache_path(card.image_base)
+        path = _resolved_cache_path(scan_key) if card.image_base else None
+        if path is None and getattr(card, "image_alt", ""):
+            from recognizer.catalog import _ptcg_cache_path, PTCGDATA_QUALITY_CHAIN
+            for q in PTCGDATA_QUALITY_CHAIN:
+                candidate = _ptcg_cache_path(card.image_alt, q)
+                if _cached_scan_ok(candidate):
+                    path = candidate
+                    break
         if path is not None and _sha256_of(path) == recorded[2]:
             return "validated"
         # Corrupt or missing on disk: fall through to a fresh download.
 
-    resolved, reason = resolve_scan_classified(card.image_base)
+    resolved, reason = resolve_scan_classified(
+        card.image_base or None, getattr(card, "image_alt", "") or None)
     if resolved is not None:
-        path, _source = resolved
+        path, source = resolved
         sha = _sha256_of(path)
-        if sha:
-            _queue_write(card.image_base, "validated", os.path.getsize(path), sha)
+        dims = _decode_dimensions(path)
+        if sha and dims:
+            _queue_write(scan_key, "validated", os.path.getsize(path), sha,
+                         dims[0], dims[1], source)
             return "validated"
+        if sha and not dims:
+            # Downloaded file decodes badly / dimensions below the floor:
+            # transient-quality image, retry later (maybe the CDN serves a
+            # better variant after regeneration).
+            _queue_write(scan_key, "failed", None, None)
+            return "failed"
         # Unreadable after resolution: transient.
-        _queue_write(card.image_base, "failed", None, None)
+        _queue_write(scan_key, "failed", None, None)
         return "failed"
     if reason == "not-found":
-        # Every URL in the chain answered 404: the CDN genuinely has no scan.
-        _queue_write(card.image_base, "not_available", None, None)
+        # Every URL of every source answered 404: a genuine catalog gap.
+        _queue_write(scan_key, "not_available", None, None)
         return "not_available"
-    _queue_write(card.image_base, "failed", None, None)
+    _queue_write(scan_key, "failed", None, None)
     return "failed"
 
 
-def _queue_write(image_base: str, state: str, nbytes: int | None, sha: str | None) -> None:
+def _queue_write(scan_key: str, state: str, nbytes: int | None, sha: str | None,
+                 width: int | None = None, height: int | None = None,
+                 source: str = "") -> None:
     with _state_lock:
-        _pending_writes.append((image_base, state, nbytes, sha))
+        _pending_writes.append((scan_key, state, nbytes, sha, width, height, source))
 
 
 def _flush_writes() -> None:
     with _state_lock:
         writes, _pending_writes[:] = list(_pending_writes), []
-    for image_base, state, nbytes, sha in writes:
-        record_scan_state(_conn, image_base, state, nbytes, sha)
+    for scan_key, state, nbytes, sha, width, height, source in writes:
+        record_scan_state(_conn, scan_key, state, nbytes, sha, width, height, source)
 
 
 _conn = None  # set in main(); sqlite connections are per-process by design
@@ -129,7 +185,7 @@ _conn = None  # set in main(); sqlite connections are per-process by design
 def main() -> None:
     global _conn
     parser = argparse.ArgumentParser()
-    parser.add_argument("--languages", default="pt-BR,en,es,ja")
+    parser.add_argument("--languages", default="pt-BR,en,ja,es")
     parser.add_argument("--workers", type=int, default=12)
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--force", action="store_true", help="re-validate even validated scans")
@@ -141,11 +197,13 @@ def main() -> None:
     if args.limit:
         cards = cards[: args.limit]
     with_scan = [c for c in cards if c.image_base]
-    without_scan = len(cards) - len(with_scan)
-    print(f"[scans] syncing {len(cards)} cards ({len(with_scan)} with scans, "
-          f"{without_scan} without) using {args.workers} workers")
+    alt_only = [c for c in cards if not c.image_base and getattr(c, "image_alt", "")]
+    without_scan = len(cards) - len(with_scan) - len(alt_only)
+    print(f"[scans] syncing {len(cards)} cards ({len(with_scan)} with primary scans, "
+          f"{len(alt_only)} second-source only, {without_scan} without any image) "
+          f"using {args.workers} workers")
 
-    counts = {"validated": 0, "failed": 0, "not_available": 0, "corrupt-redownloaded": 0}
+    counts = {"validated": 0, "failed": 0, "not_available": 0}
     done = 0
     started = time.time()
     smoothed_rate = 0.0

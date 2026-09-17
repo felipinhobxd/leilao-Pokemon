@@ -126,7 +126,10 @@ def main() -> None:
             if key in existing:
                 continue
             t0 = time.perf_counter()
-            path = ensure_scan(card.image_base, "high.webp")
+            # Full chain incl. the second-source (pokemon-tcg-data) backfill:
+            # a card with no TCGdex scan but an alt image still gets indexed.
+            path = ensure_scan(card.image_base, "high.webp",
+                               getattr(card, "image_alt", "") or None)
             timing["download"] += time.perf_counter() - t0
             if not path:
                 continue

@@ -11,8 +11,17 @@ from typing import Optional
 from .catalog import CardRecord, init_db, load_cards
 from .hints import OcrHints, name_similarity
 
+# Japanese card names (kana + kanji) must survive normalization: the old
+# [a-z0-9] filter mapped EVERY ja name to "" (one giant bucket, no route-B
+# name matching at all for ja cards). CJK ranges are kept as-is so
+# "ピカチュウ" indexes and matches against an OCR read of the same glyphs.
+_CJK_RE = re.compile(r"[ぁ-んァ-ン一-龯]")
+
 
 def _normalize(value: str) -> str:
+    if _CJK_RE.search(value or ""):
+        # Japanese read: keep CJK glyphs, drop latin punctuation noise.
+        return re.sub(r"[^ぁ-んァ-ン一-龯ーA-Za-z0-9♀♂]+", " ", (value or "").strip()).strip()
     decomposed = unicodedata.normalize("NFD", value)
     stripped = "".join(ch for ch in decomposed if unicodedata.category(ch) != "Mn")
     return re.sub(r"[^a-z0-9♀♂]+", " ", stripped.lower()).strip()

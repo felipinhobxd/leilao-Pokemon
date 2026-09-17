@@ -25,13 +25,15 @@ CODE_LANG = {v: k for k, v in LANG_CODE.items()}
 
 # Catalog language classes:
 # - CORE languages must be COMPLETE for the recognition service to be useful
-#   (pt-BR/en index is what identification runs on): a failed core fetch
-#   blocks the installer (non-zero exit).
-# - OPTIONAL languages are metadata-only (es/ja): a gap degrades those
+#   (the pt-BR/en/ja catalog is what identification runs on): a failed core
+#   fetch blocks the installer (non-zero exit). JA was promoted to CORE in the
+#   2026-09 catalog round: EN + JA + pt-BR is the declared objective, and a
+#   silent ja gap would hide every Japanese card from identification.
+# - OPTIONAL languages are metadata-only (es): a gap degrades those
 #   languages' coverage but must never block installation — the failure is
 #   recorded in catalog.gaps.<lang> and a later run retries just the gaps.
-CORE_LANGUAGES = ("pt-BR", "en")
-OPTIONAL_LANGUAGES = ("es", "ja")
+CORE_LANGUAGES = ("pt-BR", "en", "ja")
+OPTIONAL_LANGUAGES = ("es",)
 
 _lock = threading.Lock()
 
@@ -104,6 +106,24 @@ class CardRecord:
     #                          dropping it from the catalog used to make it
     #                          invisible to identification entirely.
     scan_status: str = ""
+    # ---------------------------------------------------------- catalog v2
+    # Identity vs printing: each ROW is a printing (language x set x localId x
+    # variant); canonical_id drops the language and links the language twins
+    # of the same international set (en sv01-025 <-> pt-BR sv01-025).
+    canonical_id: str = ""
+    # Rarity as published by the source ("Rare", "Illustration Rare", …).
+    # Empty when no source provides it — never guessed.
+    rarity: str = ""
+    # JSON list of subtypes/tags (["Stage 2", "ex"] from pokemon-tcg-data).
+    subtypes: str = "[]"
+    # Alternate image URL from a SECOND source (pokemon-tcg-data
+    # images.pokemontcg.io hi-res). Used by the scan chain as a last-resort
+    # backfill when TCGdex publishes no scan for the card: same artwork,
+    # independent CDN. Empty when the second source has no image either.
+    image_alt: str = ""
+    # JSON map of which sources cover this printing + their native ids:
+    #   {"tcgdex": {"id": "sv01-025"}, "pokemon-tcg-data": {"number": "25"}}
+    sources: str = "{}"
 
 
 # Scan sync states (scans table): the incremental synchronizer's state machine.
@@ -111,6 +131,10 @@ class CardRecord:
 #   failed        -> transport/transient failure: retry on the next run
 #   not_available -> no scan published (empty image_base, or every URL 404'd)
 SCAN_STATES = ("validated", "failed", "not_available")
+
+# Sources that may contribute to one catalog row (reconciliation bookkeeping).
+SOURCES_TCGDEX = "tcgdex"
+SOURCES_PTCGDATA = "pokemon-tcg-data"
 
 
 def _http_get(url: str, timeout: float = 30.0, retries: int = 3) -> bytes:
@@ -233,6 +257,53 @@ def _en_mirror_base(image_base: str) -> Optional[str]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# pokemon-tcg-data image backfill (second source, last resort).
+# images.pokemontcg.io serves <set>/<number>.png (~240x330) and
+# <set>/<number>_hires.png (~600x825+). The hi-res variant is the one worth
+# indexing; the small one is accepted only as a final fallback so a card with
+# no TCGdex scan at all still enters the visual index (a 240 px scan verifies
+# worse than a 600 px one, but it beats "invisible").
+PTCGDATA_IMAGE_BASE = "https://images.pokemontcg.io"
+PTCGDATA_QUALITY_CHAIN = ("hires", "small")
+
+
+def _ptcg_url(alt_url: str, quality: str) -> Optional[str]:
+    """Derive the fetch URL for a quality variant of a pokemon-tcg-data image.
+
+    alt_url is stored in the DB as the HI-RES url (.../<set>/<n>_hires.png);
+    the small variant is the same path without the _hires suffix."""
+    if not alt_url:
+        return None
+    if "/_hires" in alt_url:
+        stem = alt_url[: alt_url.index("/_hires")]
+        suffix = alt_url[alt_url.rindex("."):] if "." in alt_url[alt_url.rindex("/"):] else ".png"
+        return f"{stem}{suffix}" if quality == "small" else alt_url
+    # stored as the plain (small) url: hi-res is the derived one
+    if quality == "small":
+        return alt_url
+    dot = alt_url.rfind(".")
+    return f"{alt_url[:dot]}_hires{alt_url[dot:]}" if dot > 0 else None
+
+
+def _ptcg_cache_path(alt_url: str, quality: str) -> str:
+    """Local cache path for a second-source image (own namespace, never
+    colliding with the TCGdex asset cache)."""
+    tail = alt_url[len(PTCGDATA_IMAGE_BASE):].strip("/") if alt_url.startswith(PTCGDATA_IMAGE_BASE) else alt_url.strip("/").replace("/", "_")
+    stem, dot = tail[: tail.rfind(".")], tail[tail.rfind("."):]
+    return os.path.join(IMAGE_CACHE_DIR, "ptcg", f"{stem}.{quality}{dot}")
+
+
+def _cache_ptcg(alt_url: str, quality: str, data: bytes) -> str:
+    path = _ptcg_cache_path(alt_url, quality)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as fh:
+        fh.write(data)
+    os.replace(tmp, path)
+    return path
+
+
 def _classify_failure(exc: Exception) -> str:
     """Map a transport exception to a negative-cache class.
 
@@ -247,7 +318,8 @@ def _classify_failure(exc: Exception) -> str:
     return "transient"
 
 
-def resolve_scan_classified(image_base: Optional[str]) -> tuple[Optional[tuple[str, str]], str]:
+def resolve_scan_classified(image_base: Optional[str],
+                            alt_url: Optional[str] = None) -> tuple[Optional[tuple[str, str]], str]:
     """Resolve a usable scan AND report why it failed.
 
     Returns ((path, source) | None, reason) with reason in
@@ -261,8 +333,14 @@ def resolve_scan_classified(image_base: Optional[str]) -> tuple[Optional[tuple[s
     - "rate-limited"-> 429: back off and retry later, do not hammer.
     Priority when several failures mix: rate-limited > transient > not-found
     (a chain that mixed 404s with timeouts has NOT been proven absent).
+
+    alt_url: SECOND-SOURCE image (pokemon-tcg-data hi-res, same artwork)
+    consulted only after the whole TCGdex chain (own language + EN mirror)
+    failed. A card with no TCGdex scan at all still gets a usable image —
+    this is what raises visual-index coverage instead of silently dropping
+    scanless cards.
     """
-    if not image_base:
+    if not image_base and not alt_url:
         return None, "no-base"
     saw_rate_limited = saw_transient = saw_not_found = False
 
@@ -286,54 +364,80 @@ def resolve_scan_classified(image_base: Optional[str]) -> tuple[Optional[tuple[s
         return "transient"  # nothing recorded (e.g. only invalid payloads)
 
     chain = list(SCAN_QUALITY_CHAIN)
-    # 1. own-language cache hit (most common path: zero network)
-    for q in chain:
-        path = scan_path(image_base, q)
-        if _cached_scan_ok(path):
-            return (path, q), "ok"
-        elif os.path.exists(path):
-            _invalidate_cache(path)
-    mirror_base = _en_mirror_base(image_base)
-    # 2. EN-mirror cache hit
-    if mirror_base:
+    if image_base:
+        # 1. own-language cache hit (most common path: zero network)
         for q in chain:
-            cached = scan_path(image_base, f"en-{q}")
-            if _cached_scan_ok(cached):
-                return (cached, f"en-{q}"), "ok"
-            elif os.path.exists(cached):
-                _invalidate_cache(cached)
-    # 3. own-language downloads
-    for q in chain:
-        try:
-            data = _http_get(scan_url(image_base, q), timeout=25.0)
-        except Exception as exc:  # noqa: BLE001
-            _note(exc)
-            continue
-        if not _looks_like_image(data):
-            # HTTP 200 with an HTML error page: not provably absent -> transient
-            saw_transient = True
-            continue
-        return (_cache_scan(image_base, q, data), q), "ok"
-    # 4. EN-mirror download (same artwork, same local id in mirrored sets)
-    if mirror_base:
+            path = scan_path(image_base, q)
+            if _cached_scan_ok(path):
+                return (path, q), "ok"
+            elif os.path.exists(path):
+                _invalidate_cache(path)
+        mirror_base = _en_mirror_base(image_base)
+        # 2. EN-mirror cache hit
+        if mirror_base:
+            for q in chain:
+                cached = scan_path(image_base, f"en-{q}")
+                if _cached_scan_ok(cached):
+                    return (cached, f"en-{q}"), "ok"
+                elif os.path.exists(cached):
+                    _invalidate_cache(cached)
+        # 3. own-language downloads
         for q in chain:
             try:
-                data = _http_get(scan_url(mirror_base, q), timeout=25.0)
+                data = _http_get(scan_url(image_base, q), timeout=25.0)
+            except Exception as exc:  # noqa: BLE001
+                _note(exc)
+                continue
+            if not _looks_like_image(data):
+                # HTTP 200 with an HTML error page: not provably absent -> transient
+                saw_transient = True
+                continue
+            return (_cache_scan(image_base, q, data), q), "ok"
+        # 4. EN-mirror download (same artwork, same local id in mirrored sets)
+        if mirror_base:
+            for q in chain:
+                try:
+                    data = _http_get(scan_url(mirror_base, q), timeout=25.0)
+                except Exception as exc:  # noqa: BLE001
+                    _note(exc)
+                    continue
+                if not _looks_like_image(data):
+                    saw_transient = True
+                    continue
+                return (_cache_scan(image_base, f"en-{q}", data), f"en-{q}"), "ok"
+    # 5. second-source backfill (pokemon-tcg-data image, same artwork):
+    #    cache first, then download hires -> small. The small variant is
+    #    accepted so scanless cards still enter the visual index.
+    if alt_url:
+        for q in PTCGDATA_QUALITY_CHAIN:
+            cached = _ptcg_cache_path(alt_url, q)
+            if _cached_scan_ok(cached):
+                return (cached, f"ptcg-{q}"), "ok"
+            elif os.path.exists(cached):
+                _invalidate_cache(cached)
+        for q in PTCGDATA_QUALITY_CHAIN:
+            url = _ptcg_url(alt_url, q)
+            if not url:
+                continue
+            try:
+                data = _http_get(url, timeout=25.0)
             except Exception as exc:  # noqa: BLE001
                 _note(exc)
                 continue
             if not _looks_like_image(data):
                 saw_transient = True
                 continue
-            return (_cache_scan(image_base, f"en-{q}", data), f"en-{q}"), "ok"
+            return (_cache_ptcg(alt_url, q, data), f"ptcg-{q}"), "ok"
     return None, _finish_fail()
 
 
-def resolve_scan(image_base: Optional[str]) -> Optional[tuple[str, str]]:
+def resolve_scan(image_base: Optional[str],
+                 alt_url: Optional[str] = None) -> Optional[tuple[str, str]]:
     """Resolve a usable scan for an asset base.
 
     Returns (local_path, source) with source in
-    {"high.webp", "low.webp", "en-high.webp", "en-low.webp"}, or None.
+    {"high.webp", "low.webp", "en-high.webp", "en-low.webp",
+     "ptcg-hires", "ptcg-small"}, or None.
     See resolve_scan_classified() for the failure reason variant used by the
     pipeline's negative cache.
 
@@ -343,20 +447,29 @@ def resolve_scan(image_base: Optional[str]) -> Optional[tuple[str, str]]:
       2. EN-mirror cache
       3. own-language download (high -> low)
       4. EN-mirror download (same artwork, same local id in mirrored sets)
+      5. second-source image (pokemon-tcg-data, alt_url): cache then download
     Every download is validated by magic bytes so HTML error pages never
     enter the cache.
     """
-    return resolve_scan_classified(image_base)[0]
+    return resolve_scan_classified(image_base, alt_url)[0]
 
 
-def ensure_scan(image_base: str, quality: str = "high.webp") -> Optional[str]:
+def ensure_scan(image_base: str, quality: str = "high.webp",
+                alt_url: Optional[str] = None) -> Optional[str]:
     """Download-once local cache for an official scan. Returns local path or None.
 
     See resolve_scan() for the full resolution chain (quality fallback + EN
-    mirror + magic-byte validation on downloads AND cache hits).
+    mirror + second-source backfill + magic-byte validation on downloads AND
+    cache hits).
     """
-    resolved = resolve_scan(image_base)
+    resolved = resolve_scan(image_base, alt_url)
     return resolved[0] if resolved is not None else None
+
+
+# Minimum plausible dimensions for a card scan (a 600x840 scan downscaled to
+# death is useless for SIFT; anything below this is rejected at sync time).
+MIN_SCAN_WIDTH = 200
+MIN_SCAN_HEIGHT = 280
 
 
 def init_db(db_path: str = CATALOG_DB) -> sqlite3.Connection:
@@ -378,14 +491,35 @@ def init_db(db_path: str = CATALOG_DB) -> sqlite3.Connection:
         variants TEXT,
         release_date TEXT,
         scan_status TEXT NOT NULL DEFAULT '',
+        rarity TEXT NOT NULL DEFAULT '',
+        subtypes TEXT NOT NULL DEFAULT '[]',
+        canonical_id TEXT NOT NULL DEFAULT '',
+        image_alt TEXT NOT NULL DEFAULT '',
+        sources TEXT NOT NULL DEFAULT '{}',
         PRIMARY KEY (id, language)
     )""")
-    # Migration for catalogs built before scan_status existed.
+    # Migrations for catalogs built before each column existed (additive:
+    # never touches good rows, works on the user's existing cards.sqlite).
     columns = {row[1] for row in conn.execute("PRAGMA table_info(cards)")}
     if "scan_status" not in columns:
         conn.execute("ALTER TABLE cards ADD COLUMN scan_status TEXT NOT NULL DEFAULT ''")
+    if "rarity" not in columns:
+        conn.execute("ALTER TABLE cards ADD COLUMN rarity TEXT NOT NULL DEFAULT ''")
+    if "subtypes" not in columns:
+        conn.execute("ALTER TABLE cards ADD COLUMN subtypes TEXT NOT NULL DEFAULT '[]'")
+    if "canonical_id" not in columns:
+        conn.execute("ALTER TABLE cards ADD COLUMN canonical_id TEXT NOT NULL DEFAULT ''")
+    if "image_alt" not in columns:
+        conn.execute("ALTER TABLE cards ADD COLUMN image_alt TEXT NOT NULL DEFAULT ''")
+    if "sources" not in columns:
+        conn.execute("ALTER TABLE cards ADD COLUMN sources TEXT NOT NULL DEFAULT '{}'")
+    # Existing catalogs predate identity: backfill canonical_id from
+    # (set_id, local_id) once, in SQL (fast, idempotent).
+    conn.execute("""UPDATE cards SET canonical_id = set_id || '|' || local_id
+                    WHERE canonical_id = ''""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cards_lang ON cards(language)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cards_name ON cards(name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cards_canonical ON cards(canonical_id)")
     # Scan sync state machine: one row per asset base. `validated` rows carry
     # the sha256 recorded at download time so later runs can detect corrupt
     # cache files (magic bytes alone miss mid-file corruption).
@@ -396,19 +530,50 @@ def init_db(db_path: str = CATALOG_DB) -> sqlite3.Connection:
         sha256 TEXT,
         updated_at TEXT
     )""")
+    scan_columns = {row[1] for row in conn.execute("PRAGMA table_info(scans)")}
+    if "width" not in scan_columns:
+        conn.execute("ALTER TABLE scans ADD COLUMN width INTEGER")
+    if "height" not in scan_columns:
+        conn.execute("ALTER TABLE scans ADD COLUMN height INTEGER")
+    if "source" not in scan_columns:
+        conn.execute("ALTER TABLE scans ADD COLUMN source TEXT NOT NULL DEFAULT ''")
+    # Multi-source reconciliation ledger: one row per disputed FIELD.
+    # Nothing is ever overwritten silently — every cross-source disagreement
+    # lands here with both values and the deterministic resolution applied.
+    conn.execute("""CREATE TABLE IF NOT EXISTS conflicts (
+        language TEXT NOT NULL,
+        card_key TEXT NOT NULL,
+        source_a TEXT NOT NULL,
+        source_b TEXT NOT NULL,
+        field TEXT NOT NULL,
+        value_a TEXT,
+        value_b TEXT,
+        resolution TEXT NOT NULL,
+        updated_at TEXT,
+        PRIMARY KEY (language, card_key, field)
+    )""")
     conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
     return conn
 
 
 def record_scan_state(conn: sqlite3.Connection, image_base: str, state: str,
-                       nbytes: Optional[int] = None, sha256: Optional[str] = None) -> None:
-    """Persist the sync state of one scan (see SCAN_STATES)."""
+                       nbytes: Optional[int] = None, sha256: Optional[str] = None,
+                       width: Optional[int] = None, height: Optional[int] = None,
+                       source: str = "") -> None:
+    """Persist the sync state of one scan (see SCAN_STATES).
+
+    image_base is the scan's stable identifier: the TCGdex asset base, or
+    (for second-source images) the pokemon-tcg-data URL itself. width/height
+    are recorded at validation time (decode + dimension check); source is
+    which chain step resolved ("high.webp", "ptcg-hires", …).
+    """
     if state not in SCAN_STATES:
         raise ValueError(f"Unknown scan state {state!r}")
     with _lock:
-        conn.execute("""INSERT OR REPLACE INTO scans (image_base, state, bytes, sha256, updated_at)
-            VALUES (?,?,?,?,?)""",
-            (image_base, state, nbytes, sha256, time.strftime("%Y-%m-%dT%H:%M:%S")))
+        conn.execute("""INSERT OR REPLACE INTO scans (image_base, state, bytes, sha256, width, height, source, updated_at)
+            VALUES (?,?,?,?,?,?,?,?)""",
+            (image_base, state, nbytes, sha256, width, height, source,
+             time.strftime("%Y-%m-%dT%H:%M:%S")))
         conn.commit()
 
 
@@ -438,18 +603,12 @@ class FetchReport:
         return not self.failed_sets
 
 
-def fetch_language_cards(language: str,
-                         sets_filter: Optional[list[str]] = None) -> tuple[list[CardRecord], FetchReport]:
-    """Download full card list for a language via the set endpoints.
+def fetch_sets_listing(language: str) -> list[dict]:
+    """Dynamic discovery: the CURRENT sets listing for a language (1 request).
 
-    A set that still fails after the transport retries plus one set-level
-    retry is REPORTED (FetchReport.failed_sets) instead of being silently
-    skipped: the caller decides whether the result may be stamped complete.
-
-    sets_filter: when given (gap-only retry), only those set ids are fetched —
-    the sets listing is still consulted so unknown ids are reported, but sets
-    that already succeeded in an earlier run are NOT re-downloaded. The DB
-    write stays INSERT OR REPLACE, so untouched rows keep their good data.
+    This is what makes new expansions findable without code changes: the
+    listing is re-read on every catalog run and diffed against the stored
+    per-set census (see build_catalog). No set ids are hardcoded anywhere.
     """
     code = LANG_CODE.get(language)
     if not code:
@@ -458,6 +617,43 @@ def fetch_language_cards(language: str,
     sets = json.loads(raw)
     if not isinstance(sets, list):
         raise RuntimeError(f"Unexpected sets payload for {code}")
+    return sets
+
+
+def sets_census(listing: list[dict]) -> dict[str, dict]:
+    """Per-set card counts from a listing (the incremental-sync diff basis)."""
+    census = {}
+    for sset in listing:
+        set_id = sset.get("id")
+        if not set_id:
+            continue
+        counts = sset.get("cardCount") or {}
+        census[set_id] = {"total": int(counts.get("total") or 0),
+                          "official": int(counts.get("official") or 0)}
+    return census
+
+
+def fetch_language_cards(language: str,
+                         sets_filter: Optional[list[str]] = None) -> tuple[list[CardRecord], FetchReport]:
+    """Download full card list for a language via the set endpoints.
+
+    A set that still fails after the transport retries plus one set-level
+    retry is REPORTED (FetchReport.failed_sets) instead of being silently
+    skipped: the caller decides whether the result may be stamped complete.
+
+    sets_filter: when given (gap-only retry or incremental sync), only those
+    set ids are fetched — the sets listing is still consulted so unknown ids
+    are reported, but sets that already succeeded in an earlier run are NOT
+    re-downloaded. The DB write stays INSERT OR REPLACE, so untouched rows
+    keep their good data.
+
+    Every record carries its identity (canonical_id = set|localId, links
+    language twins of international sets) and its source bookkeeping.
+    """
+    code = LANG_CODE.get(language)
+    if not code:
+        raise ValueError(f"Unsupported language {language}")
+    sets = fetch_sets_listing(language)
     if sets_filter is not None:
         wanted = {s for s in sets_filter if s}
         sets = [sset for sset in sets if sset.get("id") in wanted]
@@ -494,6 +690,7 @@ def fetch_language_cards(language: str,
             # identification). Cards with scans keep the empty status and the
             # visual index keeps working exactly as before.
             usable_image = bool(image) and "/tcgp/" not in image
+            local_id = str(card.get("localId") or "")
             records.append(CardRecord(
                 id=card["id"],
                 language=language,
@@ -501,7 +698,7 @@ def fetch_language_cards(language: str,
                 set_name=detail.get("name") or set_id,
                 serie_name=serie.get("name") or "",
                 serie_id=serie.get("id") or "",
-                local_id=str(card.get("localId") or ""),
+                local_id=local_id,
                 name=card.get("name") or "",
                 hp=int(card["hp"]) if isinstance(card.get("hp"), int) else None,
                 denominator=int(denominator) if denominator else None,
@@ -509,6 +706,8 @@ def fetch_language_cards(language: str,
                 variants=json.dumps(card.get("variants") or {}, ensure_ascii=False),
                 release_date=detail.get("releaseDate") or "",
                 scan_status="" if usable_image else "not_available",
+                canonical_id=f"{set_id}|{local_id}",
+                sources=json.dumps({SOURCES_TCGDEX: {"id": card["id"]}}, ensure_ascii=False),
             ))
     # A gap-set id that vanished from the listing (set renamed/removed) is a
     # definitive failure for the retry: report it instead of silently success.
@@ -525,28 +724,72 @@ def save_records(conn: sqlite3.Connection, records: Iterable[CardRecord]) -> int
         for r in records:
             conn.execute("""INSERT OR REPLACE INTO cards
                 (id, language, set_id, set_name, serie_name, serie_id, local_id, name,
-                 hp, denominator, image_base, variants, release_date, scan_status)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 hp, denominator, image_base, variants, release_date, scan_status,
+                 rarity, subtypes, canonical_id, image_alt, sources)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (r.id, r.language, r.set_id, r.set_name, r.serie_name, r.serie_id,
                  r.local_id, r.name, r.hp, r.denominator, r.image_base, r.variants, r.release_date,
-                 getattr(r, "scan_status", "")))
+                 getattr(r, "scan_status", ""),
+                 getattr(r, "rarity", ""), getattr(r, "subtypes", "[]"),
+                 getattr(r, "canonical_id", "") or f"{r.set_id}|{r.local_id}",
+                 getattr(r, "image_alt", ""), getattr(r, "sources", "{}")))
             count += 1
         conn.commit()
     return count
 
 
+_CARD_COLUMNS = """id, language, set_id, set_name, serie_name, serie_id,
+    local_id, name, hp, denominator, image_base, variants, release_date, scan_status,
+    rarity, subtypes, canonical_id, image_alt, sources"""
+
+
 def load_cards(conn: sqlite3.Connection, languages: Optional[list[str]] = None) -> list[CardRecord]:
     langs = languages or list(LANGUAGES)
     placeholders = ",".join("?" for _ in langs)
-    rows = conn.execute(f"""SELECT id, language, set_id, set_name, serie_name, serie_id,
-        local_id, name, hp, denominator, image_base, variants, release_date, scan_status
+    rows = conn.execute(f"""SELECT {_CARD_COLUMNS}
         FROM cards WHERE language IN ({placeholders}) ORDER BY language, set_id, local_id""", langs).fetchall()
-    return [CardRecord(
-        id=row[0], language=row[1], set_id=row[2], set_name=row[3], serie_name=row[4],
-        serie_id=row[5], local_id=row[6], name=row[7], hp=row[8], denominator=row[9],
-        image_base=row[10] or "", variants=row[11] or "{}", release_date=row[12] or "",
-        scan_status=row[13] if len(row) > 13 else "",
-    ) for row in rows]
+    return [_record_from_row(row) for row in rows]
+
+
+def _record_from_row(row: tuple) -> CardRecord:
+    """Build a CardRecord from a SELECT of _CARD_COLUMNS (old schemas that
+    lack the v2 columns are tolerated via len checks)."""
+    def _at(index: int, default):
+        return row[index] if len(row) > index and row[index] is not None else default
+    return CardRecord(
+        id=row[0], language=row[1], set_id=row[2], set_name=_at(3, ""), serie_name=_at(4, ""),
+        serie_id=_at(5, ""), local_id=row[6], name=row[7], hp=row[8], denominator=row[9],
+        image_base=_at(10, ""), variants=_at(11, "{}"), release_date=_at(12, ""),
+        scan_status=_at(13, ""),
+        rarity=_at(14, ""), subtypes=_at(15, "[]"),
+        canonical_id=_at(16, "") or (f"{row[2]}|{row[6]}" if len(row) > 6 else ""),
+        image_alt=_at(17, ""), sources=_at(18, "{}"),
+    )
+
+
+def record_conflict(conn: sqlite3.Connection, language: str, card_key: str,
+                    source_a: str, source_b: str, field: str,
+                    value_a, value_b, resolution: str) -> None:
+    """Ledger one cross-source disagreement (never a silent overwrite)."""
+    with _lock:
+        conn.execute("""INSERT OR REPLACE INTO conflicts
+            (language, card_key, source_a, source_b, field, value_a, value_b, resolution, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
+            (language, card_key, source_a, source_b, field,
+             str(value_a) if value_a is not None else None,
+             str(value_b) if value_b is not None else None,
+             resolution, time.strftime("%Y-%m-%dT%H:%M:%S")))
+        conn.commit()
+
+
+def conflict_counts(conn: sqlite3.Connection, language: Optional[str] = None) -> dict:
+    """Conflicts per language (or total per field) for coverage reporting."""
+    if language:
+        rows = conn.execute("SELECT field, COUNT(*) FROM conflicts WHERE language=? GROUP BY field",
+                            (language,)).fetchall()
+    else:
+        rows = conn.execute("SELECT language, COUNT(*) FROM conflicts GROUP BY language").fetchall()
+    return dict(rows)
 
 
 def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:

@@ -46,10 +46,10 @@ async function checkRateLimit(userId: string): Promise<{ allowed: boolean; retry
     
     if (requestCount >= RATE_LIMIT_MAX_REQUESTS) {
       // Get the oldest entry to calculate retry-after
-      const oldestEntries = await client.zrange(key, 0, 0, 'WITHSCORES') as unknown as [string, string][];
+      const oldestEntries = await client.zrange(key, "0", "0", "WITHSCORES") as string[];
       let retryAfter = 60; // default
       if (oldestEntries && oldestEntries.length >= 2) {
-        const oldestTimestamp = parseInt(oldestEntries[1][1], 10);
+        const oldestTimestamp = parseInt(oldestEntries[1], 10);
         retryAfter = Math.ceil((oldestTimestamp + RATE_LIMIT_WINDOW_MS - now) / 1000);
         retryAfter = Math.max(1, Math.min(retryAfter, 60));
       }

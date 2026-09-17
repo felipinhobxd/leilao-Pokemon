@@ -1,0 +1,3 @@
+{
+  "/api/auctions/batch/route": "app/api/auctions/batch/route.js"
+}

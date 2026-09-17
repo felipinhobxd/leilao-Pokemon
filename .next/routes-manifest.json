@@ -1,0 +1,177 @@
+{
+  "version": 3,
+  "pages404": true,
+  "appType": "app",
+  "caseSensitive": false,
+  "basePath": "",
+  "redirects": [
+    {
+      "source": "/:path+/",
+      "destination": "/:path+",
+      "internal": true,
+      "priority": true,
+      "statusCode": 308,
+      "regex": "^(?:/((?:[^/]+?)(?:/(?:[^/]+?))*))/$"
+    }
+  ],
+  "headers": [],
+  "onMatchHeaders": [],
+  "rewrites": {
+    "beforeFiles": [],
+    "afterFiles": [],
+    "fallback": []
+  },
+  "dynamicRoutes": [],
+  "staticRoutes": [
+    {
+      "page": "/",
+      "regex": "^/(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/(?:/)?$"
+    },
+    {
+      "page": "/_global-error",
+      "regex": "^/_global\\-error(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/_global\\-error(?:/)?$"
+    },
+    {
+      "page": "/_not-found",
+      "regex": "^/_not\\-found(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/_not\\-found(?:/)?$"
+    },
+    {
+      "page": "/api/auctions/batch",
+      "regex": "^/api/auctions/batch(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/auctions/batch(?:/)?$"
+    },
+    {
+      "page": "/api/auctions/new",
+      "regex": "^/api/auctions/new(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/auctions/new(?:/)?$"
+    },
+    {
+      "page": "/api/auctions/new/status",
+      "regex": "^/api/auctions/new/status(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/auctions/new/status(?:/)?$"
+    },
+    {
+      "page": "/api/auctions/queue",
+      "regex": "^/api/auctions/queue(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/auctions/queue(?:/)?$"
+    },
+    {
+      "page": "/api/card-recognition/memory",
+      "regex": "^/api/card\\-recognition/memory(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/card\\-recognition/memory(?:/)?$"
+    },
+    {
+      "page": "/api/card-recognition/scan",
+      "regex": "^/api/card\\-recognition/scan(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/card\\-recognition/scan(?:/)?$"
+    },
+    {
+      "page": "/api/cards/image",
+      "regex": "^/api/cards/image(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/cards/image(?:/)?$"
+    },
+    {
+      "page": "/api/cards/image/authorize",
+      "regex": "^/api/cards/image/authorize(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/cards/image/authorize(?:/)?$"
+    },
+    {
+      "page": "/api/commands",
+      "regex": "^/api/commands(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/commands(?:/)?$"
+    },
+    {
+      "page": "/api/dashboard",
+      "regex": "^/api/dashboard(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/dashboard(?:/)?$"
+    },
+    {
+      "page": "/api/export",
+      "regex": "^/api/export(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/export(?:/)?$"
+    },
+    {
+      "page": "/api/health",
+      "regex": "^/api/health(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/health(?:/)?$"
+    },
+    {
+      "page": "/api/whatsapp/bootstrap",
+      "regex": "^/api/whatsapp/bootstrap(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/whatsapp/bootstrap(?:/)?$"
+    },
+    {
+      "page": "/api/whatsapp/bot",
+      "regex": "^/api/whatsapp/bot(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/whatsapp/bot(?:/)?$"
+    },
+    {
+      "page": "/api/whatsapp/groups",
+      "regex": "^/api/whatsapp/groups(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/whatsapp/groups(?:/)?$"
+    },
+    {
+      "page": "/api/whatsapp/schedules",
+      "regex": "^/api/whatsapp/schedules(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/whatsapp/schedules(?:/)?$"
+    },
+    {
+      "page": "/auctions/new",
+      "regex": "^/auctions/new(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/auctions/new(?:/)?$"
+    },
+    {
+      "page": "/auctions/new/single",
+      "regex": "^/auctions/new/single(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/auctions/new/single(?:/)?$"
+    },
+    {
+      "page": "/whatsapp",
+      "regex": "^/whatsapp(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/whatsapp(?:/)?$"
+    }
+  ],
+  "dataRoutes": [],
+  "rsc": {
+    "header": "rsc",
+    "varyHeader": "rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch",
+    "prefetchHeader": "next-router-prefetch",
+    "didPostponeHeader": "x-nextjs-postponed",
+    "contentTypeHeader": "text/x-component",
+    "suffix": ".rsc",
+    "prefetchSegmentHeader": "next-router-segment-prefetch",
+    "prefetchSegmentSuffix": ".segment.rsc",
+    "prefetchSegmentDirSuffix": ".segments",
+    "clientParamParsing": false,
+    "dynamicRSCPrerender": false
+  },
+  "rewriteHeaders": {
+    "pathHeader": "x-nextjs-rewritten-path",
+    "queryHeader": "x-nextjs-rewritten-query"
+  }
+}

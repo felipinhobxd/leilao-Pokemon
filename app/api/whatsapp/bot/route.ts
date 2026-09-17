@@ -19,12 +19,20 @@ const REDIS_HOST = process.env.REDIS_HOST || "localhost";
 const REDIS_PORT = Number(process.env.REDIS_PORT) || 6379;
 const REDIS_PASSWORD = process.env.REDIS_PASSWORD || undefined;
 
-const db = createClient(SUPABASE_URL || "", SUPABASE_SERVICE_ROLE_KEY || "", {
-  auth: { persistSession: false, autoRefreshToken: false },
-});
+function getDb() {
+  const SUPABASE_URL = process.env.SUPABASE_URL;
+  const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required");
+  }
+  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+}
 
 async function enqueueDispatch(auctionId: string, userId: string) {
   const { Queue } = await import("bullmq");
+  const db = getDb();
   
   const connection = {
     host: REDIS_HOST,

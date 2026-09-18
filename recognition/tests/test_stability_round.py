@@ -381,6 +381,8 @@ class TestCatalogNoScanCards(unittest.TestCase):
             candidates = store.text_candidates(hints)
             self.assertTrue(any(c.card_id == "swshp-SWSH074" for c in candidates),
                             "card without scan must remain an OCR candidate")
+            store.conn.close()
+            conn.close()
 
     def test_scan_state_machine_records_states(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -393,6 +395,7 @@ class TestCatalogNoScanCards(unittest.TestCase):
             self.assertEqual(counts.get("validated"), 1)
             self.assertEqual(counts.get("failed"), 1)
             self.assertEqual(counts.get("not_available"), 1)
+            conn.close()
 
     def test_migrates_old_schema(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -411,6 +414,7 @@ class TestCatalogNoScanCards(unittest.TestCase):
             tables = {row[0] for row in migrated.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertIn("scans", tables)
+            migrated.close()
 
 
 if __name__ == "__main__":

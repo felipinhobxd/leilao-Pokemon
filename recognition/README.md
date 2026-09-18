@@ -265,6 +265,21 @@ Objetivo declarado da rodada: EN + JA + pt-BR o mais completo possível, com ide
 - `scripts/benchmark_index_scaling.py`: escala da busca vs tamanho do catálogo.
 - `tests/test_catalog_round.py`: 41 testes (descoberta incremental, resume, gaps, corrupt, checksum, reconciliação, conflitos, EN/JA/pt, números alfanuméricos, identidade/printing, variantes/rarity).
 
+## Rodada de estabilidade do sync 2026-09 (branch `refactor/catalog-bot-stability`)
+
+Diagnóstico do colapso do sync (`finished in 842.2s: validated=27537 failed=10380 not_available=3721` — 25% `failed`): **HTTP 429 do Cloudflare** sob o fan-out de 12 workers sem limite + **rejeição de scans válidos** no decode/limiar de bytes. As causas eram sistêmicas, não falta de dados.
+
+**Fase 1 — correções críticas (download_scans + catalog)**
+- **Semáforo HTTP global (5)**: `recognizer/catalog.py` limita a requisições *ativas* contra `api/assets.tcgdex.net` — os 12 workers podem enfileirar, mas 5req máx. chegam à CDN ao mesmo tempo. Sleeps de backoff ficam FORA do semáforo (uma URL rate-limited não trava os slots dos outros workers).
+- **Backoff exponencial 5s/15s/45s/120s (máx 4 tentativas)** em `_http_get`, respeitando `Retry-After` em 429/503 (limitado a 120s; demandas maiores viram `HttpRateLimited` honesto em vez de worker dormindo). Eventos de rate limit são logados: `[http] rate limit (429) em assets.tcgdex.net: aguardando Ns (Retry-After: N)`.
+- **Piso de bytes 4096 → 1024** (`_MIN_SCAN_BYTES`): PNGs/WebPs válidos de cartas simples (energias básicas, trainers antigos) compactam abaixo de 4 KB e eram marcados `failed`. Magic bytes continuam sendo o gate real contra HTML do CDN.
+- **Decode Pillow-first + fallback OpenCV** em `_decode_dimensions`: WebP com alfa/VP8X e GIF decodeiam de forma confiável no Pillow em todos os ambientes, mas falham em alguns builds OpenCV (Linux/Docker) — isso marcava scans reais como `failed`. Um scan só é rejeitado quando AMBOS os decoders o rejeitam (ou as dimensões ficam abaixo do piso 200x280). WebP/JPEG/PNG/GIF tratados igualmente.
+- **Fast-path de re-run real (< 30s)**: além de `validated` (sha re-verificado localmente, zero rede), `not_available` agora também é pulado — é um fato de catálogo, não falha de transporte. O veredito de ausência é gravado com o **escopo de URLs** (`image_base` + `image_alt`) que ele cobre; se o escopo muda (ex.: nova fonte preenche `image_alt`), a carta é re-probada sozinha. Linhas legadas sem escopo re-probam uma vez e são regravadas com escopo (self-healing). `--force` re-prova tudo.
+- **Healing de cache indecodável**: arquivo que passa magic+size mas falha no decode completo é REMOVIDO do cache — antes o validador de cache-hit servia os mesmos bytes podres para sempre e a carta nunca se curava.
+- `get_scan_state` agora retorna `(state, bytes, sha256, source)` — o 4º campo carrega o escopo nas linhas `not_available` (índices 0-2 inalterados; compatível com todos os usos existentes).
+
+Regressões obrigatórias: `tests/test_units.py::TestScanDecode` (WebP ~2 KB, WebP alfa, GIF/JPEG/PNG, truncado) e `tests/test_catalog_round.py::TestScanFastPath` (re-run com zero rede nos 3 estados, mudança de escopo, healing).
+
 ## Instalação (Windows)
 
 ```powershell

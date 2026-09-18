@@ -361,6 +361,35 @@ class TestHttpRetryClassification(unittest.TestCase):
         self.assertEqual(ctx.exception.retry_after, 3600.0)
         self.assertEqual(state["n"], 1, "Retry-After longo não deve bloquear o worker")
 
+    def test_429_without_retry_after_uses_exponential_schedule(self):
+        # Fase 1.1: sem Retry-After o backoff é o schedule exponencial
+        # 5s/15s/45s/120s — não o antigo 0.8*2^n — para atravessar storms
+        # de rate limit do Cloudflare em vez de martelar.
+        state = self._respond([429, 200])
+        data = _http_get("https://example.com/a", retries=2)
+        self.assertEqual(len(data), 5000)
+        self.assertEqual(state["n"], 2)
+        self.assertEqual(len(self.sleeps), 1)
+        self.assertGreaterEqual(self.sleeps[0], 4.5,
+                                "primeiro backoff deve ser ~5s (schedule exponencial)")
+
+    def test_503_is_treated_as_rate_limit_with_retry_after(self):
+        state = self._respond([503, 200], headers={"Retry-After": "2"})
+        data = _http_get("https://example.com/a", retries=2)
+        self.assertEqual(len(data), 5000)
+        self.assertEqual(state["n"], 2)
+        self.assertIn(2.0, self.sleeps, "503 com Retry-After deve respeitar o header")
+
+    def test_5xx_backoff_follows_the_schedule(self):
+        state = self._respond([500, 500, 500])
+        with self.assertRaises(RuntimeError):
+            _http_get("https://example.com/a", retries=3)
+        self.assertEqual(len(self.sleeps), 3)
+        self.assertGreaterEqual(self.sleeps[0], 5.0)
+        self.assertGreaterEqual(self.sleeps[1], 15.0)
+        self.assertGreaterEqual(self.sleeps[2], 45.0)
+        self.assertLess(max(self.sleeps), 121.0, "backoff é limitado a 120s")
+
     def test_session_is_reused_per_thread(self):
         sessions = []
         original = catalog_module._get_session
@@ -467,8 +496,11 @@ class TestBuildCatalogLanguageClasses(unittest.TestCase):
         # Patch the build_catalog module namespace: it from-imports init_db,
         # so patching recognizer.catalog.init_db would leave the REAL default
         # DB in play (test pollution). Same reasoning for the return path:
-        # every query re-opens the temp DB through this patched constructor.
-        with patch.object(bc, "init_db", return_value=self._conn(tmp_db)), \
+        # the SAME connection is returned so callers can assert against it
+        # and close it before the temp directory is removed (Windows keeps
+        # deleted-but-open SQLite files locked -> WinError 32).
+        conn = self._conn(tmp_db)
+        with patch.object(bc, "init_db", return_value=conn), \
              patch.object(bc, "fetch_language_cards", side_effect=fake_fetch), \
              patch.object(bc, "fetch_sets_listing", side_effect=fake_listing), \
              patch.object(bc, "probe_sources",
@@ -481,7 +513,7 @@ class TestBuildCatalogLanguageClasses(unittest.TestCase):
                 code = 0
             except SystemExit as exc:
                 code = int(exc.code or 0)
-        return code, calls, self._conn(tmp_db)
+        return code, calls, conn
 
     @staticmethod
     def _conn(path):
@@ -519,6 +551,7 @@ class TestBuildCatalogLanguageClasses(unittest.TestCase):
             self.assertIn("set-broken", gaps[0])
             stamp = conn.execute("SELECT value FROM meta WHERE key='catalog.updated.pt-BR'").fetchone()
             self.assertIsNotNone(stamp, "core completo deve ser estampado")
+            conn.close()
 
     def test_core_gap_blocks(self):
         import tempfile
@@ -536,6 +569,7 @@ class TestBuildCatalogLanguageClasses(unittest.TestCase):
             }
             code, calls, conn = self._run_main(db, "pt-BR,ja", effects)
             self.assertEqual(code, 1, "gap em idioma CORE deve bloquear a instalação")
+            conn.close()
 
     def test_gap_retry_only_fetches_failed_sets(self):
         import tempfile
@@ -581,6 +615,7 @@ class TestBuildCatalogLanguageClasses(unittest.TestCase):
             self.assertIsNone(gaps, "gap resolvido deve ser limpo")
             stamp = conn.execute("SELECT value FROM meta WHERE key='catalog.updated.ja'").fetchone()
             self.assertIsNotNone(stamp, "retry completo deve estampar o idioma")
+            conn.close()
 
     def test_listing_failure_optional_records_marker(self):
         import tempfile
@@ -592,6 +627,7 @@ class TestBuildCatalogLanguageClasses(unittest.TestCase):
             gaps = conn.execute("SELECT value FROM meta WHERE key='catalog.gaps.es'").fetchone()
             self.assertIsNotNone(gaps)
             self.assertIn("__listing_failed__", gaps[0])
+            conn.close()
 
     def test_listing_failure_core_blocks(self):
         import tempfile
@@ -600,6 +636,7 @@ class TestBuildCatalogLanguageClasses(unittest.TestCase):
             effects = {"pt-BR": RuntimeError("listing down")}
             code, calls, conn = self._run_main(db, "pt-BR", effects)
             self.assertEqual(code, 1, "listing falhando em idioma CORE bloqueia")
+            conn.close()
 
 
 if __name__ == "__main__":

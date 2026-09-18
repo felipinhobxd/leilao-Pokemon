@@ -141,31 +141,59 @@ SOURCES_TCGDEX = "tcgdex"
 SOURCES_PTCGDATA = "pokemon-tcg-data"
 
 
-def _http_get(url: str, timeout: float = 30.0, retries: int = 3) -> bytes:
-    """Fetch with failure-class-aware retries:
+# Global HTTP concurrency cap: sync workers (12 by default) may QUEUE, but
+# only this many requests are ACTIVE against api/assets.tcgdex.net at any
+# instant. The 2026-09 sync collapse (10.380 failed / 842s) was Cloudflare
+# HTTP 429s from an unthrottled 12-worker fan-out; the semaphore is the
+# systemic fix and the backoff schedule below is the safety net.
+_HTTP_CONCURRENCY_LIMIT = 5
+_HTTP_SEMAPHORE = threading.Semaphore(_HTTP_CONCURRENCY_LIMIT)
+
+# Exponential backoff between attempts (seconds): 5 -> 15 -> 45 -> 120
+# (max 4 attempts by default). Sleeps happen OUTSIDE the semaphore so a
+# rate-limited URL never stalls the other workers' active slots.
+_HTTP_BACKOFF_SECONDS = (5.0, 15.0, 45.0, 120.0)
+
+
+def _backoff_for(attempt: int) -> float:
+    return _HTTP_BACKOFF_SECONDS[min(attempt, len(_HTTP_BACKOFF_SECONDS) - 1)]
+
+
+def _http_get(url: str, timeout: float = 30.0, retries: int = 4) -> bytes:
+    """Fetch with failure-class-aware retries under a global concurrency cap.
 
     - 200            -> payload;
     - 404            -> FileNotFoundError immediately (definitive, never retried);
-    - 429            -> respect Retry-After when it is short, otherwise raise
-                        HttpRateLimited so callers back off instead of hammering;
-    - 5xx            -> exponential backoff with jitter, bounded retries;
+    - 429/503        -> Retry-After honored when short (<=120s, logged);
+                        otherwise the exponential schedule 5s/15s/45s/120s
+                        applies; a longer server demand raises HttpRateLimited
+                        so callers back off instead of hammering;
+    - other 5xx      -> same exponential backoff with jitter, bounded retries;
     - timeout/conn   -> bounded retries with the same backoff;
     - other 4xx      -> surfaced as RuntimeError after the bounded retries.
     """
+    host = url.split("/")[2] if "://" in url else url
     last = None
     for attempt in range(retries):
         try:
-            resp = _get_session().get(url, timeout=timeout)
+            with _HTTP_SEMAPHORE:
+                resp = _get_session().get(url, timeout=timeout)
             if resp.status_code == 200:
                 return resp.content
             if resp.status_code == 404:
                 raise FileNotFoundError(url)
-            if resp.status_code == 429:
+            if resp.status_code in (429, 503):
                 retry_after = _parse_retry_after(resp)
                 if attempt + 1 >= retries or (retry_after or 0.0) > 120.0:
                     raise HttpRateLimited(url, retry_after)
-                # honor a short Retry-After once instead of the default backoff
-                time.sleep(min(retry_after if retry_after is not None else 0.8 * (attempt + 1), 60.0))
+                # honor the server's Retry-After; fall back to the
+                # exponential schedule when the header is absent
+                wait = retry_after if retry_after is not None else _backoff_for(attempt)
+                reason = f"Retry-After: {retry_after}" if retry_after is not None \
+                    else "backoff exponencial"
+                print(f"[http] rate limit ({resp.status_code}) em {host}: "
+                      f"aguardando {min(wait, 120.0):.0f}s ({reason})", flush=True)
+                time.sleep(min(wait, 120.0))
                 last = HttpRateLimited(url, retry_after)
                 continue
             last = RuntimeError(f"HTTP {resp.status_code} for {url}")
@@ -173,7 +201,7 @@ def _http_get(url: str, timeout: float = 30.0, retries: int = 3) -> bytes:
             raise
         except Exception as exc:  # noqa: BLE001
             last = exc
-        time.sleep(0.8 * (2 ** attempt) + random.uniform(0.0, 0.4))
+        time.sleep(_backoff_for(attempt) + random.uniform(0.0, 1.0))
     raise RuntimeError(f"Failed to fetch {url}: {last}")
 
 
@@ -198,7 +226,12 @@ SCAN_QUALITY_CHAIN = ("high.webp", "low.webp")
 
 # Image magic bytes (JPEG / WebP / PNG / GIF) with a minimum plausible size
 # for a card scan; anything else (HTML error pages, redirects) is rejected.
-_MIN_SCAN_BYTES = 4096
+# The floor is low on purpose: perfectly valid PNGs/WebPs of simple cards
+# (basic Energy, old Trainers) compress below 4 KB, and rejecting them
+# marked real cards as `failed` in the 2026-09 sync. Magic bytes are the
+# actual gate against CDN HTML error pages; the byte floor only filters
+# empty/1-pixel stubs.
+_MIN_SCAN_BYTES = 1024
 
 
 def _magic_ok(head: bytes) -> bool:
@@ -221,7 +254,7 @@ def _looks_like_image(data: bytes) -> bool:
 
 def _cached_scan_ok(path: str) -> bool:
     """Cache-hit validation: a previously downloaded file must still look like
-    an image (>= 4 KB + magic bytes). The CDN returns HTTP 200 + HTML for some
+    an image (>= 1 KB + magic bytes). The CDN returns HTTP 200 + HTML for some
     missing scans; older caches and interrupted writes can hold such garbage,
     and `exists && size > 0` happily serves it back forever.
     """
@@ -582,8 +615,12 @@ def record_scan_state(conn: sqlite3.Connection, image_base: str, state: str,
 
 
 def get_scan_state(conn: sqlite3.Connection, image_base: str) -> Optional[tuple]:
-    """(state, bytes, sha256) recorded for an asset base, if any."""
-    row = conn.execute("SELECT state, bytes, sha256 FROM scans WHERE image_base = ?", (image_base,)).fetchone()
+    """(state, bytes, sha256, source) recorded for an asset base, if any.
+
+    source carries which chain step resolved a validated row ("high.webp",
+    "ptcg-hires", …) and, for not_available rows, the URL-scope fingerprint
+    the absence verdict covers (see download_scans._na_scope)."""
+    row = conn.execute("SELECT state, bytes, sha256, source FROM scans WHERE image_base = ?", (image_base,)).fetchone()
     return tuple(row) if row else None
 
 

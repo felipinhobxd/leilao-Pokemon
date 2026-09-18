@@ -7,24 +7,37 @@ Usage:
 
 State machine (scans table, see recognizer/catalog.SCAN_STATES):
 - validated     -> a usable scan sits in the local cache (magic bytes OK,
-                   decodes, dimensions plausible, sha256 matches the record).
-                   Re-runs SKIP these entirely: zero network, zero re-hashing.
+                    decodes, dimensions plausible, sha256 matches the record).
+                    Re-runs SKIP these entirely: zero network, zero re-hashing
+                    (only the sha256 of the cached file is re-verified).
 - failed         -> transient/rate-limited failure: retried on the next run.
 - not_available  -> no scan published by ANY source (empty image_base AND
-                   empty image_alt, or every URL in the chain 404'd). Not
-                   retried until the catalog changes (a gap is a catalog
-                   fact, not a transport failure).
+                    empty image_alt, or every URL in the chain 404'd). Not
+                    retried while the card's URL scope is unchanged (a gap is
+                    a catalog fact, not a transport failure); re-probed when
+                    the scope changes (a new source backfills image_alt) or
+                    with --force.
 - corrupt        -> a previously validated file whose bytes no longer match
-                   the recorded sha256: the cache entry is DELETED and the
-                   scan re-downloaded in the same run (data healing).
+                    the recorded sha256: the cache entry is DELETED and the
+                    scan re-downloaded in the same run (data healing).
 
 Image validation chain (HTTP 200 alone means nothing):
-- magic bytes (JPEG/WebP/PNG/GIF) + minimum size (4 KB);
-- full decode via cv2.imdecode (a truncated file that passes the magic
-  check is still rejected);
+- magic bytes (JPEG/WebP/PNG/GIF) + minimum size (1 KB — valid PNGs/WebPs
+  of simple cards compress below 4 KB);
+- full decode, Pillow first (img.load() forces the decode), OpenCV as the
+  fallback: WebP with alpha/VP8X and GIF decode reliably in Pillow on every
+  environment, while some OpenCV builds (Linux/Docker) fail there — that
+  marked real scans as `failed` in the 2026-09 sync;
 - minimum dimensions (200x280: a scan downscaled to death is useless for
   SIFT verification);
 - sha256 recorded at validation time (later runs detect bit-rot).
+
+HTTP behavior: every request goes through recognizer.catalog._http_get,
+which (since the 429 storm of the 2026-09 sync) enforces a global
+threading.Semaphore(5) — 12 workers may queue, but only 5 requests are
+active against api/assets.tcgdex.net at any instant — and retries with the
+exponential backoff 5s/15s/45s/120s, honoring the server's Retry-After on
+429/503 (rate-limit events are logged as `[http] rate limit …`).
 
 Resolution chain per card (see recognizer/catalog.resolve_scan_classified):
 TCGdex own language -> EN mirror -> pokemon-tcg-data alt image (hi-res,
@@ -81,22 +94,63 @@ def _sha256_of(path: str) -> str | None:
         return None
 
 
-def _decode_dimensions(path: str) -> tuple[int, int] | None:
-    """Full decode + dimension check. None when the file is not a usable
-    image (truncated, zero-dimension, or below the SIFT-useful floor)."""
-    import cv2
-    import numpy as np
+def _decode_with_pillow(path: str) -> tuple[int, int] | None:
+    """Pillow decode (WebP alpha/VP8X + GIF reliable on every platform).
+
+    img.load() forces a FULL decode: a truncated file raises here instead of
+    passing silently. Returns None when Pillow is absent or rejects the file
+    (the OpenCV fallback then gets its chance).
+    """
     try:
-        data = np.fromfile(path, dtype=np.uint8)  # unicode-safe on Windows
-    except OSError:
+        from PIL import Image
+    except ImportError:
         return None
-    image = cv2.imdecode(data, cv2.IMREAD_COLOR)
-    if image is None or image.ndim != 3:
+    try:
+        with Image.open(path) as img:
+            img.load()
+            width, height = img.size
+        return int(width), int(height)
+    except Exception:  # noqa: BLE001 — not decodable by Pillow
+        return None
+
+
+def _decode_with_opencv(path: str) -> tuple[int, int] | None:
+    """OpenCV fallback decode (CI light environment ships no Pillow)."""
+    try:
+        import cv2
+        import numpy as np
+        data = np.fromfile(path, dtype=np.uint8)  # unicode-safe on Windows
+        image = cv2.imdecode(data, cv2.IMREAD_COLOR)
+    except Exception:  # noqa: BLE001
+        return None
+    if image is None or image.ndim < 2:
         return None
     height, width = image.shape[:2]
-    if width < MIN_SCAN_WIDTH or height < MIN_SCAN_HEIGHT:
-        return None
-    return width, height
+    return int(width), int(height)
+
+
+def _decode_dimensions(path: str) -> tuple[int, int] | None:
+    """Full decode + dimension check. None when the file is not a usable
+    image (truncated, zero-dimension, or below the SIFT-useful floor).
+
+    Pillow decodes FIRST: WebP with an alpha/VP8X chunk and GIFs decode
+    reliably there on every environment, while some OpenCV builds
+    (Linux/Docker) fail exactly there — the 2026-09 sync marked real scans
+    as `failed` for that reason. OpenCV stays as the fallback (and vice
+    versa): a scan is only rejected when BOTH decoders reject it or its
+    dimensions sit below the floor. WebP, JPEG, PNG and GIF are treated
+    equally.
+    """
+    for decoder in (_decode_with_pillow, _decode_with_opencv):
+        dims = decoder(path)
+        if dims is not None:
+            width, height = dims
+            if not width or not height:
+                return None
+            if width < MIN_SCAN_WIDTH or height < MIN_SCAN_HEIGHT:
+                return None
+            return width, height
+    return None
 
 
 def _resolved_cache_path(image_base: str) -> str | None:
@@ -109,6 +163,15 @@ def _resolved_cache_path(image_base: str) -> str | None:
         if _cached_scan_ok(mirror):
             return mirror
     return None
+
+
+def _na_scope(card) -> str:
+    """URL-scope fingerprint recorded with not_available rows: every URL the
+    resolution chain consults for this card (own scan + second source). If a
+    later catalog run CHANGES the scope (e.g. a new source backfills
+    image_alt on a scanless card), the cached absence verdict no longer
+    applies and the card is retried even without --force."""
+    return "|".join((card.image_base or "", getattr(card, "image_alt", "") or ""))
 
 
 def sync_card(card, force: bool = False) -> str:
@@ -137,6 +200,16 @@ def sync_card(card, force: bool = False) -> str:
         if path is not None and _sha256_of(path) == recorded[2]:
             return "validated"
         # Corrupt or missing on disk: fall through to a fresh download.
+    if (not force and recorded is not None and recorded[0] == "not_available"
+            and len(recorded) > 3 and recorded[3]
+            and recorded[3] == _na_scope(card)):
+        # Fast path: this exact URL scope was proven absent on every source
+        # in an earlier run (all URLs 404'd). not_available is a catalog
+        # fact, not a transport failure — re-probe only when the scope
+        # changes (a new source gained an image URL) or with --force.
+        # Legacy rows without a recorded scope fall through once and are
+        # re-marked WITH the scope (self-healing).
+        return "not_available"
 
     resolved, reason = resolve_scan_classified(
         card.image_base or None, getattr(card, "image_alt", "") or None)
@@ -149,9 +222,14 @@ def sync_card(card, force: bool = False) -> str:
                          dims[0], dims[1], source)
             return "validated"
         if sha and not dims:
-            # Downloaded file decodes badly / dimensions below the floor:
-            # transient-quality image, retry later (maybe the CDN serves a
-            # better variant after regeneration).
+            # Downloaded/cached file decodes badly / dimensions below the
+            # floor: transient-quality image, retry later (maybe the CDN
+            # serves a better variant after regeneration). The file is
+            # DELETED first: the cache-hit validator (magic + size) would
+            # keep serving the same broken bytes back on every later run
+            # and the card would never heal.
+            from recognizer.catalog import _invalidate_cache
+            _invalidate_cache(path)
             _queue_write(scan_key, "failed", None, None)
             return "failed"
         # Unreadable after resolution: transient.
@@ -159,7 +237,8 @@ def sync_card(card, force: bool = False) -> str:
         return "failed"
     if reason == "not-found":
         # Every URL of every source answered 404: a genuine catalog gap.
-        _queue_write(scan_key, "not_available", None, None)
+        _queue_write(scan_key, "not_available", None, None,
+                     source=_na_scope(card))
         return "not_available"
     _queue_write(scan_key, "failed", None, None)
     return "failed"

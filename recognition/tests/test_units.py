@@ -16,6 +16,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import scripts.download_scans as ds
+from recognizer.catalog import _MIN_SCAN_BYTES, _looks_like_image
 from recognizer.config import (CATALOG_DB, DEFAULT_CALIBRATION, EMBEDDING_CALIBRATION,
                                CARD_ASPECT, NORM_W, NORM_H)
 from recognizer.hints import apply_override, extract_hints
@@ -192,6 +194,111 @@ class TestCalibration(unittest.TestCase):
         for method in (Recognizer.fuse, Recognizer.decide):
             self.assertIsNotNone(inspect.signature(method).parameters.get("self"),
                                  f"{method.__name__} deve ser metodo de instancia calibrado")
+
+
+class TestScanDecode(unittest.TestCase):
+    """_decode_dimensions must return dims for EVERY valid format, however
+    small the file and whichever decoder the environment ships (Pillow
+    first, OpenCV fallback). The 2026-09 sync collapsed partly because
+    cv2-only decoding rejected valid WebP alpha/VP8X + GIF files."""
+
+    def _write(self, data: bytes, suffix: str) -> str:
+        import tempfile
+        path = os.path.join(tempfile.mkdtemp(), f"scan{suffix}")
+        with open(path, "wb") as fh:
+            fh.write(data)
+        self.addCleanup(lambda: __import__("shutil").rmtree(os.path.dirname(path), ignore_errors=True))
+        return path
+
+    def _textured(self, width: int = 320, height: int = 448) -> np.ndarray:
+        image = np.zeros((height, width, 3), np.uint8)
+        for x in range(width):
+            image[:, x, :] = int(x * 80 / width)
+        cv2.rectangle(image, (20, 20), (width - 20, height - 28), (90, 40, 160), -1)
+        cv2.circle(image, (width // 2, height // 2), 80, (200, 180, 60), -1)
+        return image
+
+    def _webp_bytes(self, image: np.ndarray, quality: int) -> bytes:
+        try:
+            from PIL import Image
+            import io
+            buf = io.BytesIO()
+            Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB)).save(buf, format="WEBP", quality=quality, method=6)
+            return buf.getvalue()
+        except ImportError:
+            ok, buf = cv2.imencode(".webp", image, [cv2.IMWRITE_WEBP_QUALITY, quality])
+            if not ok:
+                raise unittest.SkipTest("sem codificador WebP no ambiente")
+            return buf.tobytes()
+
+    def test_min_scan_bytes_floor_is_1kb(self):
+        # 4 KB rejected valid simple cards (basic Energy, old Trainers
+        # compress below it); the floor must not regress to the old value.
+        self.assertEqual(_MIN_SCAN_BYTES, 1024)
+
+    def test_looks_like_image_accepts_and_rejects(self):
+        valid_stub = b"\x89PNG\r\n\x1a\n" + b"\x00" * (2048 - 8)
+        self.assertTrue(_looks_like_image(valid_stub), "PNG magia + 2 KB deve passar")
+        self.assertFalse(_looks_like_image(valid_stub[:1023]), "abaixo do piso de 1 KB deve falhar")
+        self.assertFalse(_looks_like_image(b"<html>nope</html>" * 512), "HTML do CDN deve falhar")
+
+    def test_small_valid_webp_decodes(self):
+        data = self._webp_bytes(self._textured(), 70)
+        self.assertGreaterEqual(len(data), 1024, "fixture deve ficar acima do piso de 1 KB")
+        self.assertLess(len(data), 4096, "fixture deve ficar abaixo do piso antigo (4 KB)")
+        self.assertTrue(_looks_like_image(data))
+        path = self._write(data, ".webp")
+        self.assertEqual(ds._decode_dimensions(path), (320, 448),
+                         "WebP válido de ~2 KB deve decodificar com dimensões")
+
+    def test_webp_with_alpha_decodes(self):
+        # WebP com canal alfa/VP8X: alguns builds OpenCV (Linux/Docker) falham
+        # aqui — o decode Pillow-first é o fix da Fase 1.2.
+        image = cv2.cvtColor(self._textured(), cv2.COLOR_BGR2BGRA)
+        image[:100, :100, 3] = 128
+        try:
+            from PIL import Image
+            import io
+            buf = io.BytesIO()
+            Image.fromarray(image[:, :, [2, 1, 0, 3]]).save(buf, format="WEBP", quality=10, method=6)
+            data = buf.getvalue()
+        except ImportError:
+            ok, buf = cv2.imencode(".webp", image, [cv2.IMWRITE_WEBP_QUALITY, 10])
+            if not ok:
+                raise unittest.SkipTest("sem codificador WebP alfa no ambiente")
+            data = buf.tobytes()
+        path = self._write(data, ".webp")
+        self.assertEqual(ds._decode_dimensions(path), (320, 448),
+                         "WebP alfa/VP8X deve decodificar independente do decodificador")
+
+    def test_jpeg_png_gif_decode_equally(self):
+        image = self._textured()
+        ok_jpg, jpg = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 30])
+        ok_png, png = cv2.imencode(".png", image)
+        self.assertTrue(ok_jpg and ok_png)
+        self.assertEqual(ds._decode_dimensions(self._write(jpg.tobytes(), ".jpg")), (320, 448))
+        self.assertEqual(ds._decode_dimensions(self._write(png.tobytes(), ".png")), (320, 448))
+        try:
+            from PIL import Image
+            import io
+            buf = io.BytesIO()
+            Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB)).save(buf, format="GIF")
+            self.assertEqual(ds._decode_dimensions(self._write(buf.getvalue(), ".gif")), (320, 448),
+                             "GIF (que o cv2 não decodifica) deve passar pelo caminho Pillow")
+        except ImportError:
+            self.skipTest("GIF depende do Pillow (ausente no CI light)")
+
+    def test_truncated_file_is_rejected(self):
+        garbage = b"\x89PNG\r\n\x1a\n" + b"garbage" * 100
+        self.assertIsNone(ds._decode_dimensions(self._write(garbage, ".png")),
+                          "arquivo truncado/corrompido deve ser rejeitado")
+
+    def test_tiny_dimensions_are_rejected(self):
+        small = np.full((100, 60, 3), 128, np.uint8)
+        ok, png = cv2.imencode(".png", small)
+        self.assertTrue(ok)
+        self.assertIsNone(ds._decode_dimensions(self._write(png.tobytes(), ".png")),
+                          "abaixo do piso 200x280 deve ser rejeitado")
 
 
 @unittest.skipUnless(HAS_CATALOG, "catalogo SQLite nao construido")

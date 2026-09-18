@@ -144,6 +144,180 @@ class TestSetMatching(unittest.TestCase):
         self.assertEqual(report.only_secondary, ["xxx1"])
 
 
+# --------------------------------------------------------------------- scan fast paths
+class TestScanFastPath(unittest.TestCase):
+    """Re-runs must touch zero network: `validated` rows are skipped after a
+    local sha256 re-verification and `not_available` rows are skipped while
+    the URL scope that produced the verdict is unchanged (a gap is a catalog
+    fact, not a transport failure). Only `failed` rows go to the wire."""
+
+    def setUp(self):
+        import scripts.download_scans as ds
+        self.ds = ds
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        self._orig_cache = catalog_module.IMAGE_CACHE_DIR
+        catalog_module.IMAGE_CACHE_DIR = os.path.join(tmp, "scans")
+        self.ds._conn = init_db(os.path.join(tmp, "t.sqlite"))
+        self.ds._pending_writes.clear()
+        self._orig_http = catalog_module._http_get
+        self._orig_conn = None
+
+    def tearDown(self):
+        catalog_module.IMAGE_CACHE_DIR = self._orig_cache
+        catalog_module._http_get = self._orig_http
+        self.ds._pending_writes.clear()
+
+    def _forbid_network(self):
+        def no_network(url, timeout=30.0, retries=3):
+            raise AssertionError(f"rede consultada no fast path: {url}")
+        catalog_module._http_get = no_network
+
+    def _card(self, **kwargs) -> CardRecord:
+        defaults = dict(id="sv01-025", language="pt-BR", set_id="sv01", set_name="SV",
+                        serie_name="", serie_id="", local_id="025", name="Pikachu",
+                        hp=None, denominator=258,
+                        image_base="https://assets.tcgdex.net/pt/sv/sv01/025",
+                        variants="{}", release_date="")
+        defaults.update(kwargs)
+        return CardRecord(**defaults)
+
+    def _flush(self):
+        self.ds._flush_writes()
+
+    def test_validated_card_revalidates_locally_zero_network(self):
+        import hashlib
+        card = self._card()
+        path = catalog_module.scan_path(card.image_base, "high.webp")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        data = _png_bytes()
+        with open(path, "wb") as fh:
+            fh.write(data)
+        record_scan_state(self.ds._conn, card.image_base, "validated",
+                          len(data), hashlib.sha256(data).hexdigest(),
+                          width=640, height=896, source="high.webp")
+        self._forbid_network()
+        self.assertEqual(self.ds.sync_card(card), "validated")
+        self._flush()  # nothing queued: state unchanged
+
+    def test_validated_card_with_corrupt_cache_redownloads(self):
+        import hashlib
+        card = self._card()
+        path = catalog_module.scan_path(card.image_base, "high.webp")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as fh:
+            fh.write(b"\x89PNG\r\n\x1a\n" + b"corrupted" * 90)  # < 1 KB: cache-invalid
+        record_scan_state(self.ds._conn, card.image_base, "validated",
+                          4481, "0" * 64, width=640, height=896, source="high.webp")
+        calls = []
+
+        def fake_http(url, timeout=30.0, retries=3):
+            calls.append(url)
+            return _png_bytes()
+        catalog_module._http_get = fake_http
+        self.assertEqual(self.ds.sync_card(card), "validated")
+        self.assertTrue(calls, "sha divergente deve cair no re-download")
+        self._flush()
+        state = get_scan_state(self.ds._conn, card.image_base)
+        self.assertEqual(state[0], "validated")
+        self.assertNotEqual(state[2], "0" * 64, "sha do arquivo re-baixado deve ser gravado")
+
+    def test_undecodable_cache_file_is_invalidated_and_heals_next_run(self):
+        # Bit-rot that still passes magic+size: the cache-hit validator
+        # (magic + bytes only) would serve these bytes forever. sync_card
+        # must DELETE the file when the full decode fails so the next run
+        # genuinely re-downloads (self-healing), not re-serve the corpse.
+        import hashlib
+        card = self._card()
+        path = catalog_module.scan_path(card.image_base, "high.webp")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        garbage = b"\x89PNG\r\n\x1a\n" + b"garbage" * 300  # 2408 bytes, PNG magic
+        with open(path, "wb") as fh:
+            fh.write(garbage)
+        # recorded sha does NOT match the rot (the original validated file
+        # had different bytes) -> the fast path falls through to a fresh
+        # resolution, which serves the rot back from the cache (magic+size
+        # pass) -> full decode fails -> failed + file invalidated.
+        record_scan_state(self.ds._conn, card.image_base, "validated",
+                          4481, "0" * 64, width=640, height=896, source="high.webp")
+        self.assertEqual(self.ds.sync_card(card), "failed",
+                         "arquivo ilegível deve ser marcado failed (não validado às cegas)")
+        self.assertFalse(os.path.exists(path), "arquivo ilegível deve ser removido do cache")
+        self._flush()
+        state = get_scan_state(self.ds._conn, card.image_base)
+        self.assertEqual(state[0], "failed")
+
+        # Next run: cache is empty now, network works again -> heals.
+        calls = []
+
+        def fake_http(url, timeout=30.0, retries=3):
+            calls.append(url)
+            return _png_bytes()
+        catalog_module._http_get = fake_http
+        self.assertEqual(self.ds.sync_card(card), "validated")
+        self.assertTrue(calls, "após invalidação o re-download real deve acontecer")
+
+    def test_not_available_with_same_scope_is_skipped(self):
+        card = self._card(image_base="", image_alt="https://images.pokemontcg.io/sv01/25_hires.png")
+        record_scan_state(self.ds._conn, card.image_alt, "not_available",
+                          source=self.ds._na_scope(card))
+        self._forbid_network()
+        self.assertEqual(self.ds.sync_card(card), "not_available")
+
+    def test_not_available_scope_change_reprobes(self):
+        # The card GAINS an image URL (e.g. a new source backfilled image_alt):
+        # the cached absence verdict no longer covers the new scope and the
+        # card must be retried even without --force.
+        old_card = self._card(image_base="", image_alt="")
+        record_scan_state(self.ds._conn, old_card.image_base, "not_available",
+                          source="|")  # old scope: no image anywhere
+        new_card = self._card(image_base="https://assets.tcgdex.net/pt/sv/sv01/025",
+                              image_alt="")
+        calls = []
+
+        def fake_http(url, timeout=30.0, retries=3):
+            calls.append(url)
+            return _png_bytes()
+        catalog_module._http_get = fake_http
+        self.assertEqual(self.ds.sync_card(new_card), "validated")
+        self.assertTrue(calls, "escopo mudou: a rede deve ser consultada")
+        self._flush()
+        state = get_scan_state(self.ds._conn, new_card.image_base)
+        self.assertEqual(state[0], "validated")
+
+    def test_legacy_not_available_row_falls_through_once(self):
+        # Rows written before the scope existed have no recorded scope: they
+        # are re-probed once and re-marked WITH the scope (self-healing).
+        card = self._card(image_base="", image_alt="https://images.pokemontcg.io/sv01/25_hires.png")
+        record_scan_state(self.ds._conn, card.image_alt, "not_available")  # source=""
+        probes = []
+
+        def fake_http(url, timeout=30.0, retries=3):
+            probes.append(url)
+            raise FileNotFoundError(url)  # still absent everywhere
+        catalog_module._http_get = fake_http
+        self.assertEqual(self.ds.sync_card(card), "not_available")
+        self.assertTrue(probes, "linha legada deve ser re-probada uma vez")
+        self._flush()
+        state = get_scan_state(self.ds._conn, card.image_alt)
+        self.assertEqual(state[3], self.ds._na_scope(card),
+                         "re-probe regrava o veredito com o escopo atual")
+
+    def test_failed_card_is_retried_and_recovers(self):
+        card = self._card()
+        record_scan_state(self.ds._conn, card.image_base, "failed")
+        calls = []
+
+        def fake_http(url, timeout=30.0, retries=3):
+            calls.append(url)
+            return _png_bytes()
+        catalog_module._http_get = fake_http
+        self.assertEqual(self.ds.sync_card(card), "validated")
+        self.assertTrue(calls, "failed deve ser retentado com rede")
+        self._flush()
+        self.assertEqual(get_scan_state(self.ds._conn, card.image_base)[0], "validated")
+
+
 # --------------------------------------------------------------------- reconciliation
 class TestReconcile(unittest.TestCase):
     def _db(self):

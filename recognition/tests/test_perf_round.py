@@ -316,7 +316,7 @@ class TestHttpRetryClassification(unittest.TestCase):
         state["codes"] = list(status_codes)
 
         class FakeSession:
-            def get(self, url, timeout=30.0):
+            def get(self, url, timeout=30.0, **kwargs):
                 index = min(state["n"], len(state["codes"]) - 1)
                 state["n"] += 1
                 return FakeResponse(state["codes"][index])

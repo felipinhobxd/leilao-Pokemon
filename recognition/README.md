@@ -280,6 +280,15 @@ Diagnóstico do colapso do sync (`finished in 842.2s: validated=27537 failed=103
 
 Regressões obrigatórias: `tests/test_units.py::TestScanDecode` (WebP ~2 KB, WebP alfa, GIF/JPEG/PNG, truncado) e `tests/test_catalog_round.py::TestScanFastPath` (re-run com zero rede nos 3 estados, mudança de escopo, healing).
 
+**Fase 2 — terceira fonte: Limitless TCG (cobertura pt-BR pré-2011/promos)**
+- Cliente em `recognizer/sources.py` (`LimitlessSet`/`LimitlessCard`, fetchers com parsing tolerante de chaves — `number`/`collectorNumber`, `image`/`images`/`hiRes`, payload com ou sem wrapper `{"data": [...]}`). Autenticação `X-Api-Key` via `LIMITLESS_API_KEY`; base URL configurável (`LIMITLESS_API_BASE`) para mirror/versão. Todas as requisições passam pelo `_http_get` — mesmo semáforo(5) e backoff da Fase 1.
+- Reconciliação em `recognizer/reconcile.py::backfill_limitless_images`: mesmos sets por heurística (id exato → nome+data±45d+contagem, nada fixado), merge de `localId` aceitando `[A-Z0-9][A-Z0-9/.-]*` — não apenas dígitos — com **tail-match guardado por prefixo**: "SVP-001" casa com o localId "001" do set svp (prefixo == id do set), "PROMO-A" casa exato; caudas ambíguas (dois números colapsando no mesmo tail) ficam vazias em vez de adivinhar.
+- Política preservada: só linhas SEM scan TCGdex E SEM alt ganham `image_alt`; scan primário e alt existente nunca são tocados; ledger `sources` registra `limitless` por linha tocada.
+- **Honestidade de cobertura**: a fonte é probeada em toda execução e vive em `sources.status`; indisponibilidade (sem API key, 401/403, transporte) fica registrada em `catalog.gaps.limitless` com o motivo — igual ao contrato das outras fontes, nunca um buraco silencioso.
+- Regressões: `test_catalog_round.py::TestLimitlessBackfill` (promos SVP-001/PROMO-A, guarda de prefixo, ambiguidade, lixo, intocáveis, set sem par) e `TestLimitlessSource` (parsing, auth, probe honesto — HTTP mockado, CI sem rede).
+
+Nota honesta sobre a fonte: `api.limitlesstcg.com` exige chave e não foi verificável ao vivo durante a refatoração (DNS não resolvia do ambiente de trabalho); por isso o cliente é env-configurable e probeado por run. Quando a chave for configurada (`LIMITLESS_API_KEY`), o sync passa a usá-la e o relatório de cobertura mostra o ganho real por idioma — sem número inventado.
+
 ## Instalação (Windows)
 
 ```powershell

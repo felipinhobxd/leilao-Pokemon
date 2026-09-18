@@ -38,9 +38,15 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .catalog import (SOURCES_PTCGDATA, SOURCES_TCGDEX, CardRecord, _lock,
-                      record_conflict)
+from .catalog import (SOURCES_LIMITLESS, SOURCES_PTCGDATA, SOURCES_TCGDEX,
+                      CardRecord, _lock, record_conflict)
 from .sources import PtcgCard, PtcgSet
+
+# Printed collector numbers accepted by the cross-source merge: plain digits,
+# prefixed alphanumerics ("TG05", "SVP-001", "SM99"), "PROMO-A"-style ids and
+# slash/dot separators. Anything else (junk scraped off a page) never enters
+# the merge mapping.
+VALID_LOCAL_ID_RE = re.compile(r"^[A-Z0-9][A-Z0-9/.-]*$", re.IGNORECASE)
 
 
 def normalize_local_id(local_id: str) -> str:
@@ -361,15 +367,70 @@ def backfill_alt_images(conn: sqlite3.Connection, language: str, listing: list[d
     """
     if language == "en":
         return 0
-    matches = match_sets(listing, ptcg_sets)
-    # ptcg card lookup: (tcgdex set id, normalized number) -> image url
+    return _backfill_alt_from_source(conn, language, listing, ptcg_sets, cards_by_set,
+                                     number_of=lambda card: card.number,
+                                     image_of=_ptcg_image_alt,
+                                     source_tag=SOURCES_PTCGDATA)
+
+
+def _limitless_image_alt(card) -> str:
+    """Preferred Limitless image: the hi-res when published, small otherwise."""
+    return card.image_large or card.image_small or ""
+
+
+def backfill_limitless_images(conn: sqlite3.Connection, language: str, listing: list[dict],
+                              limitless_sets: list,
+                              cards_by_set: dict) -> int:
+    """Third-source (Limitless TCG) image backfill for scanless rows.
+
+    Same policy as the pokemon-tcg-data backfill: only rows with NO TCGdex
+    scan AND no alt yet gain an image, matched by set (heuristic, no
+    hardcoded ids) + normalized collector number. Collector numbers are
+    merged as [A-Z0-9][A-Z0-9/.-]* (not digits-only), so Brazilian promo
+    ids ("PROMO-A", "SVP-001", "TG05") pair with the catalog; a prefixed
+    number also tail-matches a digits-only localId of the same set
+    ("SVP-001" <-> "001" when the prefix equals the set id). Ambiguous
+    tails (two different source numbers collapsing to the same tail) are
+    NEVER used — ambiguity is reported by staying unfilled, not guessed.
+    """
+    return _backfill_alt_from_source(conn, language, listing, limitless_sets, cards_by_set,
+                                     number_of=lambda card: card.number,
+                                     image_of=_limitless_image_alt,
+                                     source_tag=SOURCES_LIMITLESS)
+
+
+def _backfill_alt_from_source(conn: sqlite3.Connection, language: str, listing: list[dict],
+                              sets: list, cards_by_set: dict, *, number_of, image_of,
+                              source_tag: str) -> int:
+    """Generic image_alt backfill shared by the pokemon-tcg-data and
+    Limitless paths: match sets by heuristic, index (set, number) -> image
+    URL, fill scanless+altless rows, ledger `sources` per touched row."""
+    matches = match_sets(listing, sets)
+    # source card lookup, two indexes:
+    #   full   -> (tcgdex set id, normalized number) -> image url  (exact id)
+    #   tail   -> (tcgdex set id, normalized digits tail) -> image url, only
+    #             for prefixed numbers whose prefix matches the set id, and
+    #             only when the tail is UNAMBIGUOUS within the set
     alt_by_key: dict[str, str] = {}
-    for ptcg_set_id, tcgdex_set_id in matches.matched.items():
-        for card in cards_by_set.get(ptcg_set_id, []):
-            norm = normalize_local_id(card.number)
-            url = _ptcg_image_alt(card)
-            if norm and url:
-                alt_by_key[f"{tcgdex_set_id}|{norm}"] = url
+    tail_by_key: dict[str, str] = {}
+    tail_conflicts: set[str] = set()
+    tail_source_numbers: dict[str, str] = {}
+    for source_set_id, tcgdex_set_id in matches.matched.items():
+        for card in cards_by_set.get(source_set_id, []):
+            number = str(number_of(card) or "")
+            url = image_of(card)
+            if not number or not url or not VALID_LOCAL_ID_RE.match(number):
+                continue
+            norm = normalize_local_id(number)
+            alt_by_key[f"{tcgdex_set_id}|{norm}"] = url
+            tail_match = re.match(r"^([A-Za-z]+)[-/._]?(\d+)$", number)
+            if tail_match and normalize_local_id(tail_match.group(1)) == normalize_local_id(tcgdex_set_id):
+                tail_key = f"{tcgdex_set_id}|{normalize_local_id(tail_match.group(2))}"
+                if tail_key in tail_by_key and tail_source_numbers[tail_key] != norm:
+                    tail_conflicts.add(tail_key)  # two different cards claim this tail
+                else:
+                    tail_by_key[tail_key] = url
+                    tail_source_numbers[tail_key] = norm
     rows = conn.execute(
         "SELECT id, set_id, local_id FROM cards "
         "WHERE language = ? AND (image_base IS NULL OR image_base = '') "
@@ -378,10 +439,25 @@ def backfill_alt_images(conn: sqlite3.Connection, language: str, listing: list[d
     with _lock:
         for row_id, set_id, local_id in rows:
             url = alt_by_key.get(f"{set_id}|{normalize_local_id(local_id)}")
+            if not url and str(local_id or "").isdigit():
+                tail_key = f"{set_id}|{normalize_local_id(local_id)}"
+                if tail_key in tail_by_key and tail_key not in tail_conflicts:
+                    url = tail_by_key[tail_key]
             if not url:
                 continue
             conn.execute("UPDATE cards SET image_alt = ? WHERE id = ? AND language = ?",
                          (url, row_id, language))
+            # keep the sources ledger accurate without clobbering other entries
+            row = conn.execute("SELECT sources FROM cards WHERE id = ? AND language = ?",
+                               (row_id, language)).fetchone()
+            if row and row[0]:
+                try:
+                    merged = json.loads(row[0])
+                    merged.update({source_tag: {"image": url}})
+                    conn.execute("UPDATE cards SET sources = ? WHERE id = ? AND language = ?",
+                                 (json.dumps(merged, ensure_ascii=False), row_id, language))
+                except json.JSONDecodeError:
+                    pass
             n += 1
         conn.commit()
     return n
@@ -389,5 +465,5 @@ def backfill_alt_images(conn: sqlite3.Connection, language: str, listing: list[d
 
 __all__ = [
     "normalize_local_id", "match_sets", "SetMatchReport", "ReconcileReport",
-    "reconcile_ptcgdata", "backfill_alt_images",
+    "reconcile_ptcgdata", "backfill_alt_images", "backfill_limitless_images",
 ]

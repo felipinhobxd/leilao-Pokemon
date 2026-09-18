@@ -10,6 +10,10 @@ Usage:
 Sources:
 - TCGdex (primary, dynamic discovery — series/sets/cards, all languages);
 - pokemon-tcg-data (EN: reconciliation + rarity/subtypes + image backfill);
+- Limitless TCG (third image source: scanless pt-BR promos with alphanumeric
+  localIds — "SVP-001", "PROMO-A" — gain an image_alt when TCGdex publishes
+  no scan; requires LIMITLESS_API_KEY, probed per run, gaps recorded when
+  unavailable);
 - official sites that are not programmatically consumable are probed and
   their unavailability recorded in the coverage report (no fake coverage).
 
@@ -58,9 +62,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from recognizer.catalog import (CORE_LANGUAGES, OPTIONAL_LANGUAGES, LANG_CODE,
                                 fetch_language_cards, fetch_sets_listing, get_meta,
                                 init_db, save_records, set_meta, sets_census)
-from recognizer.reconcile import backfill_alt_images, reconcile_ptcgdata
-from recognizer.sources import (fetch_ptcgdata_all, fetch_tcgdex_card_details,
-                                probe_sources)
+from recognizer.reconcile import (backfill_alt_images, backfill_limitless_images,
+                                  reconcile_ptcgdata)
+from recognizer.sources import (fetch_limitless_all, fetch_ptcgdata_all,
+                                fetch_tcgdex_card_details, probe_sources)
 
 LISTING_FAILED_MARKER = "__listing_failed__"
 
@@ -410,6 +415,42 @@ def main() -> None:
                       f"artwork mirror (image_alt)")
             except Exception as exc:  # noqa: BLE001
                 print(f"[catalog] pt-BR image backfill FAILED ({exc})")
+
+    # ---- third source: Limitless TCG (pt-BR promos, pre-2011 coverage) -----
+    # Same honest-availability contract as pokemon-tcg-data: probed first,
+    # fetched only when available, every failure recorded in
+    # catalog.gaps.limitless — never a silent hole, never fake coverage.
+    limitless_sets = limitless_cards = None
+    if source_status.get("limitless", {}).get("available"):
+        try:
+            print("[catalog] fetching Limitless TCG …")
+            limitless_sets, limitless_cards = fetch_limitless_all(
+                on_set=lambda sid, n, i, total: print(
+                    f"\r[catalog] Limitless {i}/{total} sets", end="", flush=True)
+                if i % 20 == 0 or i == total else None)
+            print(f"\n[catalog] Limitless: {len(limitless_sets)} sets, "
+                  f"{sum(len(v) for v in limitless_cards.values())} cards")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[catalog] Limitless fetch FAILED ({exc}) — gaps recorded")
+            set_meta(conn, "catalog.gaps.limitless", json.dumps({
+                "error": str(exc)[:300], "at": time.strftime("%Y-%m-%dT%H:%M:%S")}))
+    else:
+        note = source_status.get("limitless", {}).get("note", "source unavailable")
+        print(f"[catalog] Limitless unavailable — {note}")
+        set_meta(conn, "catalog.gaps.limitless", json.dumps({
+            "error": note, "at": time.strftime("%Y-%m-%dT%H:%M:%S")}))
+
+    if limitless_sets is not None:
+        for language in languages:
+            try:
+                lang_listing = fetch_sets_listing(language)
+                n = backfill_limitless_images(conn, language, lang_listing,
+                                              limitless_sets, limitless_cards)
+                if n:
+                    print(f"[catalog] {language}: {n} scanless card(s) gained a "
+                          f"third-source image (Limitless)")
+            except Exception as exc:  # noqa: BLE001 — one language must not stop the rest
+                print(f"[catalog] {language} Limitless backfill FAILED ({exc})")
 
     # ---- per-card details pass (rarity/variants) ----------------------------
     if card_details:

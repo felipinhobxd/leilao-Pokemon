@@ -45,9 +45,9 @@ from recognizer.catalog import (CardRecord, init_db, load_cards, record_conflict
                                 sets_census)
 from recognizer.hints import extract_hints, name_similarity
 from recognizer.ocr import OcrLine, OcrResult
-from recognizer.reconcile import (backfill_alt_images, match_sets,
-                                  normalize_local_id, reconcile_ptcgdata)
-from recognizer.sources import PtcgCard, PtcgSet
+from recognizer.reconcile import (backfill_alt_images, backfill_limitless_images,
+                                  match_sets, normalize_local_id, reconcile_ptcgdata)
+from recognizer.sources import PtcgCard, PtcgSet, LimitlessCard, LimitlessSet
 
 
 def _png_bytes(width: int = 640, height: int = 896) -> bytes:
@@ -426,6 +426,237 @@ class TestReconcile(unittest.TestCase):
         untouched = conn.execute("SELECT image_alt FROM cards "
                                  "WHERE id='sv01-026' AND language='pt-BR'").fetchone()
         self.assertEqual(untouched[0], "", "carta com scan primário não ganha alt")
+
+
+# --------------------------------------------------------------------- Limitless (3rd source)
+class TestLimitlessBackfill(unittest.TestCase):
+    """Fase 2: the third image source must reach scanless pt-BR promos with
+    ALPHANUMERIC collector numbers (PROMO-A, SVP-001) without weakening any
+    existing guarantee: primary scans/alt images untouched, junk numbers
+    rejected, ambiguous tail matches never guessed."""
+
+    def _db(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        return init_db(os.path.join(tmp, "t.sqlite"))
+
+    def _listing(self, *sets):
+        return [{"id": s[0], "name": s[1], "releaseDate": s[2],
+                 "cardCount": {"official": s[3], "total": s[3]}} for s in sets]
+
+    def _scanless(self, conn, set_id, local_id, name="Promo", image_base=""):
+        record = _record(id=f"{set_id}-{local_id}-{name[:4]}", language="pt-BR",
+                         set_id=set_id, set_name=set_id, local_id=local_id,
+                         name=name, image_base=image_base, image_alt="")
+        save_records(conn, [record])
+        return record
+
+    def _lsets(self, set_id="svp", name="SV Promos", total=95, date="2023/01/27"):
+        return [LimitlessSet(set_id, name, "Scarlet & Violet", total, total, date)]
+
+    def test_brazilian_alphanumeric_promos_gain_third_source_image(self):
+        conn = self._db()
+        # scanless pt-BR promos: alphanumeric localIds that pokemon-tcg-data
+        # never covers (the exact Fase 2 target population)
+        self._scanless(conn, "svp", "SVP-001", "Pikachu")
+        self._scanless(conn, "svp", "PROMO-A", "Promo Revista")
+        self._scanless(conn, "svp", "001", "Pikachu SVP")
+        listing = self._listing(("svp", "Promos Escarlate e Violeta", "2023/01/27", 95))
+        cards = {"svp": [
+            LimitlessCard("svp", "SVP-001", "Pikachu",
+                          image_large="https://img.limitlesstcg.com/svp/SVP-001.png"),
+            LimitlessCard("svp", "PROMO-A", "Promo Revista",
+                          image_large="https://img.limitlesstcg.com/svp/PROMO-A.png"),
+        ]}
+        n = backfill_limitless_images(conn, "pt-BR", listing, self._lsets(), cards)
+        self.assertEqual(n, 3, "SVP-001 e PROMO-A casam exatos; 001 casa por tail do SVP-001")
+        rows = {r[0]: r[1] for r in conn.execute(
+            "SELECT local_id, image_alt FROM cards WHERE language='pt-BR'")}
+        self.assertIn("SVP-001.png", rows["SVP-001"])
+        self.assertIn("PROMO-A.png", rows["PROMO-A"])
+        self.assertIn("SVP-001.png", rows["001"],
+                      "tail-match: SVP-001 (prefixo=set svp) e' a mesma carta que 001")
+        # sources ledger records the third source without clobbering others
+        ledger = json.loads(conn.execute(
+            "SELECT sources FROM cards WHERE local_id='PROMO-A' AND language='pt-BR'"
+        ).fetchone()[0])
+        self.assertIn("limitless", ledger)
+
+    def test_prefix_from_another_set_never_aliases(self):
+        # "XY-001" inside set svp: the prefix guard (prefix == set id) must
+        # reject the tail alias — a foreign prefix is not evidence.
+        conn = self._db()
+        self._scanless(conn, "svp", "001", "Pikachu")
+        listing = self._listing(("svp", "Promos Escarlate e Violeta", "2023/01/27", 95))
+        cards = {"svp": [LimitlessCard("svp", "XY-001", "Other promo",
+                                       image_large="https://img.limitlesstcg.com/svp/XY-001.png")]}
+        n = backfill_limitless_images(conn, "pt-BR", listing, self._lsets(), cards)
+        self.assertEqual(n, 0, "prefixo que não é o set não pode casar por tail")
+
+    def test_ambiguous_tail_is_never_guessed(self):
+        # Two DIFFERENT limitless numbers collapse to the same tail ("1"):
+        # the ambiguity must stay unfilled instead of guessing a winner.
+        conn = self._db()
+        self._scanless(conn, "svp", "001", "Pikachu")
+        listing = self._listing(("svp", "Promos Escarlate e Violeta", "2023/01/27", 95))
+        cards = {"svp": [
+            LimitlessCard("svp", "SVP-001", "Pikachu",
+                          image_large="https://img.limitlesstcg.com/svp/SVP-001.png"),
+            LimitlessCard("svp", "SVP-1", "Outra carta",
+                          image_large="https://img.limitlesstcg.com/svp/SVP-1.png"),
+        ]}
+        n = backfill_limitless_images(conn, "pt-BR", listing, self._lsets(), cards)
+        self.assertEqual(n, 0, "tail ambíguo não pode preencher por adivinhação")
+
+    def test_junk_numbers_never_enter_the_mapping(self):
+        conn = self._db()
+        self._scanless(conn, "svp", "001", "Pikachu")
+        listing = self._listing(("svp", "Promos Escarlate e Violeta", "2023/01/27", 95))
+        cards = {"svp": [
+            LimitlessCard("svp", "?? 12", "Lixo",
+                          image_large="https://img.limitlesstcg.com/svp/junk.png"),
+            LimitlessCard("svp", "", "Sem numero",
+                          image_large="https://img.limitlesstcg.com/svp/nn.png"),
+        ]}
+        n = backfill_limitless_images(conn, "pt-BR", listing, self._lsets(), cards)
+        self.assertEqual(n, 0, "numeros invalidos jamais entram no merge")
+
+    def test_rows_with_scan_or_alt_are_never_touched(self):
+        conn = self._db()
+        save_records(conn, [
+            _record(id="svp-with-scan", language="pt-BR", set_id="svp", set_name="svp",
+                    local_id="001", name="Com scan",
+                    image_base="https://assets.tcgdex.net/pt/sv/svp/001"),
+            _record(id="svp-with-alt", language="pt-BR", set_id="svp", set_name="svp",
+                    local_id="002", name="Com alt", image_base="",
+                    image_alt="https://images.pokemontcg.io/svp/2_hires.png"),
+        ])
+        listing = self._listing(("svp", "Promos Escarlate e Violeta", "2023/01/27", 95))
+        cards = {"svp": [
+            LimitlessCard("svp", "001", "Com scan",
+                          image_large="https://img.limitlesstcg.com/svp/001.png"),
+            LimitlessCard("svp", "002", "Com alt",
+                          image_large="https://img.limitlesstcg.com/svp/002.png"),
+        ]}
+        n = backfill_limitless_images(conn, "pt-BR", listing, self._lsets(), cards)
+        self.assertEqual(n, 0, "scan primário e alt existente sempre vencem")
+
+    def test_unmatched_sets_are_reported_not_forced(self):
+        # A Limitless set with no TCGdex counterpart contributes nothing —
+        # same honest contract as the pokemon-tcg-data reconciliation.
+        conn = self._db()
+        self._scanless(conn, "zz9", "001", "Isolada")
+        listing = self._listing(("svp", "Promos Escarlate e Violeta", "2023/01/27", 95))
+        lsets = [LimitlessSet("unmatched-set", "Set Sem Par", "Série", 95, 95, "2023/01/27")]
+        cards = {"unmatched-set": [LimitlessCard("unmatched-set", "001", "Isolada",
+                                                 image_large="https://img/1.png")]}
+        n = backfill_limitless_images(conn, "pt-BR", listing, lsets, cards)
+        self.assertEqual(n, 0, "set sem match heurístico não é forçado")
+
+
+class TestLimitlessSource(unittest.TestCase):
+    """Fetchers + honest probe of the third source (HTTP mocked, no network
+    in CI — same contract as every other source test)."""
+
+    def _patch_http(self, responses):
+        import recognizer.sources as sources_module
+        calls = []
+
+        def fake(url, timeout=30.0, retries=3, headers=None, params=None):
+            calls.append({"url": url, "headers": headers, "params": params})
+            for suffix, payload in responses:
+                if url.endswith(suffix):
+                    return json.dumps(payload).encode("utf-8")
+            raise FileNotFoundError(url)
+        patcher = patch.object(sources_module, "_http_get", fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return calls
+
+    def test_sets_accept_bare_list_and_data_wrapper(self):
+        self._patch_http([
+            ("/sets", [{"id": "svp", "name": "SV Promos", "printedTotal": 95}]),
+        ])
+        from recognizer.sources import fetch_limitless_sets
+        sets = fetch_limitless_sets()
+        self.assertEqual(len(sets), 1)
+        self.assertEqual(sets[0].set_id, "svp")
+        self.assertEqual(sets[0].printed_total, 95)
+        # same payload wrapped in {"data": [...]}
+        self._patch_http([
+            ("/sets", {"data": [{"id": "svp2", "name": "SV Promos 2", "cardCount": {"total": 9}}]}),
+        ])
+        sets = fetch_limitless_sets()
+        self.assertEqual(sets[0].set_id, "svp2")
+        self.assertEqual(sets[0].printed_total, 9)
+
+    def test_cards_parse_number_and_images_tolerantly(self):
+        self._patch_http([
+            ("/cards", {"data": [
+                {"number": "SVP-001", "name": "Pikachu", "rarity": "Promo",
+                 "image": {"small": "https://img/s.png", "large": "https://img/l.png"}},
+                {"collectorNumber": "PROMO-A", "name": "Revista", "hp": "60",
+                 "images": {"hiRes": "https://img/h.png"}},
+            ]}),
+        ])
+        from recognizer.sources import fetch_limitless_cards
+        cards = fetch_limitless_cards("svp")
+        self.assertEqual(cards[0].number, "SVP-001")
+        self.assertEqual(cards[0].image_large, "https://img/l.png")
+        self.assertEqual(cards[1].number, "PROMO-A", "collectorNumber fallback")
+        self.assertEqual(cards[1].image_large, "https://img/h.png", "hiRes key")
+        self.assertEqual(cards[1].hp, 60, "hp string de dígito vira int")
+
+    def test_fetch_uses_auth_headers_and_set_filter(self):
+        from unittest.mock import patch as _patch
+        with _patch.dict("os.environ", {"LIMITLESS_API_KEY": "k-test",
+                                        "LIMITLESS_API_BASE": "https://api.example.test/v2"}):
+            calls = self._patch_http([("/cards", [])])
+            from recognizer.sources import fetch_limitless_cards
+            fetch_limitless_cards("svp")
+            self.assertEqual(calls[0]["url"], "https://api.example.test/v2/cards")
+            self.assertEqual(calls[0]["headers"], {"X-Api-Key": "k-test"})
+            self.assertEqual(calls[0]["params"], {"set": "svp"})
+
+    def test_probe_without_key_is_honestly_unavailable(self):
+        from recognizer.sources import probe_sources
+
+        class FakeResponse:
+            def __init__(self, code=200):
+                self.status_code = code
+
+        def responder(url, timeout=15.0, **kwargs):
+            return FakeResponse(200)  # tcgdex/ptcgdata probes: fast success
+
+        with patch.dict("os.environ", {"LIMITLESS_API_KEY": ""}):
+            with patch("requests.get", side_effect=responder):
+                status = probe_sources()
+        self.assertFalse(status["limitless"]["available"])
+        self.assertIn("LIMITLESS_API_KEY", status["limitless"]["note"])
+
+    def test_probe_reports_auth_failure_and_success(self):
+        from recognizer.sources import probe_sources
+
+        class FakeResponse:
+            def __init__(self, code):
+                self.status_code = code
+
+        def responder_factory(limitless_code):
+            def responder(url, timeout=15.0, **kwargs):
+                if "example.test" in url:
+                    return FakeResponse(limitless_code)
+                return FakeResponse(200)
+            return responder
+
+        with patch.dict("os.environ", {"LIMITLESS_API_KEY": "bad",
+                                       "LIMITLESS_API_BASE": "https://api.example.test/v2"}):
+            with patch("requests.get", side_effect=responder_factory(401)):
+                status = probe_sources()
+                self.assertFalse(status["limitless"]["available"])
+                self.assertIn("chave", status["limitless"]["note"])
+            with patch("requests.get", side_effect=responder_factory(200)):
+                status = probe_sources()
+                self.assertTrue(status["limitless"]["available"])
 
 
 # --------------------------------------------------------------------- incremental sync

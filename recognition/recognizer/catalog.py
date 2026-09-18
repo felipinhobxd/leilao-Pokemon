@@ -139,6 +139,7 @@ SCAN_STATES = ("validated", "failed", "not_available")
 # Sources that may contribute to one catalog row (reconciliation bookkeeping).
 SOURCES_TCGDEX = "tcgdex"
 SOURCES_PTCGDATA = "pokemon-tcg-data"
+SOURCES_LIMITLESS = "limitless"
 
 
 # Global HTTP concurrency cap: sync workers (12 by default) may QUEUE, but
@@ -159,7 +160,8 @@ def _backoff_for(attempt: int) -> float:
     return _HTTP_BACKOFF_SECONDS[min(attempt, len(_HTTP_BACKOFF_SECONDS) - 1)]
 
 
-def _http_get(url: str, timeout: float = 30.0, retries: int = 4) -> bytes:
+def _http_get(url: str, timeout: float = 30.0, retries: int = 4,
+              headers: Optional[dict] = None, params: Optional[dict] = None) -> bytes:
     """Fetch with failure-class-aware retries under a global concurrency cap.
 
     - 200            -> payload;
@@ -171,13 +173,17 @@ def _http_get(url: str, timeout: float = 30.0, retries: int = 4) -> bytes:
     - other 5xx      -> same exponential backoff with jitter, bounded retries;
     - timeout/conn   -> bounded retries with the same backoff;
     - other 4xx      -> surfaced as RuntimeError after the bounded retries.
+
+    headers/params are passed through to the session request (used by the
+    Limitless API for X-Api-Key auth and set filters).
     """
     host = url.split("/")[2] if "://" in url else url
     last = None
     for attempt in range(retries):
         try:
             with _HTTP_SEMAPHORE:
-                resp = _get_session().get(url, timeout=timeout)
+                resp = _get_session().get(url, timeout=timeout,
+                                          headers=headers, params=params)
             if resp.status_code == 200:
                 return resp.content
             if resp.status_code == 404:

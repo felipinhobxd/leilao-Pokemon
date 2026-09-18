@@ -9,6 +9,7 @@ test('replacement sockets retry after consecutive failures and ignore old close 
   const sockets = [], retries = [];
   const context = vm.createContext({
     SESSION_DIR: 'unused', logger: {}, sock: null, schedulerTimer: null,
+    dispatchQueue: null, socketReady: false, queueEnabled: () => false,
     useMultiFileAuthState: async () => ({ state: {}, saveCreds() {} }),
     makeWASocket: config => {
       const handlers = {};

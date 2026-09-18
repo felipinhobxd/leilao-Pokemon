@@ -1,3 +1,8 @@
+// Trava de sessão única do Baileys. A RECONEXÃO do socket é responsabilidade
+// exclusiva de connect() (index.mjs, evento connection.update) e do
+// supervisor (service.mjs, restart a cada 5s) — a fila persistente de
+// disparos (queue-worker.mjs) apenas ESPERA socketReady(); ela nunca
+// reconecta, nunca cria socket e nunca disputa a sessão.
 import net from 'node:net';
 import { createHash } from 'node:crypto';
 import path from 'node:path';

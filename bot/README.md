@@ -14,6 +14,22 @@ O Baileys continua rodando localmente no Windows. O uso diário não exige uma j
 - encerra automaticamente leilões com `scheduled_end_at` enquanto o worker estiver online;
 - anuncia ARREMATE e resultado final no grupo.
 
+## Fila persistente de disparos (opcional, Fase 3)
+
+O problema: o Baileys perde o socket com frequência. Se a queda coincide com o dispatch de um lote, o envio falhava e gastava as 5 tentativas do SQL em erros de socket — após ~1 minuto de instabilidade o lote virava `failed` e o usuário ficava sem a mensagem ("bot não postou").
+
+Com `REDIS_URL` configurada no `.env` (ex.: `redis://127.0.0.1:6379`), o bot passa a usar uma fila **BullMQ + Redis**:
+
+- O Supabase (`whatsapp_dispatches`) continua sendo a fonte da verdade: claim, attempts, status e erros seguem auditáveis no painel.
+- O job sobrevive a quedas de socket **e a reinícios do processo** (fica persistido no Redis). Enquanto o WhatsApp está desconectado, o job apenas espera (`socket_whatsapp_down`) com backoff exponencial 5s→60s (25 tentativas ≈ 23 min) — sem gastar o orçamento de tentativas do SQL.
+- Após a reconexão o envio acontece automaticamente: nenhuma mensagem é perdida.
+- Erros de dados (grupo indisponível, leilão não publicável, opções inválidas, carta sumiu) são **irrecuperáveis**: o lote é marcado `failed` na hora, sem queimar retries.
+- Idempotência por desenho: o worker re-lê o dispatch no Supabase e pula linhas já `sent`/`cancelled`/`failed`; o envio também é idempotente por etapa (`announcement_sent_at`/`poll_sent_at`).
+- **Sem Redis** (ou se o Redis falhar no momento do enfileiramento) o envio direto original é usado — degradação graciosa, zero perda de comportamento.
+- O painel ganha a métrica `dispatch_success_rate`: "Envios (7d)" mostra `sent/(sent+failed)` reais da tabela de disparos.
+
+A reconexão do Baileys continua sendo exclusiva de `connect()` + supervisor (`session-guard.mjs` garante sessão única); a fila nunca toca no socket.
+
 ## Configuração inicial
 
 Use Node.js 24+.

@@ -13,6 +13,7 @@ import { buildAuctionCaption } from "./format.mjs";
 import { phoneFromWhatsAppJid, syncGroupParticipants } from "./group-participants.mjs";
 import { isLidJid, isPhoneJid, normalizeUserJid } from "./poll-identities.mjs";
 import { decryptIncomingPollVote } from "./poll-votes.mjs";
+import { queueEnabled, startQueueWorker } from "./queue-worker.mjs";
 
 const required = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "BOT_ADMIN_USER_ID"];
 for (const key of required) {
@@ -37,6 +38,8 @@ let sock;
 let schedulerTimer;
 let schedulerBusy = false;
 let finalizeBusy = false;
+let socketReady = false;
+let dispatchQueue = null;
 let voteQueue = Promise.resolve();
 const contactNames = new Map();
 const pollMessageCache = new Map();
@@ -247,6 +250,40 @@ async function claimDispatch() {
   return Array.isArray(data) ? data[0] ?? null : data ?? null;
 }
 
+async function fetchDispatchById(dispatchId) {
+  const { data, error } = await db.from("whatsapp_dispatches").select("*").eq("id", dispatchId).maybeSingle();
+  if (error) throw new Error(error.message);
+  return data ?? null;
+}
+
+async function markDispatchFailed(dispatch, error) {
+  // Falha terminal (irrecuperável ou tentativas esgotadas): o lote NÃO volta
+  // para a fila — o erro fica visível no painel para decisão humana.
+  await db.from("whatsapp_dispatches").update({
+    status: "failed",
+    locked_at: null,
+    locked_by: null,
+    last_error: String(error?.message || error).slice(0, 1000),
+    updated_at: new Date().toISOString(),
+  }).eq("id", dispatch.id);
+}
+
+async function deliverDispatch(dispatch) {
+  // Transporte preferido: fila persistente (BullMQ/Redis) — o lote sobrevive
+  // a quedas de socket e reinícios do processo. Sem Redis (ou se ele falhar
+  // no momento do enfileiramento) o envio inline original é usado: um
+  // disparo nunca é perdido por causa da camada de transporte.
+  if (dispatchQueue) {
+    try {
+      await dispatchQueue.enqueue(dispatch);
+      return;
+    } catch (error) {
+      console.warn(`[queue] enfileiramento falhou (${error?.message || error}); enviando direto`);
+    }
+  }
+  await sendDispatch(dispatch);
+}
+
 async function markDispatchRetry(dispatch, error) {
   const failed = Number(dispatch.attempts) >= 5;
   await db.from("whatsapp_dispatches").update({
@@ -366,13 +403,16 @@ async function sendDispatch(claimedDispatch) {
 }
 
 async function runScheduler() {
-  if (!sock || schedulerBusy) return;
+  // Não claimamos lotes com o WhatsApp desconectado: o claim gastaria as 5
+  // tentativas do SQL em falhas de socket. Lotes devidos são claimados na
+  // reconexão; lotes já enfileirados no Redis esperam lá (com backoff).
+  if (!sock || !socketReady || schedulerBusy) return;
   schedulerBusy = true;
   try {
     for (let i = 0; i < 5; i++) {
       const dispatch = await claimDispatch();
       if (!dispatch) break;
-      try { await sendDispatch(dispatch); }
+      try { await deliverDispatch(dispatch); }
       catch (error) {
         console.error("Falha no disparo:", error?.message || error);
         await markDispatchRetry(dispatch, error);
@@ -623,6 +663,25 @@ async function connect() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
   sock = makeWASocket({ auth: state, logger, markOnlineOnConnect: false, syncFullHistory: false, emitOwnEvents: true, getMessage: getStoredPollMessage });
   const activeSocket = sock;
+
+  // Fila persistente de disparos (Fase 3): sobe uma vez por processo, no
+  // MESMO processo que é dono do socket. O Redis guarda os jobs entre
+  // reinícios; o processor espera a reconexão em vez de falhar.
+  if (queueEnabled() && !dispatchQueue) {
+    try {
+      dispatchQueue = startQueueWorker({
+        fetchDispatch: fetchDispatchById,
+        isSocketReady: () => socketReady,
+        send: sendDispatch,
+        markFailed: markDispatchFailed,
+        log: (...args) => console.log(...args),
+      });
+      console.log("🗂️  Fila de disparos persistente ativa (BullMQ/Redis).");
+    } catch (error) {
+      console.warn(`Fila persistente indisponível (${error?.message || error}); usando envio direto.`);
+      dispatchQueue = null;
+    }
+  }
   sock.ev.on("creds.update", saveCreds);
   sock.ev.on("contacts.upsert", contacts => contacts.forEach(rememberContact));
   sock.ev.on("contacts.update", contacts => contacts.forEach(rememberContact));
@@ -637,6 +696,7 @@ async function connect() {
     }
     if (connection === "open") {
       reconnecting = false;
+      socketReady = true;
       console.log(`\n✅ WhatsApp conectado. Worker: ${WORKER_ID}`);
       console.log("Aguardando agendamentos e votos...\n");
       clearInterval(schedulerTimer);
@@ -646,6 +706,7 @@ async function connect() {
       void finalizeDueAuctions();
     }
     if (connection === "close") {
+      socketReady = false;
       clearInterval(schedulerTimer);
       const code = lastDisconnect?.error?.output?.statusCode ?? lastDisconnect?.error?.data?.reason;
       console.log(`Conexão encerrada (${code ?? "desconhecido"}).`);
@@ -672,6 +733,7 @@ async function connect() {
 process.on("SIGINT", async () => {
   clearInterval(schedulerTimer);
   console.log("\nEncerrando bot...");
+  if (dispatchQueue) await dispatchQueue.close();
   await sleep(100);
   process.exit(0);
 });

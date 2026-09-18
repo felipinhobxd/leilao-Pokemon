@@ -1,3 +1,10 @@
+// Contrato de transporte (Fase 3): esta rota APENAS ENFILEIRA comandos
+// (reconnect/disconnect/sync_groups) em `whatsapp_bot_commands` para o bot
+// local consumir — ela NUNCA envia mensagens WhatsApp e não toca no Baileys.
+// O fluxo completo de um lote é: auctions/new → `whatsapp_dispatches`
+// (Supabase, fonte da verdade auditável) → fila persistente BullMQ/Redis no
+// PC do bot → envio via Baileys. Se esta rota parasse de responder, nenhum
+// lote é perdido — eles seguem programados no banco.
 import { readBotStatus } from "@/lib/whatsapp-status";
 import { authorize, failure, HttpError } from "@/lib/backend";
 

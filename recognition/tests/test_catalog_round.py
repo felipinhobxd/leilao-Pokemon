@@ -158,7 +158,12 @@ class TestScanFastPath(unittest.TestCase):
         self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
         self._orig_cache = catalog_module.IMAGE_CACHE_DIR
         catalog_module.IMAGE_CACHE_DIR = os.path.join(tmp, "scans")
-        self.ds._conn = init_db(os.path.join(tmp, "t.sqlite"))
+        # Thread-local connection, same mechanism as the real sync (Fase 4.1):
+        # sync_card/_flush_writes resolve their connection through ds._tls.
+        import threading
+        self.conn = init_db(os.path.join(tmp, "t.sqlite"))
+        self.ds._tls = threading.local()
+        self.ds._tls.conn = self.conn
         self.ds._pending_writes.clear()
         self._orig_http = catalog_module._http_get
         self._orig_conn = None
@@ -193,7 +198,7 @@ class TestScanFastPath(unittest.TestCase):
         data = _png_bytes()
         with open(path, "wb") as fh:
             fh.write(data)
-        record_scan_state(self.ds._conn, card.image_base, "validated",
+        record_scan_state(self.conn, card.image_base, "validated",
                           len(data), hashlib.sha256(data).hexdigest(),
                           width=640, height=896, source="high.webp")
         self._forbid_network()
@@ -207,7 +212,7 @@ class TestScanFastPath(unittest.TestCase):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "wb") as fh:
             fh.write(b"\x89PNG\r\n\x1a\n" + b"corrupted" * 90)  # < 1 KB: cache-invalid
-        record_scan_state(self.ds._conn, card.image_base, "validated",
+        record_scan_state(self.conn, card.image_base, "validated",
                           4481, "0" * 64, width=640, height=896, source="high.webp")
         calls = []
 
@@ -218,7 +223,7 @@ class TestScanFastPath(unittest.TestCase):
         self.assertEqual(self.ds.sync_card(card), "validated")
         self.assertTrue(calls, "sha divergente deve cair no re-download")
         self._flush()
-        state = get_scan_state(self.ds._conn, card.image_base)
+        state = get_scan_state(self.conn, card.image_base)
         self.assertEqual(state[0], "validated")
         self.assertNotEqual(state[2], "0" * 64, "sha do arquivo re-baixado deve ser gravado")
 
@@ -238,13 +243,13 @@ class TestScanFastPath(unittest.TestCase):
         # had different bytes) -> the fast path falls through to a fresh
         # resolution, which serves the rot back from the cache (magic+size
         # pass) -> full decode fails -> failed + file invalidated.
-        record_scan_state(self.ds._conn, card.image_base, "validated",
+        record_scan_state(self.conn, card.image_base, "validated",
                           4481, "0" * 64, width=640, height=896, source="high.webp")
         self.assertEqual(self.ds.sync_card(card), "failed",
                          "arquivo ilegível deve ser marcado failed (não validado às cegas)")
         self.assertFalse(os.path.exists(path), "arquivo ilegível deve ser removido do cache")
         self._flush()
-        state = get_scan_state(self.ds._conn, card.image_base)
+        state = get_scan_state(self.conn, card.image_base)
         self.assertEqual(state[0], "failed")
 
         # Next run: cache is empty now, network works again -> heals.
@@ -259,7 +264,7 @@ class TestScanFastPath(unittest.TestCase):
 
     def test_not_available_with_same_scope_is_skipped(self):
         card = self._card(image_base="", image_alt="https://images.pokemontcg.io/sv01/25_hires.png")
-        record_scan_state(self.ds._conn, card.image_alt, "not_available",
+        record_scan_state(self.conn, card.image_alt, "not_available",
                           source=self.ds._na_scope(card))
         self._forbid_network()
         self.assertEqual(self.ds.sync_card(card), "not_available")
@@ -269,7 +274,7 @@ class TestScanFastPath(unittest.TestCase):
         # the cached absence verdict no longer covers the new scope and the
         # card must be retried even without --force.
         old_card = self._card(image_base="", image_alt="")
-        record_scan_state(self.ds._conn, old_card.image_base, "not_available",
+        record_scan_state(self.conn, old_card.image_base, "not_available",
                           source="|")  # old scope: no image anywhere
         new_card = self._card(image_base="https://assets.tcgdex.net/pt/sv/sv01/025",
                               image_alt="")
@@ -282,14 +287,14 @@ class TestScanFastPath(unittest.TestCase):
         self.assertEqual(self.ds.sync_card(new_card), "validated")
         self.assertTrue(calls, "escopo mudou: a rede deve ser consultada")
         self._flush()
-        state = get_scan_state(self.ds._conn, new_card.image_base)
+        state = get_scan_state(self.conn, new_card.image_base)
         self.assertEqual(state[0], "validated")
 
     def test_legacy_not_available_row_falls_through_once(self):
         # Rows written before the scope existed have no recorded scope: they
         # are re-probed once and re-marked WITH the scope (self-healing).
         card = self._card(image_base="", image_alt="https://images.pokemontcg.io/sv01/25_hires.png")
-        record_scan_state(self.ds._conn, card.image_alt, "not_available")  # source=""
+        record_scan_state(self.conn, card.image_alt, "not_available")  # source=""
         probes = []
 
         def fake_http(url, timeout=30.0, retries=3):
@@ -299,13 +304,13 @@ class TestScanFastPath(unittest.TestCase):
         self.assertEqual(self.ds.sync_card(card), "not_available")
         self.assertTrue(probes, "linha legada deve ser re-probada uma vez")
         self._flush()
-        state = get_scan_state(self.ds._conn, card.image_alt)
+        state = get_scan_state(self.conn, card.image_alt)
         self.assertEqual(state[3], self.ds._na_scope(card),
                          "re-probe regrava o veredito com o escopo atual")
 
     def test_failed_card_is_retried_and_recovers(self):
         card = self._card()
-        record_scan_state(self.ds._conn, card.image_base, "failed")
+        record_scan_state(self.conn, card.image_base, "failed")
         calls = []
 
         def fake_http(url, timeout=30.0, retries=3):
@@ -315,7 +320,7 @@ class TestScanFastPath(unittest.TestCase):
         self.assertEqual(self.ds.sync_card(card), "validated")
         self.assertTrue(calls, "failed deve ser retentado com rede")
         self._flush()
-        self.assertEqual(get_scan_state(self.ds._conn, card.image_base)[0], "validated")
+        self.assertEqual(get_scan_state(self.conn, card.image_base)[0], "validated")
 
 
 # --------------------------------------------------------------------- reconciliation
@@ -657,6 +662,84 @@ class TestLimitlessSource(unittest.TestCase):
             with patch("requests.get", side_effect=responder_factory(200)):
                 status = probe_sources()
                 self.assertTrue(status["limitless"]["available"])
+
+
+# --------------------------------------------------------------------- ghost-lot guard (4.3)
+class TestFindCatalogCard(unittest.TestCase):
+    """find_catalog_card: the wizard's ghost-lot guard. Tolerant the way users
+    type (set id or name, zero padding, alphanumeric promos, prefix tails),
+    but a wrong set/number FAILS — it never fuzzy-guesses a card."""
+
+    def _db(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        return init_db(os.path.join(tmp, "t.sqlite"))
+
+    def _seed(self, conn):
+        save_records(conn, [
+            _record(id="svp-001", language="pt-BR", set_id="svp",
+                    set_name="Promo Escarlate e Violeta", local_id="001",
+                    name="Pikachu"),
+            _record(id="svp-sws074", language="pt-BR", set_id="svp",
+                    set_name="Promo Escarlate e Violeta", local_id="SWSH074",
+                    name="Pikachu SWSH"),
+            _record(id="me01-091", language="pt-BR", set_id="me01",
+                    set_name="Obsidian Flames", local_id="091",
+                    name="Shroodle"),
+            _record(id="tg-05", language="en", set_id="swsh9tg",
+                    set_name="Brilliant Stars Trainer Gallery", local_id="TG05",
+                    name="Charizard V"),
+        ])
+
+    def _find(self, conn, language, set_ref, number):
+        from recognizer.store import find_catalog_card
+        return find_catalog_card(conn, language, set_ref, number)
+
+    def test_matches_by_set_id_with_zero_padding(self):
+        conn = self._db()
+        self._seed(conn)
+        found = self._find(conn, "pt-BR", "svp", "1")
+        self.assertEqual(found["id"], "svp-001", '"1" == "001" sem padding')
+        found2 = self._find(conn, "pt-BR", "svp", "001")
+        self.assertEqual(found2["id"], "svp-001")
+
+    def test_matches_by_set_name_case_and_accent_insensitive(self):
+        conn = self._db()
+        self._seed(conn)
+        found = self._find(conn, "pt-BR", "promo escarlate E violeta", "001")
+        self.assertEqual(found["id"], "svp-001", "nome do set com acento/case resolve")
+
+    def test_alphanumeric_promo_numbers(self):
+        conn = self._db()
+        self._seed(conn)
+        found = self._find(conn, "pt-BR", "svp", "SWSH074")
+        self.assertEqual(found["id"], "svp-sws074", "localId alfanumérico casa exato")
+        found_tg = self._find(conn, "en", "swsh9tg", "TG05")
+        self.assertEqual(found_tg["id"], "tg-05", "TG05 (Trainer Gallery) casa")
+
+    def test_prefixed_number_tail_matches_digits_localid(self):
+        conn = self._db()
+        self._seed(conn)
+        found = self._find(conn, "pt-BR", "svp", "SVP-001")
+        self.assertEqual(found["id"], "svp-001", '"SVP-001" (prefixo=set) é o 001 do set svp')
+
+    def test_wrong_set_or_number_is_rejected_not_guessed(self):
+        conn = self._db()
+        self._seed(conn)
+        self.assertIsNone(self._find(conn, "pt-BR", "colecao-inexistente", "001"),
+                           "set desconhecido: nenhum match, nunca adivinha")
+        self.assertIsNone(self._find(conn, "pt-BR", "svp", "999"),
+                           "número fora do set: nenhum match")
+        self.assertIsNone(self._find(conn, "pt-BR", "me01", "SVP-091"),
+                           "prefixo de OUTRO set não casa por cauda")
+        self.assertIsNone(self._find(conn, "ja", "svp", "001"),
+                           "idioma sem o set não resolve")
+
+    def test_empty_references_return_none(self):
+        conn = self._db()
+        self._seed(conn)
+        self.assertIsNone(self._find(conn, "pt-BR", "", "001"))
+        self.assertIsNone(self._find(conn, "pt-BR", "svp", ""))
 
 
 # --------------------------------------------------------------------- incremental sync

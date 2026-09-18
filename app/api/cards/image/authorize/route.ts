@@ -1,5 +1,6 @@
 import { authorize, failure, HttpError } from "@/lib/backend";
 import { CARD_IMAGE_BUCKET, CARD_IMAGE_MAX_STORED_BYTES, cardImagePath, type CardImageMime } from "@/lib/card-image";
+import { DEFAULT_RATE_LIMIT, DEFAULT_RATE_WINDOW_SECONDS, enforceUserRateLimit } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 
@@ -40,7 +41,25 @@ function parseDescriptors(value: unknown): Descriptor[] {
 
 export async function POST(request: Request) {
   try {
-    const { db } = await authorize(request, true);
+    const { db, user } = await authorize(request, true);
+    // Fase 4.2: 50 autorizações/minuto por usuário — sem isso, um único
+    // usuário esgota a cota de signedUrl do Supabase para todo mundo.
+    const limit = await enforceUserRateLimit("card-image", user.id, {
+      limit: DEFAULT_RATE_LIMIT,
+      windowSeconds: DEFAULT_RATE_WINDOW_SECONDS,
+    });
+    if (!limit.allowed) {
+      return Response.json(
+        { error: "Muitas autorizações de upload em pouco tempo. Aguarde e tente novamente." },
+        {
+          status: 429,
+          headers: {
+            "Retry-After": String(limit.retryAfterSeconds),
+            "Cache-Control": "no-store",
+          },
+        },
+      );
+    }
     if (!request.headers.get("content-type")?.includes("application/json")) throw new HttpError(415, "Envie JSON.");
     const body = await request.json() as Record<string, unknown>;
     const descriptors = parseDescriptors(body.images);

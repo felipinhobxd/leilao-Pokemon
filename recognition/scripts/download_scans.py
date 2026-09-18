@@ -67,7 +67,21 @@ from recognizer.catalog import (MIN_SCAN_HEIGHT, MIN_SCAN_WIDTH, get_scan_state,
                                 SCAN_QUALITY_CHAIN)
 
 _state_lock = __import__("threading").Lock()
+_tls = __import__("threading").local()
 _pending_writes: list[tuple] = []
+
+
+def _thread_conn():
+    """Per-thread SQLite connection (thread-local): the 12 sync workers read
+    scan states concurrently while WAL + busy_timeout serialize the writes.
+    The old single shared connection (check_same_thread=False) was the
+    'database is locked' factory under 12-way load (Fase 4.1). The main
+    thread uses the same helper — load_cards/_flush_writes share its
+    connection, so batched writes stay on one thread as before."""
+    conn = getattr(_tls, "conn", None)
+    if conn is None:
+        conn = _tls.conn = init_db()
+    return conn
 
 
 def _fmt_duration(seconds: float) -> str:
@@ -184,7 +198,7 @@ def sync_card(card, force: bool = False) -> str:
         # No source publishes any image for this card: record once, no network.
         return "not_available"
 
-    recorded = get_scan_state(_conn, scan_key)
+    recorded = get_scan_state(_thread_conn(), scan_key)
     if (not force and recorded is not None and recorded[0] == "validated"
             and len(recorded) > 2 and recorded[2]):
         # Fast path: validated before + sha256 recorded. Verify the local file
@@ -255,14 +269,10 @@ def _flush_writes() -> None:
     with _state_lock:
         writes, _pending_writes[:] = list(_pending_writes), []
     for scan_key, state, nbytes, sha, width, height, source in writes:
-        record_scan_state(_conn, scan_key, state, nbytes, sha, width, height, source)
-
-
-_conn = None  # set in main(); sqlite connections are per-process by design
+        record_scan_state(_thread_conn(), scan_key, state, nbytes, sha, width, height, source)
 
 
 def main() -> None:
-    global _conn
     parser = argparse.ArgumentParser()
     parser.add_argument("--languages", default="pt-BR,en,ja,es")
     parser.add_argument("--workers", type=int, default=12)
@@ -271,8 +281,7 @@ def main() -> None:
     args = parser.parse_args()
 
     languages = [x.strip() for x in args.languages.split(",") if x.strip()]
-    _conn = init_db()
-    cards = load_cards(_conn, languages)
+    cards = load_cards(_thread_conn(), languages)
     if args.limit:
         cards = cards[: args.limit]
     with_scan = [c for c in cards if c.image_base]
@@ -315,7 +324,7 @@ def main() -> None:
     print(f"[scans] finished in {elapsed:.1f}s: "
           f"validated={counts['validated']} failed={counts['failed']} "
           f"not_available={counts['not_available']}")
-    db_states = scan_state_counts(_conn)
+    db_states = scan_state_counts(_thread_conn())
     print(f"[scans] scans table: {db_states}")
     if counts["failed"]:
         print("[scans] failed scans stay marked for retry; a re-run retries ONLY those "

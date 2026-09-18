@@ -519,7 +519,17 @@ def init_db(db_path: str = CATALOG_DB) -> sqlite3.Connection:
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("""CREATE TABLE IF NOT EXISTS cards (
+    # Cross-connection contention WAITS instead of raising
+    # "database is locked": mandatory now that sync workers each hold
+    # their own connection (thread-local). WAL still allows only one
+    # writer at a time — busy_timeout makes the others queue politely.
+    conn.execute("PRAGMA busy_timeout=5000")
+    # Schema work (tables, migrations, backfills) stays under the RLock:
+    # a worker calling init_db() for its thread-local connection must
+    # never race another thread's migration. Data reads/writes do NOT
+    # take the lock (per-thread connections + busy_timeout handle them).
+    with _lock:
+        conn.execute("""CREATE TABLE IF NOT EXISTS cards (
         id TEXT NOT NULL,
         language TEXT NOT NULL,
         set_id TEXT NOT NULL,
@@ -541,49 +551,54 @@ def init_db(db_path: str = CATALOG_DB) -> sqlite3.Connection:
         sources TEXT NOT NULL DEFAULT '{}',
         PRIMARY KEY (id, language)
     )""")
-    # Migrations for catalogs built before each column existed (additive:
-    # never touches good rows, works on the user's existing cards.sqlite).
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(cards)")}
-    if "scan_status" not in columns:
-        conn.execute("ALTER TABLE cards ADD COLUMN scan_status TEXT NOT NULL DEFAULT ''")
-    if "rarity" not in columns:
-        conn.execute("ALTER TABLE cards ADD COLUMN rarity TEXT NOT NULL DEFAULT ''")
-    if "subtypes" not in columns:
-        conn.execute("ALTER TABLE cards ADD COLUMN subtypes TEXT NOT NULL DEFAULT '[]'")
-    if "canonical_id" not in columns:
-        conn.execute("ALTER TABLE cards ADD COLUMN canonical_id TEXT NOT NULL DEFAULT ''")
-    if "image_alt" not in columns:
-        conn.execute("ALTER TABLE cards ADD COLUMN image_alt TEXT NOT NULL DEFAULT ''")
-    if "sources" not in columns:
-        conn.execute("ALTER TABLE cards ADD COLUMN sources TEXT NOT NULL DEFAULT '{}'")
-    # Existing catalogs predate identity: backfill canonical_id from
-    # (set_id, local_id) once, in SQL (fast, idempotent).
-    conn.execute("""UPDATE cards SET canonical_id = set_id || '|' || local_id
-                    WHERE canonical_id = ''""")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_cards_lang ON cards(language)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_cards_name ON cards(name)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_cards_canonical ON cards(canonical_id)")
-    # Scan sync state machine: one row per asset base. `validated` rows carry
-    # the sha256 recorded at download time so later runs can detect corrupt
-    # cache files (magic bytes alone miss mid-file corruption).
-    conn.execute("""CREATE TABLE IF NOT EXISTS scans (
+        # Migrations for catalogs built before each column existed (additive:
+        # never touches good rows, works on the user's existing cards.sqlite).
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(cards)")}
+        if "scan_status" not in columns:
+            conn.execute("ALTER TABLE cards ADD COLUMN scan_status TEXT NOT NULL DEFAULT ''")
+        if "rarity" not in columns:
+            conn.execute("ALTER TABLE cards ADD COLUMN rarity TEXT NOT NULL DEFAULT ''")
+        if "subtypes" not in columns:
+            conn.execute("ALTER TABLE cards ADD COLUMN subtypes TEXT NOT NULL DEFAULT '[]'")
+        if "canonical_id" not in columns:
+            conn.execute("ALTER TABLE cards ADD COLUMN canonical_id TEXT NOT NULL DEFAULT ''")
+        if "image_alt" not in columns:
+            conn.execute("ALTER TABLE cards ADD COLUMN image_alt TEXT NOT NULL DEFAULT ''")
+        if "sources" not in columns:
+            conn.execute("ALTER TABLE cards ADD COLUMN sources TEXT NOT NULL DEFAULT '{}'")
+        # Existing catalogs predate identity: backfill canonical_id from
+        # (set_id, local_id) once, in SQL (fast, idempotent). The EXISTS
+        # guard keeps the COMMON case (nothing to backfill) read-only — a
+        # write transaction left open here was the real 'database is locked'
+        # under 12 concurrent init_db() calls (each connection would hold
+        # its own uncommitted write lock until the caller's first commit).
+        if conn.execute("SELECT EXISTS(SELECT 1 FROM cards WHERE canonical_id = '')").fetchone()[0]:
+            conn.execute("""UPDATE cards SET canonical_id = set_id || '|' || local_id
+                            WHERE canonical_id = ''""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cards_lang ON cards(language)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cards_name ON cards(name)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cards_canonical ON cards(canonical_id)")
+        # Scan sync state machine: one row per asset base. `validated` rows carry
+        # the sha256 recorded at download time so later runs can detect corrupt
+        # cache files (magic bytes alone miss mid-file corruption).
+        conn.execute("""CREATE TABLE IF NOT EXISTS scans (
         image_base TEXT PRIMARY KEY,
         state TEXT NOT NULL,
         bytes INTEGER,
         sha256 TEXT,
         updated_at TEXT
     )""")
-    scan_columns = {row[1] for row in conn.execute("PRAGMA table_info(scans)")}
-    if "width" not in scan_columns:
-        conn.execute("ALTER TABLE scans ADD COLUMN width INTEGER")
-    if "height" not in scan_columns:
-        conn.execute("ALTER TABLE scans ADD COLUMN height INTEGER")
-    if "source" not in scan_columns:
-        conn.execute("ALTER TABLE scans ADD COLUMN source TEXT NOT NULL DEFAULT ''")
-    # Multi-source reconciliation ledger: one row per disputed FIELD.
-    # Nothing is ever overwritten silently — every cross-source disagreement
-    # lands here with both values and the deterministic resolution applied.
-    conn.execute("""CREATE TABLE IF NOT EXISTS conflicts (
+        scan_columns = {row[1] for row in conn.execute("PRAGMA table_info(scans)")}
+        if "width" not in scan_columns:
+            conn.execute("ALTER TABLE scans ADD COLUMN width INTEGER")
+        if "height" not in scan_columns:
+            conn.execute("ALTER TABLE scans ADD COLUMN height INTEGER")
+        if "source" not in scan_columns:
+            conn.execute("ALTER TABLE scans ADD COLUMN source TEXT NOT NULL DEFAULT ''")
+        # Multi-source reconciliation ledger: one row per disputed FIELD.
+        # Nothing is ever overwritten silently — every cross-source disagreement
+        # lands here with both values and the deterministic resolution applied.
+        conn.execute("""CREATE TABLE IF NOT EXISTS conflicts (
         language TEXT NOT NULL,
         card_key TEXT NOT NULL,
         source_a TEXT NOT NULL,
@@ -595,7 +610,11 @@ def init_db(db_path: str = CATALOG_DB) -> sqlite3.Connection:
         updated_at TEXT,
         PRIMARY KEY (language, card_key, field)
     )""")
-    conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+        # NEVER return with an open write transaction: each thread-local
+        # connection would hold its own uncommitted write lock (see the
+        # backfill note above) and block every other connection forever.
+        conn.commit()
     return conn
 
 
@@ -609,15 +628,19 @@ def record_scan_state(conn: sqlite3.Connection, image_base: str, state: str,
     (for second-source images) the pokemon-tcg-data URL itself. width/height
     are recorded at validation time (decode + dimension check); source is
     which chain step resolved ("high.webp", "ptcg-hires", …).
+
+    No process-wide lock here: callers use per-thread connections (WAL +
+    busy_timeout serialize writers natively) and the common sync write path
+    is batched through a single flush thread anyway. The RLock stays for
+    schema work (init_db) and the reconciler's batch paths.
     """
     if state not in SCAN_STATES:
         raise ValueError(f"Unknown scan state {state!r}")
-    with _lock:
-        conn.execute("""INSERT OR REPLACE INTO scans (image_base, state, bytes, sha256, width, height, source, updated_at)
-            VALUES (?,?,?,?,?,?,?,?)""",
-            (image_base, state, nbytes, sha256, width, height, source,
-             time.strftime("%Y-%m-%dT%H:%M:%S")))
-        conn.commit()
+    conn.execute("""INSERT OR REPLACE INTO scans (image_base, state, bytes, sha256, width, height, source, updated_at)
+        VALUES (?,?,?,?,?,?,?,?)""",
+        (image_base, state, nbytes, sha256, width, height, source,
+         time.strftime("%Y-%m-%dT%H:%M:%S")))
+    conn.commit()
 
 
 def get_scan_state(conn: sqlite3.Connection, image_base: str) -> Optional[tuple]:
@@ -625,15 +648,29 @@ def get_scan_state(conn: sqlite3.Connection, image_base: str) -> Optional[tuple]
 
     source carries which chain step resolved a validated row ("high.webp",
     "ptcg-hires", …) and, for not_available rows, the URL-scope fingerprint
-    the absence verdict covers (see download_scans._na_scope)."""
-    row = conn.execute("SELECT state, bytes, sha256, source FROM scans WHERE image_base = ?", (image_base,)).fetchone()
+    the absence verdict covers (see download_scans._na_scope).
+
+    The cursor is explicitly closed BEFORE any write happens on the same
+    connection: an unclosed single-row SELECT keeps the statement (and its
+    read snapshot) alive, and a read->write transaction upgrade is the one
+    SQLite path that does NOT honor busy_timeout — that was the real
+    'database is locked' under 12 workers."""
+    cur = conn.execute("SELECT state, bytes, sha256, source FROM scans WHERE image_base = ?", (image_base,))
+    try:
+        row = cur.fetchone()
+    finally:
+        cur.close()
     return tuple(row) if row else None
 
 
 def scan_state_counts(conn: sqlite3.Connection) -> dict[str, int]:
     """Rows per scan state (sync reporting: downloaded/failed/not_available)."""
-    return {state: count for state, count in conn.execute(
-        "SELECT state, COUNT(*) FROM scans GROUP BY state")}
+    cur = conn.execute("SELECT state, COUNT(*) FROM scans GROUP BY state")
+    try:
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+    return dict(rows)
 
 
 @dataclass
@@ -845,5 +882,9 @@ def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
 
 
 def get_meta(conn: sqlite3.Connection, key: str) -> Optional[str]:
-    row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    cur = conn.execute("SELECT value FROM meta WHERE key = ?", (key,))
+    try:
+        row = cur.fetchone()
+    finally:
+        cur.close()
     return row[0] if row else None

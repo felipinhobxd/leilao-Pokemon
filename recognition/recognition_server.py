@@ -6,6 +6,7 @@ Endpoints:
     GET  /health                    -> service status + readiness (models/index)
     POST /recognize                 -> multipart image -> full recognition JSON
     GET  /scan/{language}/{cardId}  -> cached official scan (low/EN-mirror fallbacks)
+    GET  /catalog/exists            -> ghost-lot guard: does (language, set, number) exist in the catalog?
     POST /memory/confirm            -> multipart image + card fields -> confirmed memory example
     GET  /memory                    -> list confirmed examples
     DELETE /memory/{id}             -> remove an example
@@ -55,6 +56,20 @@ from recognizer.pipeline import Recognizer
 from recognizer.store import CatalogStore
 
 app = FastAPI(title="Pokemon Card Recognition (local)", version="1.3.0")
+
+# Dedicated read-only SQLite connection for the lightweight /catalog/exists
+# endpoint: independent of the recognizer/models, guarded because FastAPI
+# sync endpoints run on a threadpool (WAL + busy_timeout handle the rest).
+_catalog_lock = threading.Lock()
+_catalog_conn = None
+
+
+def get_catalog_conn():
+    global _catalog_conn
+    if _catalog_conn is None:
+        from recognizer.catalog import init_db
+        _catalog_conn = init_db()
+    return _catalog_conn
 
 # The site runs on localhost dev/production ports; the deployed Vercel panel
 # is added via RECOGNITION_ALLOWED_ORIGINS (comma-separated). Never "*".
@@ -253,6 +268,26 @@ async def recognize(file: UploadFile = File(...)):
     except Exception as exc:  # noqa: BLE001
         _state["errors"] += 1
         raise HTTPException(status_code=500, detail=f"Reconhecimento falhou: {exc}") from exc
+
+
+@app.get("/catalog/exists")
+def catalog_exists(language: str, set: str, number: str):
+    """Fase 4.3 — ghost-lot guard for the auction wizard: does this
+    (language, set, collector number) exist in the local recognition
+    catalog? Lightweight BY DESIGN: queries the SQLite catalog directly —
+    no models, no warm-up, millisecond latency — so the site can call it
+    synchronously while creating a lot. A lot whose card is not in the
+    catalog can never be matched by the recognizer: the site rejects it
+    ("fantasma") instead of creating an unidentifiable lot."""
+    from recognizer.catalog import init_db
+    from recognizer.store import find_catalog_card
+    with _catalog_lock:
+        conn = get_catalog_conn()
+        found = find_catalog_card(conn, language, set, number)
+    if found is None:
+        return {"exists": False, "cardId": None, "setId": None, "language": language}
+    return {"exists": True, "cardId": found["id"], "setId": found["set_id"],
+            "localId": found["local_id"], "name": found["name"], "language": language}
 
 
 @app.get("/scan/{language}/{card_id}")

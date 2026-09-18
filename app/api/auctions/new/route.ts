@@ -1,5 +1,6 @@
 import { authorize, failure, HttpError } from "@/lib/backend";
 import { buildPollPlan, cardConditions, cardLanguages, DEFAULT_POLL_OPTIONS, MAX_POLL_OPTIONS } from "@/lib/auction-wizard";
+import { validateCardAgainstCatalog, isStrictCatalogMode } from "@/lib/card-catalog";
 
 export const runtime = "nodejs";
 
@@ -83,6 +84,22 @@ export async function POST(request: Request) {
 
     const lotNumber = auction.lot_number === null || auction.lot_number === "" || auction.lot_number === undefined ? null : Number(auction.lot_number);
     if (lotNumber != null && (!Number.isSafeInteger(lotNumber) || lotNumber <= 0)) throw new HttpError(400, "Número do lote inválido.");
+
+    // Fase 4.3 — sem cartas fantasma: quando o lote referencia uma carta
+    // (coleção + número), ela precisa existir no catálogo de reconhecimento
+    // (o único índice capaz de identificá-la). Serviço local inacessível
+    // (deploy fora do PC do bot) => lote criado sem validação + log; modo
+    // estrito (RECOGNITION_STRICT_CATALOG=1) bloqueia o que não validou.
+    const catalogCheck = await validateCardAgainstCatalog({ language, set: collection, number: cardNumber });
+    if (catalogCheck.checked && !catalogCheck.exists) {
+      throw new HttpError(409, "Carta não encontrada no catálogo de reconhecimento. Confira a coleção e o número da carta.");
+    }
+    if (!catalogCheck.checked && isStrictCatalogMode()) {
+      throw new HttpError(503, `Não foi possível validar a carta contra o catálogo${catalogCheck.unreachable ? ` (${catalogCheck.unreachable})` : ""}. Tente novamente.`);
+    }
+    if (!catalogCheck.checked) {
+      console.warn(`[auctions/new] catálogo de reconhecimento não consultável (${catalogCheck.unreachable ?? "motivo desconhecido"}); lote criado sem validação de catálogo.`);
+    }
 
     const payload = {
       eventId,

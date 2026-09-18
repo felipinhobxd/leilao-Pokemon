@@ -301,6 +301,76 @@ class TestScanDecode(unittest.TestCase):
                           "abaixo do piso 200x280 deve ser rejeitado")
 
 
+class TestSqliteConcurrency(unittest.TestCase):
+    """Fase 4.1: per-thread connections + WAL + busy_timeout must survive the
+    real sync shape (12 workers reading states + batched writes) without a
+    single `database is locked` — the old shared connection raised it under
+    load."""
+
+    def test_12_workers_hammering_reads_and_writes(self):
+        import shutil
+        import tempfile
+        import threading
+        from recognizer import catalog as cat
+
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        db = os.path.join(tmp, "t.sqlite")
+        main_conn = cat.init_db(db)
+        errors: list[Exception] = []
+
+        def worker(wid: int) -> None:
+            try:
+                conn = cat.init_db(db)  # its OWN connection, like _thread_conn()
+                try:
+                    for i in range(25):
+                        cat.record_scan_state(conn, f"https://x/{wid}/{i}", "validated",
+                                              1234, f"sha-{wid}-{i}", 600, 840, "high.webp")
+                        # own row: guaranteed to exist; neighbor's row: a
+                        # concurrent read that only EXERCISES snapshot reads
+                        # (the neighbor may not have written it yet — ordering
+                        # is not asserted inside the race).
+                        if cat.get_scan_state(conn, f"https://x/{wid}/{i}") is None:
+                            errors.append(AssertionError(f"linha recém-escrita sumiu: {wid}/{i}"))
+                        cat.get_scan_state(conn, f"https://x/{(wid + 5) % 12}/{i}")
+                finally:
+                    conn.close()
+            except Exception as exc:  # noqa: BLE001 — any failure is a failure
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(wid,)) for wid in range(12)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=60)
+        survivors = [t for t in threads if t.is_alive()]
+        self.assertFalse(survivors, "workers devem terminar")
+        locked = [e for e in errors if "database is locked" in str(e).lower()]
+        self.assertFalse(locked, f"database is locked é bug de concorrência: {locked[:3]}")
+        self.assertFalse(errors, f"nenhum erro é aceitável: {errors[:3]}")
+        # Every worker's write survived the contention (visibility check).
+        total = main_conn.execute(
+            "SELECT COUNT(*) FROM scans WHERE state='validated'").fetchone()[0]
+        self.assertEqual(total, 12 * 25, "todas as 300 linhas devem estar gravadas")
+        missing = main_conn.execute(
+            "SELECT COUNT(*) FROM scans WHERE sha256 IS NULL OR width IS NULL").fetchone()[0]
+        self.assertEqual(missing, 0, "nenhuma linha pode ter colunas perdidas")
+        main_conn.close()
+
+    def test_busy_timeout_is_configured(self):
+        from recognizer import catalog as cat
+        import shutil
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        conn = cat.init_db(os.path.join(tmp, "t.sqlite"))
+        try:
+            timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+            self.assertGreaterEqual(timeout, 5000, "busy_timeout deve estar ativo")
+        finally:
+            conn.close()
+
+
 @unittest.skipUnless(HAS_CATALOG, "catalogo SQLite nao construido")
 class TestCatalog(unittest.TestCase):
     def test_shroodle_exists(self):

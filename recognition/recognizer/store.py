@@ -113,3 +113,60 @@ class CatalogStore:
             if len(results) >= limit:
                 break
         return results
+
+
+def find_catalog_card(conn: sqlite3.Connection, language: str,
+                      set_ref: str, number: str) -> Optional[dict]:
+    """Resolve a user-typed (set, collector number) against the catalog.
+
+    Fase 4.3 — ghost-lot guard: the auction wizard rejects lots whose card
+    does not exist in the recognition catalog. Matching must be tolerant the
+    way users type, but never fuzzy-guessing:
+
+    - set_ref: TCGdex set id ("svp") OR set name ("Promo Escarlate e
+      Violeta"), case-insensitive, accents stripped. A wrong set FAILS —
+      it is never fuzzy-matched to the closest name.
+    - number: printed collector number. Digits compare zero-padded
+      ("001" == "1"); alphanumeric ids compare exact ("SWSH074",
+      "TG05"); a prefixed number also tail-matches a digits-only localId of
+      the SAME set ("SVP-001" <-> "001" when the prefix equals the set id).
+
+    Returns {"id", "set_id", "local_id", "name"} of the matched card or
+    None. Ambiguous set names resolve only when the number disambiguates
+    them (exactly one set contains the card).
+    """
+    from .reconcile import normalize_local_id
+
+    lang = str(language or "").strip() or "pt-BR"
+    set_ref_norm = _normalize(str(set_ref or ""))
+    number_raw = str(number or "").strip()
+    if not set_ref_norm or not number_raw:
+        return None
+
+    set_rows = conn.execute(
+        "SELECT DISTINCT set_id, set_name FROM cards WHERE language = ?", (lang,)).fetchall()
+    candidates = [row for row in set_rows
+                  if _normalize(row[0] or "") == set_ref_norm
+                  or _normalize(row[1] or "") == set_ref_norm]
+    if not candidates:
+        return None
+
+    number_norm = normalize_local_id(number_raw)
+    prefix_match = re.match(r"^([A-Za-z]+)[-/._]?(\d+)$", number_raw)
+    for set_id, _set_name in candidates:
+        rows = conn.execute(
+            "SELECT id, local_id, name FROM cards WHERE language = ? AND set_id = ?",
+            (lang, set_id)).fetchall()
+        for card_id, local_id, name in rows:
+            if local_id is None:
+                continue
+            if local_id.lower() == number_raw.lower():
+                return {"id": card_id, "set_id": set_id, "local_id": local_id, "name": name or ""}
+            if normalize_local_id(local_id) == number_norm:
+                return {"id": card_id, "set_id": set_id, "local_id": local_id, "name": name or ""}
+            if (prefix_match is not None
+                    and str(local_id).isdigit()
+                    and normalize_local_id(prefix_match.group(1)) == normalize_local_id(set_id)
+                    and normalize_local_id(local_id) == normalize_local_id(prefix_match.group(2))):
+                return {"id": card_id, "set_id": set_id, "local_id": local_id, "name": name or ""}
+    return None

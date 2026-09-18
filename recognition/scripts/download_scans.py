@@ -62,13 +62,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from recognizer.catalog import (MIN_SCAN_HEIGHT, MIN_SCAN_WIDTH, get_scan_state,
                                 init_db, load_cards, record_scan_state,
-                                resolve_scan_classified, scan_path,
-                                scan_state_counts, _cached_scan_ok,
+                                record_validated_mtime, resolve_scan_classified,
+                                scan_path, scan_state_counts, _cached_scan_ok,
                                 SCAN_QUALITY_CHAIN)
 
 _state_lock = __import__("threading").Lock()
 _tls = __import__("threading").local()
 _pending_writes: list[tuple] = []
+_pending_mtime_patches: list[tuple] = []
 
 
 def _thread_conn():
@@ -199,20 +200,58 @@ def sync_card(card, force: bool = False) -> str:
         return "not_available"
 
     recorded = get_scan_state(_thread_conn(), scan_key)
+    recorded_mtime = recorded[5] if recorded is not None and len(recorded) > 5 else None
     if (not force and recorded is not None and recorded[0] == "validated"
             and len(recorded) > 2 and recorded[2]):
-        # Fast path: validated before + sha256 recorded. Verify the local file
-        # still matches (detects corruption/bit-rot without re-downloading).
-        path = _resolved_cache_path(scan_key) if card.image_base else None
-        if path is None and getattr(card, "image_alt", ""):
-            from recognizer.catalog import _ptcg_cache_path, PTCGDATA_QUALITY_CHAIN
-            for q in PTCGDATA_QUALITY_CHAIN:
-                candidate = _ptcg_cache_path(card.image_alt, q)
-                if _cached_scan_ok(candidate):
+        # Fast path: validated before + sha256 recorded. The EXACT cache file
+        # is derived from the recorded `source` (which quality/chain step
+        # validated it) — one stat per card instead of probing the whole
+        # quality chain; the probe chain remains as the fallback when the
+        # derived path misses (row migrated from another layout etc.).
+        path = None
+        source_recorded = str(recorded[3] or "")
+        if card.image_base and source_recorded:
+            if source_recorded.startswith("ptcg-") and getattr(card, "image_alt", ""):
+                from recognizer.catalog import _ptcg_cache_path
+                quality = source_recorded[len("ptcg-"):]
+                candidate = _ptcg_cache_path(card.image_alt, quality)
+                if os.path.exists(candidate):
                     path = candidate
-                    break
-        if path is not None and _sha256_of(path) == recorded[2]:
-            return "validated"
+            else:
+                candidate = scan_path(card.image_base, source_recorded)
+                if os.path.exists(candidate):
+                    path = candidate
+        if path is None:
+            path = _resolved_cache_path(scan_key) if card.image_base else None
+            if path is None and getattr(card, "image_alt", ""):
+                from recognizer.catalog import _ptcg_cache_path, PTCGDATA_QUALITY_CHAIN
+                for q in PTCGDATA_QUALITY_CHAIN:
+                    candidate = _ptcg_cache_path(card.image_alt, q)
+                    if _cached_scan_ok(candidate):
+                        path = candidate
+                        break
+        if path is not None:
+            try:
+                stat = os.stat(path)
+            except OSError:
+                stat = None
+            # Stat-only skip: same file size + same mtime the recorded sha256
+            # covers -> the bytes are unchanged, NO re-hash needed. This is
+            # what makes a re-run over ~50k scans finish in seconds instead
+            # of re-hashing gigabytes; any size/mtime change falls through
+            # to the full sha verification (healing preserved).
+            if (stat is not None and recorded_mtime is not None
+                    and stat.st_size == recorded[1]
+                    and int(stat.st_mtime) == recorded_mtime):
+                return "validated"
+            if stat is not None and _sha256_of(path) == recorded[2]:
+                if recorded_mtime is None or stat.st_size != recorded[1]:
+                    # legacy row (or size drift): backfill the mtime key so
+                    # the NEXT run is stat-only (self-healing, one-time).
+                    # Targeted UPDATE — a full row replace would blank
+                    # width/height/source.
+                    _queue_mtime_patch(scan_key, int(stat.st_mtime), stat.st_size)
+                return "validated"
         # Corrupt or missing on disk: fall through to a fresh download.
     if (not force and recorded is not None and recorded[0] == "not_available"
             and len(recorded) > 3 and recorded[3]
@@ -233,7 +272,8 @@ def sync_card(card, force: bool = False) -> str:
         dims = _decode_dimensions(path)
         if sha and dims:
             _queue_write(scan_key, "validated", os.path.getsize(path), sha,
-                         dims[0], dims[1], source)
+                         dims[0], dims[1], source,
+                         validated_mtime=int(os.path.getmtime(path)))
             return "validated"
         if sha and not dims:
             # Downloaded/cached file decodes badly / dimensions below the
@@ -260,16 +300,27 @@ def sync_card(card, force: bool = False) -> str:
 
 def _queue_write(scan_key: str, state: str, nbytes: int | None, sha: str | None,
                  width: int | None = None, height: int | None = None,
-                 source: str = "") -> None:
+                 source: str = "", validated_mtime: int | None = None) -> None:
     with _state_lock:
-        _pending_writes.append((scan_key, state, nbytes, sha, width, height, source))
+        _pending_writes.append((scan_key, state, nbytes, sha, width, height, source, validated_mtime))
+
+
+def _queue_mtime_patch(scan_key: str, mtime: int, nbytes: int | None) -> None:
+    """Backfill the stat-only re-run key on an already-validated row WITHOUT
+    touching width/height/source (a full row replace would blank them)."""
+    with _state_lock:
+        _pending_mtime_patches.append((scan_key, mtime, nbytes))
 
 
 def _flush_writes() -> None:
     with _state_lock:
         writes, _pending_writes[:] = list(_pending_writes), []
-    for scan_key, state, nbytes, sha, width, height, source in writes:
-        record_scan_state(_thread_conn(), scan_key, state, nbytes, sha, width, height, source)
+        patches, _pending_mtime_patches[:] = list(_pending_mtime_patches), []
+    for scan_key, state, nbytes, sha, width, height, source, validated_mtime in writes:
+        record_scan_state(_thread_conn(), scan_key, state, nbytes, sha, width, height,
+                          source, validated_mtime)
+    for scan_key, mtime, nbytes in patches:
+        record_validated_mtime(_thread_conn(), scan_key, mtime, nbytes)
 
 
 def main() -> None:

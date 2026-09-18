@@ -165,6 +165,7 @@ class TestScanFastPath(unittest.TestCase):
         self.ds._tls = threading.local()
         self.ds._tls.conn = self.conn
         self.ds._pending_writes.clear()
+        self.ds._pending_mtime_patches.clear()
         self._orig_http = catalog_module._http_get
         self._orig_conn = None
 
@@ -172,6 +173,7 @@ class TestScanFastPath(unittest.TestCase):
         catalog_module.IMAGE_CACHE_DIR = self._orig_cache
         catalog_module._http_get = self._orig_http
         self.ds._pending_writes.clear()
+        self.ds._pending_mtime_patches.clear()
 
     def _forbid_network(self):
         def no_network(url, timeout=30.0, retries=3):
@@ -204,6 +206,100 @@ class TestScanFastPath(unittest.TestCase):
         self._forbid_network()
         self.assertEqual(self.ds.sync_card(card), "validated")
         self._flush()  # nothing queued: state unchanged
+
+    def test_stat_only_skip_when_mtime_and_size_match(self):
+        # Fase 5: same size + same mtime the recorded sha256 covers -> the
+        # re-run NEVER re-hashes the file (stat-only). This is what makes a
+        # re-run over ~50k scans finish in seconds, not minutes.
+        import hashlib
+        card = self._card()
+        path = catalog_module.scan_path(card.image_base, "high.webp")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        data = _png_bytes()
+        with open(path, "wb") as fh:
+            fh.write(data)
+        mtime = int(os.path.getmtime(path))
+        record_scan_state(self.conn, card.image_base, "validated",
+                          len(data), hashlib.sha256(data).hexdigest(),
+                          width=640, height=896, source="high.webp",
+                          validated_mtime=mtime)
+        hashed = []
+        real_sha = self.ds._sha256_of
+        self.ds._sha256_of = lambda p: (hashed.append(p), real_sha(p))[1]
+        self.addCleanup(lambda: setattr(self.ds, "_sha256_of", real_sha))
+        self._forbid_network()
+        self.assertEqual(self.ds.sync_card(card), "validated")
+        self.assertEqual(hashed, [], "mtime+size batendo: nenhum hash deve ser recalculado")
+
+    def test_mtime_change_rehashes_and_detects_corruption(self):
+        # Bytes changed under the cache file (mtime moved): the stat-only skip
+        # must NOT fire — the full sha verification notices the change. When
+        # the replacement is a VALID image the cache-hit path accepts it and
+        # the row is re-validated with the NEW sha, zero network; an INVALID
+        # file is re-downloaded (covered by the corrupt-cache test above).
+        import hashlib
+        card = self._card()
+        path = catalog_module.scan_path(card.image_base, "high.webp")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        data_a = _png_bytes()
+        with open(path, "wb") as fh:
+            fh.write(data_a)
+        record_scan_state(self.conn, card.image_base, "validated",
+                          len(data_a), hashlib.sha256(data_a).hexdigest(),
+                          width=640, height=896, source="high.webp",
+                          validated_mtime=int(os.path.getmtime(path)) - 3600)
+        # rewrite the cache file with DIFFERENT valid bytes (mtime moves)
+        import cv2
+        ok, buf = cv2.imencode(".png", np.full((896, 640, 3), 200, np.uint8))
+        self.assertTrue(ok)
+        data_b = buf.tobytes()
+        with open(path, "wb") as fh:
+            fh.write(data_b)
+        self._forbid_network()
+        self.assertEqual(self.ds.sync_card(card), "validated")
+        self._flush()
+        row = self.conn.execute("SELECT sha256, validated_mtime FROM scans "
+                                "WHERE image_base = ?", (card.image_base,)).fetchone()
+        self.assertEqual(row[0], hashlib.sha256(data_b).hexdigest(),
+                         "o sha da nova imagem deve substituir o antigo")
+        self.assertIsNotNone(row[1])
+        # second run: stat-only com a chave nova
+        hashed = []
+        real_sha = self.ds._sha256_of
+        self.ds._sha256_of = lambda p: (hashed.append(p), real_sha(p))[1]
+        self.assertEqual(self.ds.sync_card(card), "validated")
+        self.assertEqual(hashed, [], "segunda execução deve ser stat-only")
+
+    def test_legacy_row_backfills_the_mtime_key(self):
+        # Rows validated before the mtime key existed: first re-run hashes
+        # (zero network), matches, and backfills validated_mtime so the NEXT
+        # run is stat-only — without blanking width/height/source.
+        import hashlib
+        card = self._card()
+        path = catalog_module.scan_path(card.image_base, "high.webp")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        data = _png_bytes()
+        with open(path, "wb") as fh:
+            fh.write(data)
+        record_scan_state(self.conn, card.image_base, "validated",
+                          len(data), hashlib.sha256(data).hexdigest(),
+                          width=640, height=896, source="high.webp")
+        self._forbid_network()
+        self.assertEqual(self.ds.sync_card(card), "validated")
+        self._flush()
+        row = self.conn.execute(
+            "SELECT width, height, source, validated_mtime FROM scans WHERE image_base = ?",
+            (card.image_base,)).fetchone()
+        self.assertEqual(row[0], 640, "patch não pode apagar width")
+        self.assertEqual(row[1], 896, "patch não pode apagar height")
+        self.assertEqual(row[2], "high.webp", "patch não pode apagar source")
+        self.assertIsNotNone(row[3], "mtime key deve ser backfillada")
+        # second run: stat-only
+        hashed = []
+        real_sha = self.ds._sha256_of
+        self.ds._sha256_of = lambda p: (hashed.append(p), real_sha(p))[1]
+        self.assertEqual(self.ds.sync_card(card), "validated")
+        self.assertEqual(hashed, [], "segunda execução deve ser stat-only")
 
     def test_validated_card_with_corrupt_cache_redownloads(self):
         import hashlib

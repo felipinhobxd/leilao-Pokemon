@@ -2,6 +2,7 @@
 """TCGdex catalog → local SQLite + scan cache (local-first, offline-capable)."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import random
@@ -331,9 +332,27 @@ def _ptcg_url(alt_url: str, quality: str) -> Optional[str]:
 
 def _ptcg_cache_path(alt_url: str, quality: str) -> str:
     """Local cache path for a second-source image (own namespace, never
-    colliding with the TCGdex asset cache)."""
-    tail = alt_url[len(PTCGDATA_IMAGE_BASE):].strip("/") if alt_url.startswith(PTCGDATA_IMAGE_BASE) else alt_url.strip("/").replace("/", "_")
+    colliding with the TCGdex asset cache).
+
+    Foreign-hosted alt URLs (e.g. the 30th anniversary promos whose scan
+    TCGdex publishes at images.scrydex.com) used to build filenames with
+    ':' — valid POSIX, INVALID on Windows (OSError 87), which crashed the
+    sync worker. The tail is now sanitized against Windows-forbidden
+    characters and bounded so a long URL never exceeds the path limit."""
+    if alt_url.startswith(PTCGDATA_IMAGE_BASE):
+        tail = alt_url[len(PTCGDATA_IMAGE_BASE):].strip("/")
+    else:
+        tail = alt_url.strip("/").replace("/", "_")
+        tail = re.sub(r'[<>:"\\|?*\x00-\x1f]', "_", tail)
+        if len(tail) > 180:
+            digest = hashlib.sha256(tail.encode("utf-8")).hexdigest()[:20]
+            tail = f"{tail[:140]}-{digest}"
     stem, dot = tail[: tail.rfind(".")], tail[tail.rfind("."):]
+    if "." not in tail[-6:]:
+        # Foreign URL without a recognizable extension (e.g. scrydex ".../large"):
+        # the whole tail is the stem; a generic suffix keeps the quality infix
+        # OUT of the domain part instead of mangling it into the filename.
+        stem, dot = tail, ".img"
     return os.path.join(IMAGE_CACHE_DIR, "ptcg", f"{stem}.{quality}{dot}")
 
 
@@ -595,6 +614,13 @@ def init_db(db_path: str = CATALOG_DB) -> sqlite3.Connection:
             conn.execute("ALTER TABLE scans ADD COLUMN height INTEGER")
         if "source" not in scan_columns:
             conn.execute("ALTER TABLE scans ADD COLUMN source TEXT NOT NULL DEFAULT ''")
+        # Fast re-runs (Fase 5): the mtime (epoch seconds) of the cache file
+        # whose bytes the recorded sha256 covers. A later run that sees the
+        # same mtime + size SKIPS the re-hash entirely (stat-only); a
+        # changed mtime falls back to the full sha verification. Legacy rows
+        # without it are re-hashed once and then carry it (self-healing).
+        if "validated_mtime" not in scan_columns:
+            conn.execute("ALTER TABLE scans ADD COLUMN validated_mtime INTEGER")
         # Multi-source reconciliation ledger: one row per disputed FIELD.
         # Nothing is ever overwritten silently — every cross-source disagreement
         # lands here with both values and the deterministic resolution applied.
@@ -621,13 +647,15 @@ def init_db(db_path: str = CATALOG_DB) -> sqlite3.Connection:
 def record_scan_state(conn: sqlite3.Connection, image_base: str, state: str,
                        nbytes: Optional[int] = None, sha256: Optional[str] = None,
                        width: Optional[int] = None, height: Optional[int] = None,
-                       source: str = "") -> None:
+                       source: str = "", validated_mtime: Optional[int] = None) -> None:
     """Persist the sync state of one scan (see SCAN_STATES).
 
     image_base is the scan's stable identifier: the TCGdex asset base, or
     (for second-source images) the pokemon-tcg-data URL itself. width/height
     are recorded at validation time (decode + dimension check); source is
-    which chain step resolved ("high.webp", "ptcg-hires", …).
+    which chain step resolved ("high.webp", "ptcg-hires", …);
+    validated_mtime is the cache file's mtime covered by sha256 — the
+    stat-only fast re-run key (see download_scans.sync_card).
 
     No process-wide lock here: callers use per-thread connections (WAL +
     busy_timeout serialize writers natively) and the common sync write path
@@ -636,26 +664,43 @@ def record_scan_state(conn: sqlite3.Connection, image_base: str, state: str,
     """
     if state not in SCAN_STATES:
         raise ValueError(f"Unknown scan state {state!r}")
-    conn.execute("""INSERT OR REPLACE INTO scans (image_base, state, bytes, sha256, width, height, source, updated_at)
-        VALUES (?,?,?,?,?,?,?,?)""",
-        (image_base, state, nbytes, sha256, width, height, source,
+    conn.execute("""INSERT OR REPLACE INTO scans (image_base, state, bytes, sha256, width, height, source, validated_mtime, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?)""",
+        (image_base, state, nbytes, sha256, width, height, source, validated_mtime,
          time.strftime("%Y-%m-%dT%H:%M:%S")))
     conn.commit()
 
 
+def record_validated_mtime(conn: sqlite3.Connection, image_base: str,
+                           validated_mtime: int, nbytes: Optional[int] = None) -> None:
+    """Targeted backfill of the stat-only re-run key on an existing validated
+    row (see download_scans.sync_card): updates bytes/validated_mtime/
+    updated_at WITHOUT touching width/height/source — a full
+    INSERT OR REPLACE would blank them."""
+    conn.execute("""UPDATE scans SET validated_mtime = ?,
+                        bytes = COALESCE(?, bytes),
+                        updated_at = ?
+                    WHERE image_base = ? AND state = 'validated'""",
+                 (validated_mtime, nbytes, time.strftime("%Y-%m-%dT%H:%M:%S"), image_base))
+    conn.commit()
+
+
 def get_scan_state(conn: sqlite3.Connection, image_base: str) -> Optional[tuple]:
-    """(state, bytes, sha256, source) recorded for an asset base, if any.
+    """(state, bytes, sha256, source, updated_at, validated_mtime) for an
+    asset base, if any (indices 0-3 keep their historical meaning).
 
     source carries which chain step resolved a validated row ("high.webp",
     "ptcg-hires", …) and, for not_available rows, the URL-scope fingerprint
-    the absence verdict covers (see download_scans._na_scope).
+    the absence verdict covers (see download_scans._na_scope);
+    validated_mtime is the stat-only fast re-run key.
 
     The cursor is explicitly closed BEFORE any write happens on the same
     connection: an unclosed single-row SELECT keeps the statement (and its
     read snapshot) alive, and a read->write transaction upgrade is the one
     SQLite path that does NOT honor busy_timeout — that was the real
     'database is locked' under 12 workers."""
-    cur = conn.execute("SELECT state, bytes, sha256, source FROM scans WHERE image_base = ?", (image_base,))
+    cur = conn.execute("""SELECT state, bytes, sha256, source, updated_at, validated_mtime
+        FROM scans WHERE image_base = ?""", (image_base,))
     try:
         row = cur.fetchone()
     finally:

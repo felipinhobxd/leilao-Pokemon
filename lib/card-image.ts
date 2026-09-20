@@ -30,10 +30,56 @@ export type CardImageAuthorization = {
   exists: boolean;
   token?: string;
 };
+export type CardImageUploadFailure = { id: string; message: string };
+export type CardImageBatchResult = {
+  /** Successfully uploaded (or deduplicated) images by item id. */
+  uploaded: Map<string, UploadedCardImage>;
+  /** Items that could not be uploaded, with the per-item reason. Never throws:
+   * partial success is returned so the caller can decide what to do. */
+  failures: CardImageUploadFailure[];
+};
 
 type AuthFetch = (url: string, init?: RequestInit) => Promise<Response>;
 type BatchItem = { id: string; file: File };
 type StatusCallback = (id: string, stage: CardImageStage, message?: string) => void;
+type UploadedCallback = (id: string, uploaded: UploadedCardImage) => void;
+
+/**
+ * WebP re-encode ladder. The first entries preserve the original behavior
+ * (target ~500 KB at ≤1600 px). The EMERGENCY entries only run when the
+ * smallest regular candidate still exceeds CARD_IMAGE_MAX_STORED_BYTES —
+ * real photos of holo/full-art cards are extremely noisy (rainbow foil) and
+ * can stay above 2 MB even at 1200 px/0.79. An 800 px @ 0.70 WebP is always
+ * far below 2 MB, so the ladder guarantees a storable result instead of the
+ * old deterministic "A imagem continuou acima de 2 MB" dead end.
+ */
+export const WEBP_OPTIMIZATION_LADDER: ReadonlyArray<{ maxDimension: number; quality: number }> = [
+  { maxDimension: 1600, quality: 0.85 },
+  { maxDimension: 1600, quality: 0.82 },
+  { maxDimension: 1600, quality: 0.79 },
+  { maxDimension: 1400, quality: 0.85 },
+  { maxDimension: 1400, quality: 0.82 },
+  { maxDimension: 1400, quality: 0.79 },
+  { maxDimension: 1200, quality: 0.85 },
+  { maxDimension: 1200, quality: 0.82 },
+  { maxDimension: 1200, quality: 0.79 },
+  { maxDimension: 1000, quality: 0.75 },
+  { maxDimension: 900, quality: 0.75 },
+  { maxDimension: 800, quality: 0.70 },
+];
+const REGULAR_LADDER_STEPS = 9;
+
+/**
+ * Returns the ladder steps that apply to a given input. Inputs that are
+ * already small take the REGULAR steps only (byte-identical behavior to the
+ * previous implementation); the emergency steps are appended exclusively
+ * when needed to satisfy the storage budget.
+ */
+export function ladderStepsFor(originalBytes: number, originalMaxDimension: number): ReadonlyArray<{ maxDimension: number; quality: number }> {
+  const needsRecompress = originalBytes > 750 * 1024 || originalMaxDimension > CARD_IMAGE_MAX_DIMENSION;
+  if (!needsRecompress) return [];
+  return WEBP_OPTIMIZATION_LADDER;
+}
 
 const extensionByMime: Record<CardImageMime, "jpg" | "png" | "webp"> = {
   "image/jpeg": "jpg",
@@ -90,6 +136,30 @@ async function canvasWebp(bitmap: ImageBitmap, maxDimension: number, quality: nu
   return blob ? { blob, width: canvas.width, height: canvas.height } : null;
 }
 
+/**
+ * Decode fallback: some real-world JPEGs (CMYK, exotic progressive scans)
+ * make createImageBitmap throw while the regular <img> decoder handles them
+ * fine. Both paths respect EXIF orientation in modern browsers.
+ */
+async function decodeImageBitmap(file: File): Promise<ImageBitmap> {
+  try { return await createImageBitmap(file); }
+  catch {
+    const objectUrl = URL.createObjectURL(file);
+    try {
+      const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const element = document.createElement("img");
+        element.onload = () => resolve(element);
+        element.onerror = () => reject(new Error("decode failed"));
+        element.src = objectUrl;
+      });
+      const bitmap = await createImageBitmap(image);
+      return bitmap;
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  }
+}
+
 export async function prepareCardImage(file: File): Promise<PreparedCardImage> {
   if (!file.size || file.size > CARD_IMAGE_MAX_INPUT_BYTES) throw new Error("A imagem original deve ter entre 1 byte e 25 MB.");
   const header = new Uint8Array(await file.slice(0, 16).arrayBuffer());
@@ -97,7 +167,7 @@ export async function prepareCardImage(file: File): Promise<PreparedCardImage> {
   if (!realMime) throw new Error("A imagem real precisa ser JPG, PNG ou WebP.");
 
   let bitmap: ImageBitmap;
-  try { bitmap = await createImageBitmap(file); }
+  try { bitmap = await decodeImageBitmap(file); }
   catch { throw new Error("Não foi possível ler as dimensões da imagem."); }
   const originalWidth = bitmap.width;
   const originalHeight = bitmap.height;
@@ -106,18 +176,21 @@ export async function prepareCardImage(file: File): Promise<PreparedCardImage> {
 
   // Small, already practical assets are preserved exactly. Larger images are
   // recompressed once in the browser so Storage never needs the giant source.
-  if (file.size > 750 * 1024 || originalMaxDimension > CARD_IMAGE_MAX_DIMENSION) {
-    const dimensions = [1600, 1400, 1200];
-    const qualities = [0.85, 0.82, 0.79];
-    for (const maxDimension of dimensions) {
-      for (const quality of qualities) {
-        const candidate = await canvasWebp(bitmap, maxDimension, quality);
-        if (!candidate) continue;
-        if (!chosen || candidate.blob.size < chosen.blob.size) chosen = candidate;
-        if (candidate.blob.size <= CARD_IMAGE_TARGET_BYTES) { chosen = candidate; break; }
-      }
-      if (chosen && chosen.blob.size <= CARD_IMAGE_TARGET_BYTES) break;
-    }
+  // The ladder stops at the first candidate within the ~500 KB target; the
+  // emergency steps (1000/900/800 px) only run when the smallest regular
+  // candidate would still exceed the 2 MB storage budget.
+  const steps = ladderStepsFor(file.size, originalMaxDimension);
+  for (let index = 0; index < steps.length; index++) {
+    const step = steps[index];
+    const isEmergency = index >= REGULAR_LADDER_STEPS;
+    // Regular steps: stop as soon as we are within the ~500 KB target.
+    if (chosen && chosen.blob.size <= CARD_IMAGE_TARGET_BYTES) break;
+    // Emergency steps exist ONLY to satisfy the 2 MB storage budget: when the
+    // regular ladder already produced a storable image, keep it (quality first).
+    if (isEmergency && chosen && chosen.blob.size <= CARD_IMAGE_MAX_STORED_BYTES) break;
+    const candidate = await canvasWebp(bitmap, step.maxDimension, step.quality);
+    if (!candidate) continue;
+    if (!chosen || candidate.blob.size < chosen.blob.size) chosen = candidate;
   }
   bitmap.close();
 
@@ -179,11 +252,15 @@ export async function uploadCardImageBatch(options: {
   authFetch: AuthFetch;
   items: BatchItem[];
   onStatus?: StatusCallback;
-}): Promise<Map<string, UploadedCardImage>> {
-  const { client, authFetch, items, onStatus } = options;
+  /** Fired per item as soon as its upload (or dedup) is confirmed. Callers
+   * use it to persist completed images immediately, so a later failure never
+   * discards work that already succeeded ("preservadas" must be true). */
+  onUploaded?: UploadedCallback;
+}): Promise<CardImageBatchResult> {
+  const { client, authFetch, items, onStatus, onUploaded } = options;
   const output = new Map<string, UploadedCardImage>();
   const byHash = new Map<string, UploadedCardImage>();
-  const failures: string[] = [];
+  const failures: CardImageUploadFailure[] = [];
 
   for (let offset = 0; offset < items.length; offset += CARD_IMAGE_AUTH_BATCH) {
     const chunk = items.slice(offset, offset + CARD_IMAGE_AUTH_BATCH);
@@ -192,7 +269,7 @@ export async function uploadCardImageBatch(options: {
       try { return { item, prepared: await prepareCardImage(item.file) }; }
       catch (error) {
         const message = error instanceof Error ? error.message : "Falha ao otimizar.";
-        onStatus?.(item.id, "error", message); failures.push(`${item.id}: ${message}`); return null;
+        onStatus?.(item.id, "error", message); failures.push({ id: item.id, message }); return null;
       }
     });
     const valid = prepared.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
@@ -209,7 +286,7 @@ export async function uploadCardImageBatch(options: {
         authorizations = new Map(authorized.map(item => [item.sha256, item]));
       } catch (error) {
         const message = error instanceof Error ? error.message : "Falha ao autorizar upload.";
-        for (const entry of valid) if (!byHash.has(entry.prepared.sha256)) { onStatus?.(entry.item.id, "error", message); failures.push(`${entry.item.id}: ${message}`); }
+        for (const entry of valid) if (!byHash.has(entry.prepared.sha256)) { onStatus?.(entry.item.id, "error", message); failures.push({ id: entry.item.id, message }); }
         continue;
       }
 
@@ -223,8 +300,12 @@ export async function uploadCardImageBatch(options: {
           byHash.set(image.sha256, uploaded);
         } catch (error) {
           const message = error instanceof Error ? error.message : "Falha no upload.";
-          matching.forEach(entry => onStatus?.(entry.item.id, "error", message));
-          failures.push(`${matching[0]?.item.id ?? image.sha256}: ${message}`);
+          // Every item sharing this content failed together — record them all,
+          // not just the first (the wizard highlights each affected card).
+          matching.forEach(entry => {
+            onStatus?.(entry.item.id, "error", message);
+            failures.push({ id: entry.item.id, message });
+          });
         }
       });
     }
@@ -233,12 +314,14 @@ export async function uploadCardImageBatch(options: {
       const uploaded = byHash.get(entry.prepared.sha256);
       if (!uploaded) continue;
       output.set(entry.item.id, uploaded);
+      onUploaded?.(entry.item.id, uploaded);
       const saved = entry.prepared.originalBytes - entry.prepared.sizeBytes;
       const label = uploaded.deduplicated ? "Reutilizada, sem novo armazenamento" : saved > 0 ? `Concluída · ${Math.round(saved / 1024)} KB economizados` : "Concluída";
       onStatus?.(entry.item.id, "done", label);
     }
   }
 
-  if (failures.length) throw new Error(`${failures.length} imagem(ns) falharam. As concluídas foram preservadas para a próxima tentativa.`);
-  return output;
+  // Never throw here: partial success is real success. The caller decides
+  // whether failures block the auction or are sent without those images.
+  return { uploaded: output, failures };
 }

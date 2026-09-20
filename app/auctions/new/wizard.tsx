@@ -40,8 +40,8 @@ export default function NewAuctionWizard(){
   function next(){if(validate(step+1))setStep(s=>Math.min(4,s+1))}
   async function upload(){
     if(!imageFile)return form.imageUrl.trim()||null;
-    const uploaded=await uploadCardImageBatch({client:db,authFetch,items:[{id:"single",file:imageFile}],onStatus:(_id,_stage,message)=>setImageProgress(message??"")});
-    const result=uploaded.get("single");if(!result?.url)throw new Error("Falha no upload da imagem.");
+    const {uploaded,failures}=await uploadCardImageBatch({client:db,authFetch,items:[{id:"single",file:imageFile}],onStatus:(_id,_stage,message)=>setImageProgress(message??"")});
+    const result=uploaded.get("single");if(!result?.url)throw new Error(failures[0]?.message??"Falha no upload da imagem.");
     patch("imageUrl",result.url);setImageFile(null);setImageProgress(result.deduplicated?"Imagem reutilizada, sem novo armazenamento.":result.optimized?`Imagem otimizada para ${Math.round(result.sizeBytes/1024)} KB.`:"Imagem enviada sem recompressão desnecessária.");return result.url;
   }
   async function watchPublication(auctionId:string){setWatching(true);try{for(let i=0;i<20;i++){const r=await authFetch(`/api/auctions/new/status?auctionId=${encodeURIComponent(auctionId)}`);const b=await r.json();if(!r.ok)throw new Error(b.error??"Não foi possível acompanhar o envio.");setProgress(b);if(b.dispatch?.status==="sent"&&b.auction?.status==="open")break;if(!b.bot?.online||b.dispatch?.status==="failed")break;await wait(1000)}}catch(e){setError(e instanceof Error?e.message:"Falha ao acompanhar o envio.")}finally{setWatching(false)}}

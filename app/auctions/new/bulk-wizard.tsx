@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { buildPollPlan, cardConditions, cardLanguages, DEFAULT_POLL_OPTIONS, MAX_POLL_OPTIONS } from "@/lib/auction-wizard";
 import { brasiliaInputToIso, formatBrasiliaDateTime, formatBrasiliaTime, toBrasiliaInput } from "@/lib/brasilia-time";
-import { uploadCardImageBatch, type CardImageStage } from "@/lib/card-image";
+import { uploadCardImageBatch, type CardImageStage, type CardImageUploadFailure } from "@/lib/card-image";
 import { mergeRecognitionFields, type ManualFieldMap, type RecognitionCandidate, type RecognitionResult, type RecognizableField } from "@/lib/card-recognition-core";
 import { confirmRecognitionMemory, recognizePokemonCard, shutdownCardRecognition, imageRecognitionEnabled, imageRecognitionPreferenceEvent } from "@/lib/card-recognition-local";
 import { createPublicSupabaseClient } from "@/lib/supabase";
@@ -405,25 +405,28 @@ export default function BulkAuctionWizard() {
     const urls = new Map<string, string>();
     const pending = cards.filter(card => card.file).map(card => ({ id: card.id, file: card.file! }));
     for (const card of cards) if (!card.file) urls.set(card.id, card.imageUrl.trim());
-    if (!pending.length) return urls;
+    if (!pending.length) return { urls, failures: [] as CardImageUploadFailure[] };
 
     const completed = new Set<string>();
-    const uploaded = await uploadCardImageBatch({
+    const { uploaded, failures } = await uploadCardImageBatch({
       client: db,
       authFetch,
       items: pending,
       onStatus: (id, imageStage, imageMessage = "") => {
-        if (imageStage === "done") completed.add(id);
-        setUploadProgress(`${completed.size} de ${pending.length} imagem(ns) concluídas`);
         setCards(current => current.map(card => card.id === id ? { ...card, imageStage, imageMessage } : card));
+      },
+      // Preservação INCREMENTAL: cada imagem concluída vira imageUrl NA HORA.
+      // Se outra falhar em seguida, o trabalho já feito nunca é perdido — a
+      // próxima tentativa reenvia apenas as que falharam (dedup no Storage
+      // devolve as concluídas sem custo).
+      onUploaded: (id, result) => {
+        completed.add(id);
+        setUploadProgress(`${completed.size} de ${pending.length} imagem(ns) concluídas`);
+        setCards(current => current.map(card => card.id === id ? { ...card, file: null, imageUrl: result.url, imageStage: "done", imageMessage: card.imageMessage || "Concluída" } : card));
       },
     });
     for (const [id, result] of uploaded) urls.set(id, result.url);
-    setCards(current => current.map(card => {
-      const result = uploaded.get(card.id);
-      return result ? { ...card, file: null, imageUrl: result.url, imageStage: "done", imageMessage: card.imageMessage || "Concluída" } : card;
-    }));
-    return urls;
+    return { urls, failures };
   }
 
   async function startQueue() {
@@ -431,7 +434,24 @@ export default function BulkAuctionWizard() {
     if (message) { setError(message); return; }
     setBusy(true); setError("");
     try {
-      const imageUrls = await uploadImages();
+      const { urls: imageUrls, failures } = await uploadImages();
+      if (failures.length) {
+        // Uma imagem problemática não pode mais travar o leilão inteiro.
+        // O usuário escolhe: enviar os lotes sem essas imagens (o bot publica
+        // o anúncio como texto) ou ficar na página e corrigir/reenviar.
+        const firstReason = failures[0].message;
+        const proceed = window.confirm(
+          `${failures.length} imagem(ns) falharam (ex.: ${firstReason}).\n\n` +
+          "As concluídas foram preservadas — tentar de novo reenvia apenas as que falharam.\n\n" +
+          "Enviar agora os lotes SEM essas imagens? (no WhatsApp o anúncio sai como texto)"
+        );
+        if (!proceed) {
+          setError(`${failures.length} imagem(ns) falharam (ex.: ${firstReason}). As concluídas foram preservadas: tente novamente para reenviar somente as que falharam, ou remova/substitua a imagem problemática antes de continuar.`);
+          return;
+        }
+        const failedIds = new Set(failures.map(failure => failure.id));
+        setCards(current => current.map(card => failedIds.has(card.id) ? { ...card, imageMessage: "Enviada sem imagem (upload falhou)" } : card));
+      }
       const startsAt = publication === "now" ? new Date().toISOString() : brasiliaInputToIso(scheduledInput);
       if (!startsAt) throw new Error("Horário de início inválido.");
       const core = {

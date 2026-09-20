@@ -22,7 +22,7 @@ create index if not exists whatsapp_bot_workers_heartbeat_idx
 create table if not exists public.whatsapp_bot_commands (
   id uuid primary key default gen_random_uuid(),
   worker_id text not null references public.whatsapp_bot_workers(worker_id) on delete cascade,
-  command text not null check (command in ('reconnect','disconnect','sync_groups')),
+  command text not null check (command in ('reconnect','disconnect','sync_groups','logout')),
   status text not null default 'pending' check (status in ('pending','running','completed','failed')),
   requested_by uuid references auth.users(id) on delete set null,
   requested_at timestamptz not null default clock_timestamp(),

@@ -37,7 +37,7 @@ EMBEDDING_NORM_EPS = 1e-6
 
 # Consecutive invalid outputs on a non-CPU provider before that provider is
 # demoted for this process (and via the marker file, for future ones).
-_PROVIDER_DEMOTION_AFTER = max(1, int(os.environ.get("RECOGNITION_PROVIDER_DEMOTION_AFTER", "2")))
+_PROVIDER_DEMOTION_AFTER = max(1, int(os.environ.get("RECOGNITION_PROVIDER_DEMOTION_AFTER", "1")))
 
 
 class InvalidEmbeddingError(RuntimeError):
@@ -157,7 +157,25 @@ class EmbeddingModel:
         if not images:
             return np.zeros((0, self.dim), dtype=np.float32)
         chunk = int(os.environ.get("RECOGNITION_EMBED_CHUNK", "2"))
-        outputs = [self._embed_chunk(images[i:i + chunk]) for i in range(0, len(images), chunk)]
+        outputs = []
+        for i in range(0, len(images), chunk):
+            current = images[i:i + chunk]
+            for attempt in range(2):
+                try:
+                    outputs.append(self._embed_chunk(current))
+                    break
+                except InvalidEmbeddingError as error:
+                    # A non-CPU provider that returns NaN/inf is demoted immediately.
+                    # Rebuild the session and retry the same images once on the
+                    # remaining provider (normally CPU). This prevents one bad GPU
+                    # kernel/provider from aborting an entire index build/request.
+                    if (
+                        attempt == 0
+                        and error.provider not in ("", "CPUExecutionProvider", "unknown")
+                        and self._session is None
+                    ):
+                        continue
+                    raise
         return np.concatenate(outputs, axis=0)
 
     def _note_invalid(self, error: InvalidEmbeddingError) -> None:

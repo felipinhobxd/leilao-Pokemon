@@ -372,10 +372,37 @@ async function executeBotCommand(command) {
   throw new Error(`Comando desconhecido: ${command.command}`);
 }
 
+async function processPendingLogout() {
+  const { data, error } = await db.from("whatsapp_bot_workers")
+    .select("logout_requested")
+    .eq("worker_id", WORKER_ID)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data?.logout_requested) return false;
+
+  desiredRunning = false;
+  clearTimeout(restartTimer);
+  restartTimer = null;
+  await stopChild();
+  await removeWhatsAppSession();
+  runtime.qrPayload = null;
+  runtime.qrRender = null;
+  runtime.qrExpiresAt = null;
+  runtime.accountJid = null;
+  runtime.connectedAt = null;
+  await db.from("whatsapp_bot_workers")
+    .update({ logout_requested: false })
+    .eq("worker_id", WORKER_ID);
+  await publishState({ status: "disconnected", lastError: null, sessionActive: false, accountJid: null });
+  console.log("🔐 Logout completo solicitado pelo painel: sessão WhatsApp apagada.");
+  return true;
+}
+
 async function pollBotCommands() {
   if (commandBusy || shuttingDown) return;
   commandBusy = true;
   try {
+    if (await processPendingLogout()) return;
     const command = await claimBotCommand();
     if (!command) return;
     try {

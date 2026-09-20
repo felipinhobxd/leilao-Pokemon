@@ -8,6 +8,7 @@ import {
   mapWithConcurrency,
   shouldUseOptimized,
   sniffImageMime,
+  storageObjectExists,
   uploadCardImageBatch,
   WEBP_OPTIMIZATION_LADDER,
 } from "../lib/card-image.ts";
@@ -182,6 +183,66 @@ test("duplicate content that fails to upload reports every affected item", async
     assert.match(result.failures[0].message, /duplicate boom/);
   } finally {
     globalThis.createImageBitmap = originalCreateImageBitmap;
+  }
+});
+
+test("storageObjectExists: a missing object is a legitimate answer, not a check failure", async () => {
+  // Root cause of the authorize-route 500: storage-js `exists()` resolves a
+  // MISSING object as { data: false, error: StorageApiError(400|404) } — the
+  // error IS the negative answer. `if (existsError) throw` turned every NEW
+  // upload into "Não foi possível concluir a operação.".
+  const cases = [
+    [{ data: true, error: null }, true, "present object reports true"],
+    [{ data: false, error: null }, false, "clean negative reports false"],
+    [{ data: false, error: { status: 404, message: "Not Found" } }, false, "missing via resolved 404 (the reported bug)"],
+    [{ data: false, error: { status: 400, message: "Not found" } }, false, "missing via resolved 400"],
+    [{ data: false, error: { status: 429 } }, "throw", "rate limit is a real failure"],
+    [{ data: false, error: { status: 502 } }, "throw", "5xx is a real failure"],
+    [{ data: false, error: {} }, "throw", "unknown status is a conservative failure"],
+    [{ data: true, error: { status: 404 } }, "throw", "exists+error is inconsistent"],
+  ];
+  for (const [result, expected, label] of cases) {
+    const bucket = { exists: async () => result };
+    if (expected === "throw") {
+      await assert.rejects(() => storageObjectExists(bucket, "cards/x.png"), /card_image_exists_check_failed/, label);
+    } else {
+      assert.equal(await storageObjectExists(bucket, "cards/x.png"), expected, label);
+    }
+  }
+  // A future storage-js that REJECTS with the 404 still means "missing";
+  // anything else that rejects is a genuine failure.
+  const rejecting404 = { exists: async () => { throw Object.assign(new Error("Not Found"), { status: 404 }); } };
+  assert.equal(await storageObjectExists(rejecting404, "cards/x.png"), false, "rejected 404 means missing");
+  const rejectingNetwork = { exists: async () => { throw new TypeError("fetch failed"); } };
+  await assert.rejects(() => storageObjectExists(rejectingNetwork, "cards/x.png"), /card_image_exists_check_failed/, "network rejection is a failure");
+});
+
+test("integration: the INSTALLED supabase-js exists() semantics stay compatible with the authorize probe", async () => {
+  // Runs the real @supabase/supabase-js client against a local HTTP server
+  // that answers HEAD like Supabase Storage does. If a dependency upgrade
+  // ever changes how `exists()` reports missing objects, this catches it
+  // before new uploads start 500ing again.
+  const http = await import("node:http");
+  const server = http.createServer((req, res) => {
+    if (req.method === "HEAD" && req.url.endsWith("/present.png")) {
+      res.writeHead(200, { "content-length": "4", "content-type": "image/png" });
+      res.end();
+      return;
+    }
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end(JSON.stringify({ statusCode: "404", error: "Not found", message: "Object not found." }));
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { createRequire } = await import("node:module");
+    const require = createRequire(import.meta.url);
+    const { createClient } = require("@supabase/supabase-js");
+    const client = createClient(`http://127.0.0.1:${server.address().port}`, "test-key", { auth: { persistSession: false } });
+    const bucket = client.storage.from("card-images");
+    assert.equal(await storageObjectExists(bucket, "cards/present.png"), true, "real client: present object reports true");
+    assert.equal(await storageObjectExists(bucket, "cards/missing.png"), false, "real client: missing object reports false — the authorize 500 stays fixed");
+  } finally {
+    server.close();
   }
 });
 

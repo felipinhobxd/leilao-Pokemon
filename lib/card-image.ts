@@ -99,6 +99,48 @@ export function cardImagePath(sha256: string, mimeType: CardImageMime) {
   return `cards/${sha256}.${extensionByMime[mimeType]}`;
 }
 
+/** Minimal structural type for the Supabase Storage bucket API used below —
+ * keeps the helper testable with plain mocks and free of server-only imports. */
+export type StorageBucketLike = {
+  exists(path: string): Promise<{ data: boolean | null; error: { status?: number | null } | null }>;
+};
+
+/**
+ * Tolerant "does the object exist?" probe for Supabase Storage.
+ *
+ * storage-js `exists()` (verified against @supabase/storage-js 2.116.0) resolves
+ * a MISSING object as { data: false, error } where error.status is 400 or 404 —
+ * the error IS the negative answer, not a failure. Genuine failures (network,
+ * 429, 5xx) reject the promise instead. The authorize route used to treat any
+ * truthy `error` as a check failure, which 500'd every upload of content not
+ * already in the bucket — surfacing in the wizard as "N imagem(ns) falharam
+ * (Não foi possível concluir a operação.)": new photos could never reach
+ * Storage, so the WhatsApp ads always went out as text-only.
+ *
+ * Returns true when the object exists, false when it is legitimately absent,
+ * and throws card_image_exists_check_failed when the question could not be
+ * answered. A future storage-js that REJECTS with the 404 instead of resolving
+ * with it is tolerated too.
+ */
+export async function storageObjectExists(bucket: StorageBucketLike, path: string): Promise<boolean> {
+  const isMissingStatus = (status: unknown) => status === 400 || status === 404;
+  let result: Awaited<ReturnType<StorageBucketLike["exists"]>>;
+  try {
+    result = await bucket.exists(path);
+  } catch (thrown) {
+    if (isMissingStatus((thrown as { status?: number } | null)?.status)) return false;
+    throw new Error("card_image_exists_check_failed");
+  }
+  const { data, error } = result;
+  if (data) {
+    if (error) throw new Error("card_image_exists_check_failed");
+    return true;
+  }
+  if (!error) return false;
+  if (isMissingStatus(error.status)) return false;
+  throw new Error("card_image_exists_check_failed");
+}
+
 export function shouldUseOptimized(originalBytes: number, optimizedBytes: number, originalMaxDimension: number) {
   if (!Number.isFinite(optimizedBytes) || optimizedBytes <= 0) return false;
   if (originalMaxDimension > CARD_IMAGE_MAX_DIMENSION) return optimizedBytes < originalBytes;

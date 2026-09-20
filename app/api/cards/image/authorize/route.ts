@@ -1,5 +1,5 @@
 import { authorize, failure, HttpError } from "@/lib/backend";
-import { CARD_IMAGE_BUCKET, CARD_IMAGE_MAX_STORED_BYTES, cardImagePath, type CardImageMime } from "@/lib/card-image";
+import { CARD_IMAGE_BUCKET, CARD_IMAGE_MAX_STORED_BYTES, cardImagePath, storageObjectExists, type CardImageMime } from "@/lib/card-image";
 import { DEFAULT_RATE_LIMIT, DEFAULT_RATE_WINDOW_SECONDS, enforceUserRateLimit } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
@@ -68,8 +68,13 @@ export async function POST(request: Request) {
     const images = await Promise.all(descriptors.map(async descriptor => {
       const path = cardImagePath(descriptor.sha256, descriptor.mimeType);
       const bucket = db.storage.from(CARD_IMAGE_BUCKET);
-      const { data: exists, error: existsError } = await bucket.exists(path);
-      if (existsError) throw new Error("card_image_exists_check_failed");
+      // storage-js resolves a MISSING object as { data: false, error } with
+      // error.status 400/404 — the error IS the negative answer, not a failure
+      // (verified against @supabase/storage-js 2.116.0). The previous
+      // `if (existsError) throw` 500'd every NEW upload with the generic
+      // "Não foi possível concluir a operação." — new photos never reached
+      // Storage and the WhatsApp ads went out as text-only.
+      const exists = await storageObjectExists(bucket, path);
       const { data: publicData } = bucket.getPublicUrl(path);
       const url = publicData.publicUrl;
       if (!url?.startsWith("https://")) throw new Error("card_image_url_failed");

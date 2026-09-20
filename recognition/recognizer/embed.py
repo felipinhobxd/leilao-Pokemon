@@ -37,7 +37,7 @@ EMBEDDING_NORM_EPS = 1e-6
 
 # Consecutive invalid outputs on a non-CPU provider before that provider is
 # demoted for this process (and via the marker file, for future ones).
-_PROVIDER_DEMOTION_AFTER = max(1, int(os.environ.get("RECOGNITION_PROVIDER_DEMOTION_AFTER", "1")))
+_PROVIDER_DEMOTION_AFTER = max(1, int(os.environ.get("RECOGNITION_PROVIDER_DEMOTION_AFTER", "2")))
 
 
 class InvalidEmbeddingError(RuntimeError):
@@ -157,88 +157,8 @@ class EmbeddingModel:
         if not images:
             return np.zeros((0, self.dim), dtype=np.float32)
         chunk = int(os.environ.get("RECOGNITION_EMBED_CHUNK", "2"))
-        outputs = []
-        for i in range(0, len(images), chunk):
-            current = images[i:i + chunk]
-            for attempt in range(2):
-                try:
-                    outputs.append(self._embed_chunk(current))
-                    break
-                except InvalidEmbeddingError as error:
-                    # A non-CPU provider that returns NaN/inf is demoted immediately.
-                    # Rebuild the session and retry the same images once on the
-                    # remaining provider (normally CPU). This prevents one bad GPU
-                    # kernel/provider from aborting an entire index build/request.
-                    if (
-                        attempt == 0
-                        and error.provider not in ("", "CPUExecutionProvider", "unknown")
-                        and self._session is None
-                    ):
-                        continue
-                    raise
+        outputs = [self._embed_chunk(images[i:i + chunk]) for i in range(0, len(images), chunk)]
         return np.concatenate(outputs, axis=0)
-
-    def _note_invalid(self, error: InvalidEmbeddingError) -> None:
-        """Count the failure and demote a repeatedly-invalid provider.
-
-        Demotion: rebuild the session on CPU for the rest of this process and
-        write the marker file so future processes skip the provider in `auto`
-        mode too. CPU itself is never demoted (there is nowhere left to go)."""
-        self.invalid_outputs += 1
-        provider = self.provider
-        if provider in ("", "CPUExecutionProvider", "unknown"):
-            return
-        if self.invalid_outputs >= _PROVIDER_DEMOTION_AFTER:
-            reason = f"{self.name}: {self.invalid_outputs} invalid outputs (last: {error.detail.get('reason', 'unknown')})"
-            demote_provider(provider, reason)
-            self.demotions.append({"model": self.name, "from": provider,
-                                   "to": "CPUExecutionProvider", "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
-            with self._lock:
-                if self._session is not None and self._session.provider == provider:
-                    self._session = None  # next _ensure() rebuilds on the (now filtered) provider list
-
-    def _embed_chunk(self, images: list[np.ndarray]) -> np.ndarray:
-        session = self._ensure()
-        provider = session.provider
-        batch = np.concatenate([self._preprocess(img) for img in images], axis=0)
-        if self.kind in ("dinov2", "dinov3"):
-            outs = session.run(["last_hidden_state"], {"pixel_values": batch})
-            tokens = outs[0]
-            embedding = tokens[:, 0, :]  # CLS token
-        else:  # siglip2 full multimodal: feed dummy text, use image_embeds
-            dummy_ids = np.zeros((1, 1), dtype=np.int64)
-            outs = session.run(["image_embeds"], {"input_ids": dummy_ids, "pixel_values": batch})
-            embedding = outs[0]
-        embedding = np.asarray(embedding, dtype=np.float32)
-        # --- numerical validation (P0): garbage must never become a score ---
-        if embedding.ndim != 2 or embedding.shape[0] != len(images) or embedding.shape[1] < 1:
-            error = InvalidEmbeddingError("model-output", self.name, provider,
-                                          {"reason": "bad-shape", **_array_stats(embedding),
-                                           "inputShape": tuple(int(v) for v in batch.shape)})
-            self._note_invalid(error)
-            raise error
-        if not np.isfinite(embedding).all():
-            error = InvalidEmbeddingError("model-output", self.name, provider,
-                                          {"reason": "nan-or-inf", **_array_stats(embedding),
-                                           "inputShape": tuple(int(v) for v in batch.shape)})
-            self._note_invalid(error)
-            raise error
-        with np.errstate(invalid="ignore", divide="ignore"):
-            norms = np.linalg.norm(embedding, axis=1, keepdims=True)
-        if not np.isfinite(norms).all() or float(norms.min()) <= EMBEDDING_NORM_EPS:
-            error = InvalidEmbeddingError("normalization", self.name, provider,
-                                          {"reason": "zero-or-invalid-norm", **_array_stats(embedding),
-                                           "minNorm": float(norms.min()) if norms.size else None,
-                                           "maxNorm": float(norms.max()) if norms.size else None})
-            self._note_invalid(error)
-            raise error
-        normalized = (embedding / norms).astype(np.float32)
-        if not np.isfinite(normalized).all():
-            error = InvalidEmbeddingError("normalization", self.name, provider,
-                                          {"reason": "post-normalize-nan-or-inf", **_array_stats(normalized)})
-            self._note_invalid(error)
-            raise error
-        return normalized
 
     def embed_one(self, image: np.ndarray) -> np.ndarray:
         return self.embed([image])[0]

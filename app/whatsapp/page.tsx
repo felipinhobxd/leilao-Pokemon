@@ -61,14 +61,13 @@ export default function WhatsAppPage(){
   if(!ready)return <main className="shell"><p>Carregando…</p></main>;
   if(!session)return <main className="shell"><section className="panel"><h1>Central WhatsApp</h1><p className="muted">Entre primeiro no painel administrativo.</p><Link href="/">Voltar</Link></section></main>;
   const worker=bot.worker && bot.worker.qrExpiresAt && Date.parse(bot.worker.qrExpiresAt)<=now?{...bot.worker,qrText:null}:bot.worker; const online=bot.online&&Boolean(worker?.heartbeatAt&&now-Date.parse(worker.heartbeatAt)<=35000); const connected=Boolean(online&&worker?.status==="connected");
-  // Sem WhatsApp conectado pelo terminal (bot no CMD) a área não mostra nada:
-  // nem grupos antigos do banco, nem fila, nem detalhes do worker — apenas o
-  // aviso de que é preciso conectar. O polling de status (5s) faz o conteúdo
-  // completo aparecer sozinho assim que a conexão for detectada.
-  if(!connected)return <main className="shell">
-    <header className="topbar"><div><p className="eyebrow">CENTRAL DO BOT</p><h1>WhatsApp</h1><p className="muted">Grupos e publicações aparecem somente com o WhatsApp conectado pelo terminal (CMD).</p></div><div className="actions"><Link className="button-link" href="/auctions/new">＋ Novo leilão</Link><Link className="button-link" href="/">← Painel</Link></div></header>
+  // Em waiting_qr, o worker está online e já publicou o QR no Supabase.
+  // A Central precisa permanecer visível para o usuário conseguir escanear o QR
+  // pelo próprio site, sem abrir um terminal no PC.
+  if(!connected && worker?.status !== "waiting_qr")return <main className="shell">
+    <header className="topbar"><div><p className="eyebrow">CENTRAL DO BOT</p><h1>WhatsApp</h1><p className="muted">O PC/worker precisa estar online para controlar o WhatsApp.</p></div><div className="actions"><Link className="button-link" href="/auctions/new">＋ Novo leilão</Link><Link className="button-link" href="/">← Painel</Link></div></header>
     {error&&<p className="alert" role="alert">{error}</p>}
-    <section className="panel"><div className="panel-title"><div><p className="eyebrow">AGUARDANDO CONEXÃO</p><h2>Nenhum WhatsApp conectado</h2></div></div><p className="muted">Conecte o WhatsApp pelo terminal (CMD) executando o bot. Assim que a conexão for detectada, grupos e fila de publicações aparecem aqui automaticamente.</p></section>
+    <section className="panel"><div className="panel-title"><div><p className="eyebrow">AGUARDANDO CONEXÃO</p><h2>Nenhum WhatsApp conectado</h2></div></div><p className="muted">Inicie o worker no PC. Assim que ele ficar online, esta página atualizará automaticamente.</p></section>
   </main>;
   const dot=connected?"🟢":online?"🟡":"🔴"; const selected=groups.find(g=>g.id===defaultGroupId);
   return <main className="shell">
@@ -78,7 +77,7 @@ export default function WhatsAppPage(){
       <div className="stats-grid"><div className="stat-card"><span>Conta</span><strong>{worker?.accountJid??"—"}</strong></div><div className="stat-card"><span>Sessão</span><strong>{worker?.sessionActive?"Ativa":"Não autenticada"}</strong></div><div className="stat-card"><span>Última atividade</span><strong>{when(worker?.heartbeatAt)}</strong></div><div className="stat-card"><span>Grupos sincronizados</span><strong>{when(worker?.groupsSyncedAt)}</strong></div></div>
       {worker?.lastError&&<p className="alert">{worker.lastError}</p>}
       {bot.canControl&&worker&&<div className="actions"><button disabled={busy||!online} onClick={()=>void command("reconnect")}>Reconectar</button><button disabled={busy||!online} onClick={()=>void command("disconnect")}>Desconectar</button><button disabled={busy||!connected} onClick={()=>void command("sync_groups")}>Atualizar grupos</button></div>}
-      {worker?.qrText&&bot.canControl&&<div style={{marginTop:18}}><h2>QR CODE</h2><p className="muted">Expira em {when(worker.qrExpiresAt)}.</p><div style={{overflowX:"auto",marginTop:12,borderRadius:14,background:"#000",padding:18,width:"fit-content",maxWidth:"100%"}}><pre style={{margin:0,color:"#fff",fontFamily:"Consolas, monospace",fontSize:11,lineHeight:.9,whiteSpace:"pre"}}>{worker.qrText}</pre></div></div>}
+      {worker?.qrText&&bot.canControl&&<div style={{marginTop:18}}><h2>QR CODE</h2><p className="muted">Escaneie este QR pelo WhatsApp no celular: <strong>Configurações → Aparelhos conectados → Conectar um aparelho</strong>. Expira em {when(worker.qrExpiresAt)}.</p><div style={{overflowX:"auto",marginTop:12,borderRadius:14,background:"#000",padding:18,width:"fit-content",maxWidth:"100%"}}><pre style={{margin:0,color:"#fff",fontFamily:"Consolas, monospace",fontSize:11,lineHeight:.9,whiteSpace:"pre"}}>{worker.qrText}</pre></div></div>}
     </section>
     <section className="panel"><div className="panel-title"><div><p className="eyebrow">PUBLICAÇÃO</p><h2>Grupo padrão</h2><p className="muted">Novos leilões usam este grupo por padrão. Você também pode escolher outro durante a criação.</p></div><button disabled={busy||!connected} onClick={()=>void command("sync_groups")}>Atualizar grupos</button></div>
       <label>Grupo<select value={defaultGroupId} onChange={e=>void setDefault(e.target.value)} disabled={busy||!groups.length}><option value="">Selecione…</option>{groups.map(g=><option key={g.id} value={g.id}>{g.name}</option>)}</select></label>

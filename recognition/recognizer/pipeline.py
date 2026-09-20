@@ -207,6 +207,27 @@ def candidate_from_record(record) -> "Candidate":
     )
 
 
+def sanitize_index(matrix: np.ndarray, ids: list[str]) -> tuple[np.ndarray, list[str], int]:
+    """Drop non-finite rows (NaN/inf) from an index, keeping ids aligned.
+
+    A NaN/inf row poisons every query that touches it (a NaN similarity wins
+    argmax silently), so such rows must never take part in retrieval. They come
+    from corrupt scans (and from some GPU/driver float paths); excluding the
+    affected CARDS from retrieval is honest — they cannot be matched reliably
+    anyway — and keeps the server serving the remaining ~99% of the catalog
+    instead of crash-looping at startup (reported live: 171 NaN rows kept the
+    recognition service restarting forever).
+    """
+    if matrix.size == 0:
+        return matrix, ids, 0
+    finite_rows = np.isfinite(matrix).all(axis=1)
+    if finite_rows.all():
+        return matrix, ids, 0
+    dropped = int((~finite_rows).sum())
+    kept_ids = [cid for cid, ok in zip(ids, finite_rows) if ok]
+    return matrix[finite_rows], kept_ids, dropped
+
+
 class VisualIndex:
     """In-memory exact cosine index (catalog is ~10-80k cards: brute force wins)."""
 
@@ -219,13 +240,22 @@ class VisualIndex:
         self.matrix = data["matrix"].astype(np.float32)
         self.ids = list(map(str, data["ids"]))
         # A NaN/inf row in the index poisons EVERY query that touches it (a
-        # NaN similarity wins argmax silently). Fail fast at load with an
-        # actionable message instead of serving garbage rankings.
-        if self.matrix.size and not np.isfinite(self.matrix).all():
-            bad = int((~np.isfinite(self.matrix)).any(axis=1).sum())
+        # NaN similarity wins argmax silently). Refusing to start here would
+        # crash-loop the whole recognition service (one bad row = no service
+        # at all), so the affected rows are EXCLUDED from retrieval and a loud
+        # warning tells the operator how to recover full coverage.
+        self.matrix, self.ids, dropped = sanitize_index(self.matrix, self.ids)
+        if dropped:
+            print(
+                f"[index] AVISO: {dropped} linha(s) com NaN/inf foram excluídas do índice "
+                f"'{embedding_name}' ({len(self.ids)} cartas utilizáveis). Essas cartas não "
+                f"participam do reconhecimento até reconstruir o índice:\n"
+                f"    python scripts/build_index.py --model {embedding_name} --only-missing",
+                flush=True)
+        if not self.ids:
             raise RuntimeError(
-                f"index '{embedding_name}' contains {bad} non-finite row(s) (NaN/inf) — "
-                f"rebuild it with: python scripts/build_index.py --model {embedding_name}")
+                f"index '{embedding_name}' has no usable rows — rebuild it with: "
+                f"python scripts/build_index.py --model {embedding_name}")
         self.id_to_row = {cid: i for i, cid in enumerate(self.ids)}
         self.model = get_model(embedding_name)
 

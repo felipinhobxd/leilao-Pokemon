@@ -7,6 +7,7 @@ import type { Command } from "@/lib/commands";
 import type { Row, Snapshot } from "@/lib/backend";
 import { money } from "@/lib/domain";
 import { brasiliaInputToIso, formatBrasiliaTime, toBrasiliaInput } from "@/lib/brasilia-time";
+import { isPurgeFinalPhrase, isPurgeStep1 } from "@/lib/purge";
 
 type Editor = { kind: "CARD" | "PARTICIPANT" | "AUCTION"; row?: Row };
 type DispatchStats = { successRate: number | null; sent: number; failed: number; pending: number; windowDays: number } | null;
@@ -41,6 +42,9 @@ export default function Dashboard() {
   const [editor, setEditor] = useState<Editor | null>(null);
   const [retry, setRetry] = useState<Command | null>(null);
   const [clock, setClock] = useState(Date.now());
+  const [purgeOpen, setPurgeOpen] = useState(false);
+  const [purgeStep1, setPurgeStep1] = useState("");
+  const [purgeStep2, setPurgeStep2] = useState("");
   const revision = useRef(0);
   const fullLoadedAt = useRef(0);
   const refreshPending = useRef<Promise<void> | null>(null);
@@ -48,7 +52,9 @@ export default function Dashboard() {
   const accessToken = useRef<string | null>(null);
   const mutationLock = useRef(false);
   const dialog = useRef<HTMLDialogElement>(null);
+  const purgeDialog = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (editor && dialog.current && !dialog.current.open) dialog.current.showModal(); }, [editor]);
+  useEffect(() => { if (purgeOpen && purgeDialog.current && !purgeDialog.current.open) purgeDialog.current.showModal(); }, [purgeOpen]);
   useEffect(() => { const timer = setInterval(() => setClock(Date.now()), 1000); return () => clearInterval(timer); }, []);
   useEffect(() => {
     const { data: subscription } = db.auth.onAuthStateChange((_event, next) => {
@@ -129,12 +135,26 @@ export default function Dashboard() {
       const url = URL.createObjectURL(await response.blob()); const a = document.createElement("a"); a.href = url; a.download = "leilao-pokemon.xlsx"; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (e) { setError(e instanceof Error ? e.message : "Falha na exportação."); } finally { setBusy(false); }
   }
+  async function purgeEverything() {
+    if (mutationLock.current) return;
+    mutationLock.current = true; setBusy(true); setError(""); setNotice("");
+    try {
+      const response = await request("/api/admin/purge", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: purgeStep2 }) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error);
+      setPurgeOpen(false);
+      const deleted = body.result?.deleted ?? {};
+      setNotice(`Base zerada: ${deleted.auctions ?? 0} leilão(ões), ${deleted.cards ?? 0} carta(s), ${deleted.participants ?? 0} participante(s) removidos. A numeração de lotes volta ao #1. Se houver publicações em andamento, reinicie o bot no terminal.`);
+      await refresh();
+    } catch (e) { setError(e instanceof Error ? e.message : "Falha ao excluir tudo."); }
+    finally { mutationLock.current = false; setBusy(false); }
+  }
   const writable = role !== "viewer" && !busy && !retry;
   const auctions = data ? [...data.auctions].sort((a,b) => str(b,"created_at").localeCompare(str(a,"created_at"))) : [];
   const auction = auctions.find(a => a.id === selected) ?? auctions.find(a => a.status === "open") ?? auctions[0];
   const card = data?.cards.find(c => c.id === auction?.card_id);
   const participant = (id: unknown) => data?.participants.find(p => p.id === id);
-  const bids = (data?.bids.filter(b => b.auction_id === auction?.id && b.status === "active" && participant(b.participant_id)?.status === "active" && (!participant(b.participant_id)?.suspension_until || Date.parse(str(participant(b.participant_id),"suspension_until")) <= Date.now())) ?? []).sort((a,b) => Number(b.amount)-Number(a.amount) || str(a,"processed_at").localeCompare(str(b,"processed_at")) || Number(a.confirmation_order)-Number(b.confirmation_order));
+  const bids = (data?.bids.filter(b => b.auction_id === auction?.id && b.status === "active" && participant(b.participant_id)?.status === "active" && (!participant(b.participant_id)?.suspension_until || Date.parse(str(participant(b.participant_id),"suspension_until")) <= Date.now())) ?? []).sort((a,b) => Number(b.amount)-Number(a.amount) || (str(a,"whatsapp_event_at")||str(a,"processed_at")).localeCompare(str(b,"whatsapp_event_at")||str(b,"processed_at")) || str(a,"processed_at").localeCompare(str(b,"processed_at")) || Number(a.confirmation_order)-Number(b.confirmation_order));
   const winner = auction?.winner_participant_id ? participant(auction.winner_participant_id) : participant(bids[0]?.participant_id);
   const amount = auction?.status === "sold" ? auction.final_price : bids[0]?.amount;
   const participantCount = new Set(bids.map(b=>String(b.participant_id))).size;
@@ -177,11 +197,18 @@ export default function Dashboard() {
       <section className="panel"><div className="panel-title"><h2>Cartas</h2><button disabled={!writable} onClick={()=>setEditor({kind:"CARD"})}>Nova carta</button></div><div className="table-wrap"><table><thead><tr><th>Carta</th><th>Coleção</th><th>Inicial / ARREMATE</th><th>Status</th><th>Ações</th></tr></thead><tbody>{data.cards.filter(c=>c.status!=="archived").map(c=><tr key={str(c,"id")}><td>{str(c,"name")}</td><td>{str(c,"collection")} {str(c,"card_number")}</td><td>{price(c.starting_price)} / {price(c.buyout_price)}</td><td>{labelStatus[str(c,"status")]}</td><td><div className="actions"><button disabled={!writable||c.status!=="available"} onClick={()=>setEditor({kind:"CARD",row:c})}>Editar</button><button disabled={!writable||c.status!=="available"} onClick={()=>command("AUCTION_CREATE",{data:{card_id:c.id,scheduled_end_at:null}})}>Criar leilão</button><button disabled={!writable||c.status!=="available"} onClick={()=>{if(confirm("Arquivar esta carta?"))command("CARD_DELETE",{id:str(c,"id")});}}>Arquivar</button></div></td></tr>)}</tbody></table></div>{!data.cards.length&&<p className="muted">Nenhuma carta cadastrada.</p>}</section>
       <section className="panel"><div className="panel-title"><div><h2>Participantes</h2><p className="muted">Cadastro automático pelo grupo e pelos votos do WhatsApp.</p></div></div><div className="table-wrap"><table><thead><tr><th>Nome</th><th>Telefone / WhatsApp</th><th>Status</th><th>Ações</th></tr></thead><tbody>{data.participants.map(p=><tr key={str(p,"id")}><td>{str(p,"display_name")}</td><td>{str(p,"phone_e164") || str(p,"whatsapp_id")}</td><td>{labelStatus[str(p,"status")]}</td><td><div className="actions"><button disabled={!writable} onClick={()=>setEditor({kind:"PARTICIPANT",row:p})}>Editar</button><button disabled={!writable||p.status==="banned"} onClick={()=>{if(confirm("Bloquear participante, preservando o histórico?"))command("PARTICIPANT_DELETE",{id:str(p,"id")});}}>Remover</button></div></td></tr>)}</tbody></table></div></section>
       <section className="panel"><h2>Compras</h2><div className="table-wrap"><table><thead><tr><th>Carta</th><th>Vencedor</th><th>Telefone / WhatsApp</th><th>Valor</th><th>Tipo</th><th>Status</th></tr></thead><tbody>{data.purchases.map(p=>{const person=participant(p.participant_id);const soldAuction=data.auctions.find(a=>a.id===p.auction_id);return <tr key={str(p,"id")}><td>{str(data.cards.find(c=>c.id===p.card_id),"name")}</td><td>{str(person,"display_name")}</td><td>{str(person,"phone_e164") || str(person,"whatsapp_id")}</td><td>{price(p.amount)}</td><td>{saleType(soldAuction?.win_type)}</td><td>{str(p,"status")}</td></tr>;})}</tbody></table></div></section>
+      {role === "admin" && <section className="panel danger-zone" id="danger-zone"><div className="panel-title"><div><p className="eyebrow">ZONA DE RISCO</p><h2>Recomeçar do zero</h2><p className="muted">O botão “Excluir TUDO” apaga todos os leilões, lances, vencedores, compras, cartas, participantes e disparos — inclusive o histórico que alimenta o Excel. Sua conta, os grupos do WhatsApp e a memória de reconhecimento são preservados, e a numeração de lotes volta ao #1.</p></div><div className="actions"><button className="danger-btn" disabled={!writable} onClick={() => { setPurgeStep1(""); setPurgeStep2(""); setPurgeOpen(true); }}>🗑️ Excluir TUDO</button></div></div></section>}
     </>}
     {editor && <dialog ref={dialog} className="panel modal" aria-label="Cadastro" onCancel={e => { if (busy) e.preventDefault(); else setEditor(null); }}><h2>{editor.row?"Editar":"Novo cadastro"}</h2><form className="form-grid" onSubmit={saveEditor}>
       {editor.kind==="CARD"&&<>{input("name","Nome","text",true)}{input("collection","Coleção")}{input("card_number","Número")}{input("image_url","URL da imagem (HTTPS)","url")}{input("starting_price","Preço inicial","number",true)}{input("buyout_price","ARREMATE (opcional)","number")}{input("notes","Observações")}</>}
       {editor.kind==="PARTICIPANT"&&editor.row&&<>{input("display_name","Nome","text",true)}{input("whatsapp_id","Identificador WhatsApp","text",true)}{input("phone_e164","Telefone internacional")}{input("notes","Observações")}<label>Status<select name="status" defaultValue={str(editor.row,"status")||"active"}><option value="active">Ativo</option><option value="suspended">Suspenso</option><option value="banned">Bloqueado</option></select></label></>}
       {editor.kind==="AUCTION"&&<>{input("starting_price","Preço inicial","number",true)}{input("buyout_price","ARREMATE (opcional)","number")}{input("scheduled_end_at","Prazo (horário de Brasília)","datetime-local")}</>}
       <div className="actions"><button disabled={!writable}>Salvar</button><button type="button" disabled={busy} onClick={()=>setEditor(null)}>Cancelar</button></div></form></dialog>}
+    {purgeOpen && <dialog ref={purgeDialog} className="panel modal" aria-label="Excluir tudo" onCancel={event => { if (busy) event.preventDefault(); else setPurgeOpen(false); }}><h2>Excluir TUDO</h2><p className="muted">Apaga definitivamente leilões, lances, vencedores, compras, cartas, participantes, disparos e o histórico do Excel. Não há como desfazer. A conta administrativa e a configuração do WhatsApp são mantidas.</p>
+      <form className="form-grid" onSubmit={event => { event.preventDefault(); void purgeEverything(); }}>
+        <label>1ª confirmação — digite <strong>excluir tudo</strong><input value={purgeStep1} onChange={event => setPurgeStep1(event.target.value)} placeholder="excluir tudo" autoComplete="off" spellCheck={false} /></label>
+        {isPurgeStep1(purgeStep1) && <label>2ª confirmação — digite <strong>quero excluir mesmo</strong><input value={purgeStep2} onChange={event => setPurgeStep2(event.target.value)} placeholder="quero excluir mesmo" autoComplete="off" spellCheck={false} /></label>}
+        <div className="actions"><button className="danger-btn" type="submit" disabled={!isPurgeStep1(purgeStep1) || !isPurgeFinalPhrase(purgeStep2) || busy}>{busy ? "Excluindo…" : "Apagar tudo definitivamente"}</button><button type="button" disabled={busy} onClick={() => setPurgeOpen(false)}>Cancelar</button></div>
+      </form></dialog>}
   </main>;
 }

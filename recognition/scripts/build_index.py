@@ -36,7 +36,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from recognizer.catalog import ensure_scan, init_db, load_cards
 from recognizer.config import EMBEDDINGS_DIR
-from recognizer.embed import get_model
 
 _SENTINEL = object()
 
@@ -68,7 +67,9 @@ def _checkpoint(out_path: str, matrix: np.ndarray, ids: list[str], next_id: int,
 def _load_checkpoint(out_path: str) -> tuple[list[str], dict[str, int], np.ndarray | None]:
     """Load + VALIDATE an existing index for --only-missing. Returns
     (ids, existing, matrix_prefix). A checkpoint whose shape disagrees with
-    its id list (interrupted/corrupt write) is discarded, not trusted."""
+    its id list (interrupted/corrupt write) is discarded, not trusted.
+    Non-finite rows (NaN/inf, e.g. from corrupt scans or a GPU float quirk)
+    are dropped so a bad row can never survive into the rebuilt index."""
     data = np.load(out_path, allow_pickle=True)
     ids = list(map(str, data["ids"]))
     matrix = data["matrix"]
@@ -77,10 +78,20 @@ def _load_checkpoint(out_path: str) -> tuple[list[str], dict[str, int], np.ndarr
         print(f"[index] checkpoint INVALID (rows={matrix.shape[0]} ids={len(ids)} next_id={next_id}) — discarding")
         keep = min(matrix.shape[0], len(ids), next_id)
         return ids[:keep], {cid: i for i, cid in enumerate(ids[:keep])}, matrix[:keep]
+    if matrix.size and not np.isfinite(matrix).all():
+        finite_rows = np.isfinite(matrix).all(axis=1)
+        bad = int((~finite_rows).sum())
+        ids = [cid for cid, ok in zip(ids, finite_rows) if ok]
+        matrix = matrix[finite_rows]
+        print(f"[index] checkpoint had {bad} non-finite row(s) (NaN/inf) — dropped; they will be re-embedded")
     return ids, {cid: i for i, cid in enumerate(ids)}, matrix
 
 
 def main() -> None:
+    # Deferred: importing the model loader pulls in onnxruntime, which tests
+    # for the checkpoint logic must not require.
+    from recognizer.embed import get_model
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="dinov3-vits16")
     parser.add_argument("--languages", default="pt-BR,en,es,ja")
@@ -114,6 +125,7 @@ def main() -> None:
     timing = {"download": 0.0, "decode": 0.0, "inference": 0.0, "checkpoint": 0.0}
     processed = 0
     downloaded = 0
+    skipped_nonfinite = 0
     next_id = len(existing)
     # Last periodic-checkpoint position. The old `processed % 500 == 0` test
     # NEVER fired with batch=8 (processed jumps 8k and skips 500 — the only
@@ -157,13 +169,20 @@ def main() -> None:
     worker.start()
 
     def flush(batch: list[tuple[str, np.ndarray]]) -> None:
-        nonlocal processed, next_id, last_checkpoint
+        nonlocal processed, next_id, last_checkpoint, skipped_nonfinite
         if not batch:
             return
         t0 = time.perf_counter()
         embeddings = model.embed([image for _, image in batch])
         timing["inference"] += time.perf_counter() - t0
-        for (key, _), embedding in zip(batch, embeddings):
+        # A NaN/inf row baked into the index poisons retrieval AND crashes the
+        # server's load-time guard — corrupt scans (or GPU float quirks) must
+        # simply not be indexed.
+        finite_rows = np.isfinite(embeddings).all(axis=1)
+        skipped_nonfinite += int((~finite_rows).sum())
+        for (key, _), embedding, ok in zip(batch, embeddings, finite_rows):
+            if not ok:
+                continue
             matrix[next_id] = embedding
             ids.append(key)
             next_id += 1
@@ -189,6 +208,9 @@ def main() -> None:
     elapsed = time.time() - started
     print(f"[index] {args.model}: {len(ids)} cards, dim={matrix.shape[1]}, "
           f"{size_mb:.1f} MB, {elapsed:.1f}s -> {out_path}")
+    if skipped_nonfinite:
+        print(f"[index] {skipped_nonfinite} embedding(s) não finito(s) (NaN/inf) IGNORADO(S) — "
+              f"scans corrompidos ficam fora do índice e do reconhecimento")
     per = lambda seconds: round(seconds * 1000 / max(1, downloaded), 1)
     print(f"[index] profiling: download {per(timing['download'])} ms/card · "
           f"decode {per(timing['decode'])} ms/card · "

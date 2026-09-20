@@ -506,11 +506,14 @@ async function saveVoteState(previous, values) {
 }
 
 async function logCurrentLeader(auctionId) {
+  // Same key the database crowns winners with: amount desc, then TRUE vote
+  // time (whatsapp_event_at) — a tie at the same price leads whoever bid first.
   const { data: bids, error } = await db.from("bids")
-    .select("participant_id,amount,processed_at,confirmation_order")
+    .select("participant_id,amount,processed_at,confirmation_order,whatsapp_event_at")
     .eq("auction_id", auctionId)
     .eq("status", "active")
     .order("amount", { ascending: false })
+    .order("whatsapp_event_at", { ascending: true, nullsFirst: true })
     .order("processed_at", { ascending: true })
     .order("confirmation_order", { ascending: true })
     .limit(20);
@@ -724,8 +727,18 @@ async function finalizeDueAuctions() {
         const { data: card } = await db.from("cards").select("name").eq("id", auction.card_id).single();
         if (finalAuction?.winner_participant_id) {
           const { data: winner } = await db.from("participants").select("display_name,phone_e164").eq("id", finalAuction.winner_participant_id).single();
-          console.log(`⏰ Leilão encerrado: ${winner?.display_name ?? "Participante"} venceu por ${brl(finalAuction.final_price)}`);
-          await sock.sendMessage(auction.whatsapp_group_id, { text: `🏁 *Leilão encerrado!*\n\n🃏 ${card?.name ?? "Carta"}\n👤 Vencedor: ${winner?.display_name ?? "Participante"}\n💰 ${brl(finalAuction.final_price)}` });
+          // Tie transparency: when 2+ active bids share the winning amount,
+          // the database crowns the EARLIEST vote — say so in the announcement.
+          const { count: tiedAtPrice } = await db.from("bids")
+            .select("id", { count: "exact", head: true })
+            .eq("auction_id", auction.id)
+            .eq("status", "active")
+            .eq("amount", finalAuction.final_price);
+          const tieNote = finalAuction.win_type === "highest_bid" && (tiedAtPrice ?? 0) > 1
+            ? "\n⚖️ Empate no valor: venceu quem deu o lance primeiro."
+            : "";
+          console.log(`⏰ Leilão encerrado: ${winner?.display_name ?? "Participante"} venceu por ${brl(finalAuction.final_price)}${(tiedAtPrice ?? 0) > 1 ? " (empate: lance mais antigo)" : ""}`);
+          await sock.sendMessage(auction.whatsapp_group_id, { text: `🏁 *Leilão encerrado!*\n\n🃏 ${card?.name ?? "Carta"}\n👤 Vencedor: ${winner?.display_name ?? "Participante"}\n💰 ${brl(finalAuction.final_price)}${tieNote}` });
         } else {
           console.log("⏰ Leilão encerrado: sem comprador");
           await sock.sendMessage(auction.whatsapp_group_id, { text: `🏁 Leilão de *${card?.name ?? "carta"}* encerrado sem lances válidos.` });

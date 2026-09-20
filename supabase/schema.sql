@@ -211,7 +211,7 @@ begin
     perform 1 from public.participants where id in(select participant_id from public.bids where auction_id=aid and status='active') order by id for share;
     select bids.* into b from public.bids bids join public.participants pp on pp.id=bids.participant_id
      where bids.auction_id=aid and bids.status='active' and pp.status='active' and (pp.suspension_until is null or pp.suspension_until<=stamp)
-     order by bids.amount desc,bids.processed_at,bids.confirmation_order limit 1;
+     order by bids.amount desc,coalesce(bids.whatsapp_event_at,bids.processed_at),bids.processed_at,bids.confirmation_order limit 1;
     if not found then
      update public.auctions set status='closed',ended_at=stamp,updated_at=stamp where id=aid returning * into a;
      update public.cards set status='available',updated_at=stamp where id=a.card_id;

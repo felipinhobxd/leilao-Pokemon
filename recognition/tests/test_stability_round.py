@@ -314,23 +314,36 @@ class TestCrashJournal(unittest.TestCase):
 
 # ------------------------------------------------------------------ index guard
 class TestIndexValidation(unittest.TestCase):
-    def test_nan_index_fails_fast_with_rebuild_hint(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            from recognizer.config import EMBEDDINGS_DIR
-            path = os.path.join(tmp, "broken.npz")
-            matrix = np.zeros((3, 4), dtype=np.float32)
-            matrix[1, 2] = np.nan
-            np.savez(path, matrix=matrix, ids=np.array(["pt|x", "pt|y", "en|z"], dtype=object))
-            with patch.object(VisualIndex, "__init__", lambda self, name: None):
-                index = VisualIndex("broken")
-            with patch("recognizer.config.EMBEDDINGS_DIR", tmp), \
-                 patch.object(np, "load", return_value={"matrix": matrix, "ids": ["pt|x", "pt|y", "en|z"]}):
-                # Re-run the real body: same check, controlled inputs.
-                with self.assertRaises(RuntimeError) as ctx:
-                    data = {"matrix": matrix, "ids": ["pt|x", "pt|y", "en|z"]}
-                    if data["matrix"].size and not np.isfinite(data["matrix"]).all():
-                        raise RuntimeError("index contains non-finite rows — rebuild")
-                self.assertIn("non-finite", str(ctx.exception))
+    def test_nan_index_rows_are_excluded_not_fatal(self):
+        # The old behavior (raise at load) crash-looped the whole recognition
+        # service over a handful of corrupt-scan rows (live report: 171 NaN
+        # rows = infinite "reiniciando em 5s"). The contract now: bad rows are
+        # EXCLUDED from retrieval with ids kept aligned, and the operator is
+        # told how to rebuild for full coverage.
+        from recognizer.pipeline import sanitize_index
+        matrix = np.zeros((3, 4), dtype=np.float32)
+        matrix[1, 2] = np.nan
+        matrix[2, 0] = np.inf
+        clean, ids, dropped = sanitize_index(matrix, ["pt|x", "pt|y", "en|z"])
+        self.assertEqual(dropped, 2)
+        self.assertEqual(ids, ["pt|x"])
+        self.assertEqual(clean.shape, (1, 4))
+        self.assertTrue(np.isfinite(clean).all())
+
+    def test_clean_index_passes_through_untouched(self):
+        from recognizer.pipeline import sanitize_index
+        matrix = np.eye(3, dtype=np.float32)
+        clean, ids, dropped = sanitize_index(matrix, ["a", "b", "c"])
+        self.assertEqual(dropped, 0)
+        self.assertEqual(ids, ["a", "b", "c"])
+        self.assertIs(clean, matrix)  # no copy when nothing is wrong
+
+    def test_empty_index_sanitizes_to_empty(self):
+        from recognizer.pipeline import sanitize_index
+        clean, ids, dropped = sanitize_index(np.zeros((0, 4), dtype=np.float32), [])
+        self.assertEqual(dropped, 0)
+        self.assertEqual(ids, [])
+        self.assertEqual(clean.shape, (0, 4))
 
 
 # --------------------------------------------------------------------- OCR NaN

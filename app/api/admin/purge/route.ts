@@ -57,12 +57,25 @@ export async function POST(request: Request) {
     // Queue the local session wipe after the database purge so this command
     // cannot be deleted by the purge itself.
     if (worker?.worker_id) {
-      const { error: logoutError } = await db.from("whatsapp_bot_commands").insert({
-        worker_id: worker.worker_id,
-        command: "logout",
-        requested_by: user.id,
-      });
-      if (logoutError) console.error("Falha ao enfileirar logout da sessão WhatsApp:", logoutError.message);
+      // Persistent flag survives old bot versions that do not understand the
+      // logout command. The upgraded supervisor consumes it automatically.
+      const { error: flagError } = await db.from("whatsapp_bot_workers")
+        .update({ logout_requested: true, updated_at: new Date().toISOString() })
+        .eq("worker_id", worker.worker_id);
+      if (flagError) console.error("Falha ao registrar logout pendente da sessão WhatsApp:", flagError.message);
+
+      // New bot versions can execute the command immediately. Old versions
+      // may reject it as unknown, but the persistent flag remains as fallback.
+      const version = String(worker.version ?? "");
+      const supportsLogout = /^0\.2\.[4-9]\d*$/.test(version) || /^0\.(?:[3-9]|[1-9]\d+)\./.test(version) || /^[1-9]\d*\./.test(version);
+      if (supportsLogout) {
+        const { error: logoutError } = await db.from("whatsapp_bot_commands").insert({
+          worker_id: worker.worker_id,
+          command: "logout",
+          requested_by: user.id,
+        });
+        if (logoutError) console.error("Falha ao enfileirar logout da sessão WhatsApp:", logoutError.message);
+      }
     }
 
     // Leave a first-class audit trail in the (now empty) activity feed so the

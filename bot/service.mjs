@@ -312,7 +312,35 @@ async function syncGroupsWithRestart(automatic = false) {
   }
 }
 
+async function removeWhatsAppSession() {
+  const resolved = path.resolve(SESSION_DIR);
+  const root = path.parse(resolved).root;
+  if (resolved === root || resolved === here) throw new Error("unsafe_whatsapp_session_dir");
+  try {
+    await readFile(path.join(resolved, "creds.json"), "utf8");
+  } catch {
+    return false;
+  }
+  await rm(resolved, { recursive: true, force: true });
+  return true;
+}
+
 async function executeBotCommand(command) {
+  if (command.command === "logout") {
+    desiredRunning = false;
+    clearTimeout(restartTimer);
+    restartTimer = null;
+    await stopChild();
+    await removeWhatsAppSession();
+    runtime.qrPayload = null;
+    runtime.qrRender = null;
+    runtime.qrExpiresAt = null;
+    runtime.accountJid = null;
+    runtime.connectedAt = null;
+    await publishState({ status: "disconnected", lastError: null, sessionActive: false, accountJid: null });
+    return;
+  }
+
   if (command.command === "disconnect") {
     desiredRunning = false;
     clearTimeout(restartTimer);

@@ -1,11 +1,11 @@
 # Leilão Pokémon
 
-Painel administrativo para leilões de cartas Pokémon com Supabase como fonte oficial da verdade, Next.js no Netlify e um worker local Node.js/Baileys para a integração com WhatsApp.
+Painel administrativo para leilões de cartas Pokémon com Supabase como fonte oficial da verdade, Next.js na Vercel e um worker local Node.js/Baileys para a integração com WhatsApp.
 
 ## Arquitetura
 
 ```text
-Painel Next.js / Netlify
+Painel Next.js / Vercel
         ↓
 API autenticada
         ↓
@@ -22,7 +22,7 @@ votos / troca / retirada / ARREMATE
 Supabase → Realtime → painel
 ```
 
-O bot **não** roda em Netlify Function, Edge Function ou navegador automatizado. O processo persistente fica no Windows e usa Baileys diretamente.
+O bot **não** roda em Vercel Function, Edge Function ou navegador automatizado. O processo persistente fica no Windows e usa Baileys diretamente.
 
 ## Instalação inicial do painel
 

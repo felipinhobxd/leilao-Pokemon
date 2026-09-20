@@ -160,6 +160,29 @@ class EmbeddingModel:
         outputs = [self._embed_chunk(images[i:i + chunk]) for i in range(0, len(images), chunk)]
         return np.concatenate(outputs, axis=0)
 
+    def _note_invalid(self, error: InvalidEmbeddingError) -> None:
+        """Count the failure and demote a repeatedly-invalid provider.
+
+        Demotion: rebuild the session on CPU for the rest of this process and
+        write the marker file so future processes skip the provider in auto
+        mode too. CPU itself is never demoted.
+        """
+        self.invalid_outputs += 1
+        provider = self.provider
+        if provider in ("", "CPUExecutionProvider", "unknown"):
+            return
+        if self.invalid_outputs >= _PROVIDER_DEMOTION_AFTER:
+            reason = f"{self.name}: {self.invalid_outputs} invalid outputs (last: {error.detail.get('reason', 'unknown')})"
+            demote_provider(provider, reason)
+            self.demotions.append({
+                "model": self.name,
+                "from": provider,
+                "to": "CPUExecutionProvider",
+                "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            })
+            with self._lock:
+                if self._session is not None and self._session.provider == provider:
+                    self._session = None
     def _embed_chunk(self, images: list[np.ndarray]) -> np.ndarray:
         session = self._ensure()
         provider = session.provider

@@ -41,7 +41,7 @@ export async function POST(request: Request) {
       .order("heartbeat_at", { ascending: false, nullsFirst: false })
       .limit(1)
       .maybeSingle();
-    if (workerError) throw new Error("whatsapp_bot_worker_read_failed");
+    if (workerError) console.error("Falha ao consultar o worker do WhatsApp antes do purge:", workerError.message);
 
     // The UI unlocks the button on the NORMALIZED phrase ("Quero Excluir Mesmo"
     // passes), but the RPC compares the literal 'quero excluir mesmo' — send

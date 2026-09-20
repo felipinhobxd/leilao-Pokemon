@@ -39,10 +39,10 @@ Configure no `.env.local`:
 ```env
 NEXT_PUBLIC_SUPABASE_URL=https://SEU-PROJETO.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=CHAVE_PUBLICAVEL
-SUPABASE_SERVICE_ROLE_KEY=CHAVE_PRIVADA_APENAS_NO_SERVIDOR
+SUPABASE_SECRET_KEY=CHAVE_PRIVADA_APENAS_NO_SERVIDOR
 ```
 
-Nunca use a `SUPABASE_SERVICE_ROLE_KEY` em variável `NEXT_PUBLIC_*`, no navegador, no GitHub ou em mensagens.
+Na Vercel, a integração do Supabase fornece `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` e `SUPABASE_SECRET_KEY`. Para instalações locais/self-hosted, `SUPABASE_SERVICE_ROLE_KEY` continua aceito como fallback. Nunca use uma chave secreta em variável `NEXT_PUBLIC_*`, no navegador, no GitHub ou em mensagens.
 
 O banco de produção atual é `PokemonLeilao`. Alterações de schema devem ser feitas por migrations versionadas em `supabase/migrations/`; o Supabase continua sendo a fonte oficial dos leilões, lances, vencedores e histórico.
 

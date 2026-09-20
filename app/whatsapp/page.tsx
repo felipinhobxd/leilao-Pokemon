@@ -61,14 +61,26 @@ export default function WhatsAppPage(){
   if(!ready)return <main className="shell"><p>Carregando…</p></main>;
   if(!session)return <main className="shell"><section className="panel"><h1>Central WhatsApp</h1><p className="muted">Entre primeiro no painel administrativo.</p><Link href="/">Voltar</Link></section></main>;
   const worker=bot.worker && bot.worker.qrExpiresAt && Date.parse(bot.worker.qrExpiresAt)<=now?{...bot.worker,qrText:null}:bot.worker; const online=bot.online&&Boolean(worker?.heartbeatAt&&now-Date.parse(worker.heartbeatAt)<=35000); const connected=Boolean(online&&worker?.status==="connected");
-  // Em waiting_qr, o worker está online e já publicou o QR no Supabase.
-  // A Central precisa permanecer visível para o usuário conseguir escanear o QR
-  // pelo próprio site, sem abrir um terminal no PC.
-  if(!connected && worker?.status !== "waiting_qr")return <main className="shell">
-    <header className="topbar"><div><p className="eyebrow">CENTRAL DO BOT</p><h1>WhatsApp</h1><p className="muted">O PC/worker precisa estar online para controlar o WhatsApp.</p></div><div className="actions"><Link className="button-link" href="/auctions/new">＋ Novo leilão</Link><Link className="button-link" href="/">← Painel</Link></div></header>
-    {error&&<p className="alert" role="alert">{error}</p>}
-    <section className="panel"><div className="panel-title"><div><p className="eyebrow">AGUARDANDO CONEXÃO</p><h2>Nenhum WhatsApp conectado</h2></div></div><p className="muted">Inicie o worker no PC. Assim que ele ficar online, esta página atualizará automaticamente.</p></section>
-  </main>;
+  // Estados desconectados nunca exibem grupos, fila ou dados operacionais.
+  // Em waiting_qr exibimos somente o QR necessário para vincular o WhatsApp.
+  if(!connected) {
+    const waitingQr = worker?.status === "waiting_qr";
+    return <main className="shell">
+      <header className="topbar"><div><p className="eyebrow">CENTRAL DO BOT</p><h1>WhatsApp</h1><p className="muted">{waitingQr ? "O WhatsApp está aguardando autenticação." : "O WhatsApp não está conectado."}</p></div><div className="actions"><Link className="button-link" href="/auctions/new">＋ Novo leilão</Link><Link className="button-link" href="/">← Painel</Link></div></header>
+      {error&&<p className="alert" role="alert">{error}</p>}
+      <section className="panel">
+        <div className="panel-title"><div><p className="eyebrow">{waitingQr ? "AGUARDANDO QR" : "AGUARDANDO CONEXÃO"}</p><h2>{waitingQr ? "Conecte o WhatsApp" : "Nenhum WhatsApp conectado"}</h2></div>{worker?.version&&<span className="status-pill">v{worker.version}</span>}</div>
+        {waitingQr
+          ? <div>
+              <p className="muted">No celular: <strong>WhatsApp → Configurações → Aparelhos conectados → Conectar um aparelho</strong>. Escaneie o QR abaixo. Ele expira em {when(worker?.qrExpiresAt ?? null)}.</p>
+              {worker?.qrText
+                ? <div style={{marginTop:18,overflowX:"auto",borderRadius:14,background:"#000",padding:18,width:"fit-content",maxWidth:"100%"}}><pre style={{margin:0,color:"#fff",fontFamily:"Consolas, monospace",fontSize:11,lineHeight:.9,whiteSpace:"pre"}}>{worker.qrText}</pre></div>
+                : <p className="muted" style={{marginTop:14}}>Gerando o QR… aguarde alguns segundos.</p>}
+            </div>
+          : <p className="muted">Conecte o WhatsApp pelo bot no PC. Enquanto estiver desconectado, grupos, fila e publicações não serão exibidos.</p>}
+      </section>
+    </main>;
+  }
   const dot=connected?"🟢":online?"🟡":"🔴"; const selected=groups.find(g=>g.id===defaultGroupId);
   return <main className="shell">
     <header className="topbar"><div><p className="eyebrow">CENTRAL DO BOT</p><h1>WhatsApp</h1><p className="muted">Status, conexão, grupo padrão e fila de publicações. Os leilões são criados pelo botão “Novo leilão”.</p></div><div className="actions"><Link className="button-link" href="/auctions/new">＋ Novo leilão</Link><Link className="button-link" href="/">← Painel</Link></div></header>

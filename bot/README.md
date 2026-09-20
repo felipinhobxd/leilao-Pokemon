@@ -59,6 +59,20 @@ WHATSAPP_SESSION_DIR=C:/Users/Admin/Documents/LeilaoPokemon/leitor-whatsapp/sess
 
 Antes da primeira instalação, feche `monitor.mjs` e qualquer outra instância do Baileys que use a mesma sessão. Duas instâncias podem gerar `440 connectionReplaced`.
 
+## Atualizar o bot instalado
+
+Quando o painel receber uma função nova do bot, atualize o código do PC antes de usar essa função. Para o suporte de logout completo da sessão WhatsApp, na pasta do repositório execute:
+
+```powershell
+git pull origin main
+cd bot
+npm.cmd install --omit=dev
+Get-ScheduledTask -TaskName PokemonLeilaoWhatsAppBot -ErrorAction SilentlyContinue | Stop-ScheduledTask
+Start-ScheduledTask -TaskName PokemonLeilaoWhatsAppBot
+```
+
+A versão que suporta **logout completo da sessão Baileys** é `0.2.4` ou superior. O painel mostra a versão do worker na Central/Operação.
+
 ## Instalar em segundo plano no Windows
 
 Abra PowerShell na pasta `bot` e execute:

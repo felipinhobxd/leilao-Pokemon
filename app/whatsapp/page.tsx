@@ -60,7 +60,17 @@ export default function WhatsAppPage(){
   async function setDefault(groupId:string){setBusy(true);setError("");try{const r=await authFetch("/api/whatsapp/groups",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({groupId})});const b=await r.json();if(!r.ok)throw new Error(b.error??"Não foi possível alterar o grupo.");setDefaultGroupId(groupId);setNotice("Grupo padrão atualizado.");await load()}catch(e){setError(e instanceof Error?e.message:"Falha ao alterar o grupo.")}finally{setBusy(false)}}
   if(!ready)return <main className="shell"><p>Carregando…</p></main>;
   if(!session)return <main className="shell"><section className="panel"><h1>Central WhatsApp</h1><p className="muted">Entre primeiro no painel administrativo.</p><Link href="/">Voltar</Link></section></main>;
-  const worker=bot.worker && bot.worker.qrExpiresAt && Date.parse(bot.worker.qrExpiresAt)<=now?{...bot.worker,qrText:null}:bot.worker; const online=bot.online&&Boolean(worker?.heartbeatAt&&now-Date.parse(worker.heartbeatAt)<=35000); const connected=Boolean(online&&worker?.status==="connected"); const dot=connected?"🟢":online?"🟡":"🔴"; const selected=groups.find(g=>g.id===defaultGroupId);
+  const worker=bot.worker && bot.worker.qrExpiresAt && Date.parse(bot.worker.qrExpiresAt)<=now?{...bot.worker,qrText:null}:bot.worker; const online=bot.online&&Boolean(worker?.heartbeatAt&&now-Date.parse(worker.heartbeatAt)<=35000); const connected=Boolean(online&&worker?.status==="connected");
+  // Sem WhatsApp conectado pelo terminal (bot no CMD) a área não mostra nada:
+  // nem grupos antigos do banco, nem fila, nem detalhes do worker — apenas o
+  // aviso de que é preciso conectar. O polling de status (5s) faz o conteúdo
+  // completo aparecer sozinho assim que a conexão for detectada.
+  if(!connected)return <main className="shell">
+    <header className="topbar"><div><p className="eyebrow">CENTRAL DO BOT</p><h1>WhatsApp</h1><p className="muted">Grupos e publicações aparecem somente com o WhatsApp conectado pelo terminal (CMD).</p></div><div className="actions"><Link className="button-link" href="/auctions/new">＋ Novo leilão</Link><Link className="button-link" href="/">← Painel</Link></div></header>
+    {error&&<p className="alert" role="alert">{error}</p>}
+    <section className="panel"><div className="panel-title"><div><p className="eyebrow">AGUARDANDO CONEXÃO</p><h2>Nenhum WhatsApp conectado</h2></div></div><p className="muted">Conecte o WhatsApp pelo terminal (CMD) executando o bot. Assim que a conexão for detectada, grupos e fila de publicações aparecem aqui automaticamente.</p></section>
+  </main>;
+  const dot=connected?"🟢":online?"🟡":"🔴"; const selected=groups.find(g=>g.id===defaultGroupId);
   return <main className="shell">
     <header className="topbar"><div><p className="eyebrow">CENTRAL DO BOT</p><h1>WhatsApp</h1><p className="muted">Status, conexão, grupo padrão e fila de publicações. Os leilões são criados pelo botão “Novo leilão”.</p></div><div className="actions"><Link className="button-link" href="/auctions/new">＋ Novo leilão</Link><Link className="button-link" href="/">← Painel</Link></div></header>
     {error&&<p className="alert" role="alert">{error}</p>}{notice&&<p className="notice" role="status">{notice}</p>}

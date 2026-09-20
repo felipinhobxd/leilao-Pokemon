@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPublicSupabaseClient } from "@/lib/supabase";
 
 type Group = {
@@ -31,6 +31,7 @@ export default function WhatsAppGroupSelector() {
   const [worker, setWorker] = useState<Worker>(null);
   const [online, setOnline] = useState(false);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
   const [message, setMessage] = useState("");
 
   async function authFetch(url: string, init?: RequestInit) {
@@ -59,10 +60,25 @@ export default function WhatsAppGroupSelector() {
   }
 
   useEffect(() => {
-    void load().catch(error => setMessage(error instanceof Error ? error.message : "Falha ao carregar grupos."));
+    // O painel só existe com o WhatsApp conectado pelo terminal (bot/CMD):
+    // sem conexão ele não renderiza nada. O status é reavaliado a cada 15s
+    // (e no foco da janela) para o painel aparecer sozinho assim que a
+    // conexão for detectada, sem precisar recarregar a página.
+    const reload = (verbose: boolean) => {
+      if (document.hidden || busyRef.current) return;
+      void load().catch(error => {
+        if (verbose) setMessage(error instanceof Error ? error.message : "Falha ao carregar grupos.");
+      });
+    };
+    reload(true);
+    const timer = window.setInterval(() => reload(false), 15000);
+    const onFocus = () => reload(false);
+    window.addEventListener("focus", onFocus);
+    return () => { window.clearInterval(timer); window.removeEventListener("focus", onFocus); };
   }, []);
 
   async function choose(groupId: string) {
+    busyRef.current = true;
     setBusy(true);
     setMessage("");
     try {
@@ -79,12 +95,14 @@ export default function WhatsAppGroupSelector() {
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Falha ao salvar grupo padrão.");
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }
 
   async function refreshGroups() {
     if (!worker) return;
+    busyRef.current = true;
     setBusy(true);
     setMessage("");
     try {
@@ -100,12 +118,15 @@ export default function WhatsAppGroupSelector() {
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Falha ao atualizar grupos.");
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }
 
   const current = groups.find(group => group.id === selected);
-  const canRefresh = online && worker?.status === "connected";
+  const connected = online && worker?.status === "connected";
+  // Sem WhatsApp conectado pelo terminal (CMD) o seletor não mostra nada.
+  if (!connected) return null;
 
   return <div className="shell" style={{ paddingBottom: 0 }}>
     <section className="panel" style={{ marginBottom: 14 }}>
@@ -114,7 +135,7 @@ export default function WhatsAppGroupSelector() {
           <p className="eyebrow">GRUPO DO WHATSAPP</p>
           <h2>Grupo padrão</h2>
         </div>
-        <button type="button" disabled={busy || !canRefresh} onClick={() => void refreshGroups()}>Atualizar grupos</button>
+        <button type="button" disabled={busy} onClick={() => void refreshGroups()}>Atualizar grupos</button>
       </div>
 
       <label>Grupo padrão
@@ -124,8 +145,7 @@ export default function WhatsAppGroupSelector() {
         </select>
       </label>
 
-      {!groups.length && <p className="muted">Nenhum grupo sincronizado ainda. Conecte o bot e clique em “Atualizar grupos”.</p>}
-      {!canRefresh && <p className="muted">Para atualizar a lista, o worker precisa estar online e com o WhatsApp conectado.</p>}
+      {!groups.length && <p className="muted">Nenhum grupo sincronizado ainda. Clique em “Atualizar grupos” para sincronizar.</p>}
       {worker?.groupsSyncedAt && <p className="muted">Última sincronização: {when(worker.groupsSyncedAt)}</p>}
       {message && <p className="muted">{message}</p>}
 

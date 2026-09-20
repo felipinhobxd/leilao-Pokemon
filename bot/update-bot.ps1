@@ -15,7 +15,10 @@ if ($task) {
   Start-ScheduledTask -TaskName "PokemonLeilaoWhatsAppBot"
   Write-Host "Bot reiniciado: PokemonLeilaoWhatsAppBot" -ForegroundColor Green
 } else {
-  Write-Host "A tarefa PokemonLeilaoWhatsAppBot não existe. Execute install-service.ps1 uma vez." -ForegroundColor Yellow
+  Write-Host "Tarefa do Windows não encontrada. Instalando o serviço automaticamente..." -ForegroundColor Yellow
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "install-service.ps1")
+  if ($LASTEXITCODE -ne 0) { throw "A instalação do serviço falhou." }
+  Write-Host "Serviço instalado/iniciado: PokemonLeilaoWhatsAppBot" -ForegroundColor Green
 }
 
 Write-Host "Atualização concluída." -ForegroundColor Green

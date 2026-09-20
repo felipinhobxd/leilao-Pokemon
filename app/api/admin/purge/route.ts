@@ -33,6 +33,16 @@ export async function POST(request: Request) {
     const body = await request.json().catch(() => ({})) as Record<string, unknown>;
     if (!isPurgeFinalPhrase(body.confirm)) throw new HttpError(400, 'Digite exatamente "quero excluir mesmo" para confirmar.');
 
+    // Capture the worker before the purge. Old bot commands are deleted by the purge,
+    // so the session logout command is queued again only after the destructive transaction commits.
+    const { data: worker, error: workerError } = await db
+      .from("whatsapp_bot_workers")
+      .select("worker_id")
+      .order("heartbeat_at", { ascending: false, nullsFirst: false })
+      .limit(1)
+      .maybeSingle();
+    if (workerError) throw new Error("whatsapp_bot_worker_read_failed");
+
     // The UI unlocks the button on the NORMALIZED phrase ("Quero Excluir Mesmo"
     // passes), but the RPC compares the literal 'quero excluir mesmo' — send
     // the normalized form or every mixed-case confirmation 500s as
@@ -42,6 +52,17 @@ export async function POST(request: Request) {
     if (error || !result) {
       const parsed = parsePurgeRpcError(error);
       throw new HttpError(parsed.status, parsed.message);
+    }
+
+    // Queue the local session wipe after the database purge so this command
+    // cannot be deleted by the purge itself.
+    if (worker?.worker_id) {
+      const { error: logoutError } = await db.from("whatsapp_bot_commands").insert({
+        worker_id: worker.worker_id,
+        command: "logout",
+        requested_by: user.id,
+      });
+      if (logoutError) console.error("Falha ao enfileirar logout da sessão WhatsApp:", logoutError.message);
     }
 
     // Leave a first-class audit trail in the (now empty) activity feed so the

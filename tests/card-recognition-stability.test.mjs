@@ -63,7 +63,10 @@ test("python service exposes numerical-stability telemetry and crash recovery", 
   assert.match(server, /"stability"/);
   assert.match(server, /invalidEmbeddings/);
   assert.match(server, /previousRunCrashed/);
-  assert.match(server, /journal_write\(JOURNAL_PATH, request_id/);
+  // Crash journal is written per request (concurrency-safe) and swept by glob
+  // at startup: any leftover file belongs to a process that died mid-request.
+  assert.match(server, /journal_write\(journal_path, request_id/);
+  assert.match(server, /glob\.glob\(JOURNAL_PATH \+ "\*"\)/);
   // Crash journal demotes the providers that were executing at death time.
   assert.match(journal, /journal_check_previous_crash/);
   assert.match(journal, /demote_provider/);

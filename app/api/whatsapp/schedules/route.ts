@@ -8,7 +8,10 @@ const money = (value: number) => new Intl.NumberFormat("pt-BR", { style: "curren
 function parseValues(value: unknown) {
   if (!Array.isArray(value)) throw new HttpError(400, "Informe os valores da enquete.");
   const values = value.map(Number);
-  if (!values.length || values.length > 11 || values.some(v => !Number.isFinite(v) || v < 0 || Math.round(v * 100) !== v * 100)) {
+  // Tolerant cents check (same as every other route): binary floats do not
+  // round-trip exactly (1.1*100 === 110.00000000000001), so an equality test
+  // rejected valid prices like R$ 1,10 and R$ 0,07.
+  if (!values.length || values.length > 11 || values.some(v => !Number.isFinite(v) || v < 0 || Math.abs(v * 100 - Math.round(v * 100)) >= 0.00001)) {
     throw new HttpError(400, "Use entre 1 e 11 valores válidos, com no máximo 2 casas decimais.");
   }
   const unique = [...new Set(values)].sort((a, b) => a - b);
@@ -49,6 +52,11 @@ export async function POST(request: Request) {
     ]);
     if (auctionError || !auction) throw new HttpError(404, "Leilão não encontrado.");
     if (auction.status !== "draft") throw new HttpError(409, "Somente leilões em rascunho podem ser programados.");
+    // A dispatch owned by an active publish queue is managed by that queue
+    // (pause/resume/cancel): the legacy recovery upsert must not hijack its
+    // slot time or options behind the queue's back.
+    const { data: owned } = await db.from("whatsapp_dispatches").select("queue_id").eq("auction_id", auctionId).maybeSingle();
+    if (owned?.queue_id) throw new HttpError(409, "Este leilão pertence a uma fila de publicação ativa — use a fila para reagendar.");
     if (groupError || !group) throw new HttpError(409, "Escolha um grupo padrão do WhatsApp antes de programar a enquete.");
     if (values.some(v => v < Number(auction.starting_price))) throw new HttpError(400, "Nenhum lance pode ficar abaixo do valor inicial.");
     const options: Array<{ label: string; amount: number; isBuyout: boolean }> = values.map(amount => ({ label: money(amount), amount, isBuyout: false }));

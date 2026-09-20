@@ -381,7 +381,8 @@ def _classify_failure(exc: Exception) -> str:
 
 
 def resolve_scan_classified(image_base: Optional[str],
-                            alt_url: Optional[str] = None) -> tuple[Optional[tuple[str, str]], str]:
+                            alt_url: Optional[str] = None,
+                            fast: bool = False) -> tuple[Optional[tuple[str, str]], str]:
     """Resolve a usable scan AND report why it failed.
 
     Returns ((path, source) | None, reason) with reason in
@@ -396,6 +397,13 @@ def resolve_scan_classified(image_base: Optional[str],
     Priority when several failures mix: rate-limited > transient > not-found
     (a chain that mixed 404s with timeouts has NOT been proven absent).
 
+    fast=True is the INTERACTIVE budget (server request path): downloads use
+    a single attempt with a short timeout so one first-time miss costs
+    seconds, not the minutes the sync ladder (4 attempts, 5/15/45/120s
+    backoff, 25s timeouts) can spend. The pipeline's negative cache keeps the
+    TTL-classified door open — the background/sync paths keep the full
+    aggressive ladder and will still heal the gap on their next run.
+
     alt_url: SECOND-SOURCE image (pokemon-tcg-data hi-res, same artwork)
     consulted only after the whole TCGdex chain (own language + EN mirror)
     failed. A card with no TCGdex scan at all still gets a usable image —
@@ -404,6 +412,8 @@ def resolve_scan_classified(image_base: Optional[str],
     """
     if not image_base and not alt_url:
         return None, "no-base"
+    dl_timeout = 8.0 if fast else 25.0
+    dl_retries = 1 if fast else 4
     saw_rate_limited = saw_transient = saw_not_found = False
 
     def _note(exc: Exception) -> None:
@@ -446,7 +456,7 @@ def resolve_scan_classified(image_base: Optional[str],
         # 3. own-language downloads
         for q in chain:
             try:
-                data = _http_get(scan_url(image_base, q), timeout=25.0)
+                data = _http_get(scan_url(image_base, q), timeout=dl_timeout, retries=dl_retries)
             except Exception as exc:  # noqa: BLE001
                 _note(exc)
                 continue
@@ -459,7 +469,7 @@ def resolve_scan_classified(image_base: Optional[str],
         if mirror_base:
             for q in chain:
                 try:
-                    data = _http_get(scan_url(mirror_base, q), timeout=25.0)
+                    data = _http_get(scan_url(mirror_base, q), timeout=dl_timeout, retries=dl_retries)
                 except Exception as exc:  # noqa: BLE001
                     _note(exc)
                     continue
@@ -482,7 +492,7 @@ def resolve_scan_classified(image_base: Optional[str],
             if not url:
                 continue
             try:
-                data = _http_get(url, timeout=25.0)
+                data = _http_get(url, timeout=dl_timeout, retries=dl_retries)
             except Exception as exc:  # noqa: BLE001
                 _note(exc)
                 continue
@@ -494,14 +504,15 @@ def resolve_scan_classified(image_base: Optional[str],
 
 
 def resolve_scan(image_base: Optional[str],
-                 alt_url: Optional[str] = None) -> Optional[tuple[str, str]]:
+                 alt_url: Optional[str] = None,
+                 fast: bool = False) -> Optional[tuple[str, str]]:
     """Resolve a usable scan for an asset base.
 
     Returns (local_path, source) with source in
     {"high.webp", "low.webp", "en-high.webp", "en-low.webp",
      "ptcg-hires", "ptcg-small"}, or None.
     See resolve_scan_classified() for the failure reason variant used by the
-    pipeline's negative cache.
+    pipeline's negative cache and for the fast=True interactive budget.
 
     Order (cache-first, zero network on the hot path):
       1. own-language cache (validated by magic bytes; corrupt entries are
@@ -513,7 +524,7 @@ def resolve_scan(image_base: Optional[str],
     Every download is validated by magic bytes so HTML error pages never
     enter the cache.
     """
-    return resolve_scan_classified(image_base, alt_url)[0]
+    return resolve_scan_classified(image_base, alt_url, fast=fast)[0]
 
 
 def ensure_scan(image_base: str, quality: str = "high.webp",

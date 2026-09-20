@@ -45,6 +45,18 @@ const contactNames = new Map();
 const pollMessageCache = new Map();
 const pendingPollVotes = new Map();
 const trackedGroupJids = new Set();
+// Bounded caches (review: the three Maps above grew without limit for the
+// process lifetime). contactNames: LRU by insertion order. groupMetadata: a
+// group's participant list is effectively immutable during an auction, but a
+// fresh fetch every 10 minutes keeps renames/leaves honest.
+const CONTACT_NAMES_CAP = 5000;
+const GROUP_METADATA_TTL_MS = 10 * 60 * 1000;
+const groupMetadataCache = new Map();
+// Participant-enrichment memo: chatty auction groups used to fire a
+// groupMetadata wire call + a resolve_whatsapp_participant RPC for EVERY
+// message, forever. A participant resolved once stays resolved for 6h.
+const ENRICHMENT_TTL_MS = 6 * 60 * 60 * 1000;
+const enrichmentMemo = new Map();
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const brl = value => new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(Number(value));
@@ -110,8 +122,20 @@ function rememberContact(contact) {
   const name = String(contact?.notify || contact?.name || contact?.verifiedName || contact?.pushName || contact?.username || "").trim();
   if (!name) return;
   for (const jid of uniqueUserJids([contact?.id, contact?.lid, contact?.phoneNumber])) {
+    contactNames.delete(jid);
     contactNames.set(jid, name);
   }
+  while (contactNames.size > CONTACT_NAMES_CAP) {
+    contactNames.delete(contactNames.keys().next().value);
+  }
+}
+
+async function cachedGroupMetadata(groupJid) {
+  const cached = groupMetadataCache.get(groupJid);
+  if (cached && Date.now() - cached.at < GROUP_METADATA_TTL_MS) return cached.metadata;
+  const metadata = await sock?.groupMetadata?.(groupJid);
+  if (metadata) groupMetadataCache.set(groupJid, { metadata, at: Date.now() });
+  return metadata ?? null;
 }
 
 function rememberMessageSender(message) {
@@ -150,7 +174,7 @@ async function resolveVoterIdentity(update) {
 
   if (groupJid && sock?.groupMetadata) {
     try {
-      const metadata = await sock.groupMetadata(groupJid);
+      const metadata = await cachedGroupMetadata(groupJid);
       groupParticipant = metadata?.participants?.find(person => {
         const ids = uniqueUserJids([person?.id, person?.lid, person?.phoneNumber]);
         return ids.some(id => candidates.includes(id));
@@ -256,6 +280,18 @@ async function fetchDispatchById(dispatchId) {
   return data ?? null;
 }
 
+async function heartbeatDispatchClaim(dispatchId) {
+  // Keep the 'sending' claim FRESH while a BullMQ job owns the dispatch:
+  // stale-lock recovery in claim_chatsapp_dispatch re-claims rows whose
+  // locked_at is older than 2 minutes — without this heartbeat a
+  // slow-retrying queue job would have its dispatch stolen back, burning
+  // SQL attempts and eventually stranding the lot as 'failed'.
+  await db.from("whatsapp_dispatches")
+    .update({ locked_at: new Date().toISOString() })
+    .eq("id", dispatchId)
+    .eq("status", "sending");
+}
+
 async function markDispatchFailed(dispatch, error) {
   // Falha terminal (irrecuperável ou tentativas esgotadas): o lote NÃO volta
   // para a fila — o erro fica visível no painel para decisão humana.
@@ -326,7 +362,13 @@ async function persistDispatchMessageIds(dispatch) {
 async function drainPendingPollVotes(pollMessageId) {
   const waiting = pendingPollVotes.get(pollMessageId) ?? [];
   pendingPollVotes.delete(pollMessageId);
-  for (const message of waiting) await processIncomingPollMessage(message);
+  // One bad message must not discard the rest of the queue: a single throw
+  // here used to drop every already-dequeued vote and flip an already-sent
+  // dispatch back to 'scheduled' upstream.
+  for (const message of waiting) {
+    try { await processIncomingPollMessage(message); }
+    catch (error) { console.error("Falha ao processar voto enfileirado:", error?.message || error); }
+  }
 }
 
 async function sendDispatch(claimedDispatch) {
@@ -364,6 +406,14 @@ async function sendDispatch(claimedDispatch) {
     const serializedPoll = serializeMessage(poll.message);
     dispatch = { ...dispatch, poll_message_id: realPollMessageId, poll_message_json: serializedPoll, poll_sent_at: sentAt };
     pollMessageCache.set(realPollMessageId, { key: poll.key, message: poll.message, dispatch, ready: false });
+    // Bounded poll cache: each entry holds the full dispatch row + the
+    // serialized poll — unbounded growth over weeks of auctions. Evict the
+    // oldest READY entries; not-ready entries (mid-send) are never evicted.
+    while (pollMessageCache.size > 200) {
+      const oldestReady = [...pollMessageCache.keys()].find(id => pollMessageCache.get(id)?.ready);
+      if (!oldestReady) break;
+      pollMessageCache.delete(oldestReady);
+    }
     const { error } = await db.from("whatsapp_dispatches").update({
       poll_message_id: realPollMessageId,
       poll_message_json: serializedPoll,
@@ -485,7 +535,28 @@ function logResolvedParticipant(participant, identity) {
 async function handlePollVote(dispatch, pollUpdate, originalMessageOverride) {
   const identity = await resolveVoterIdentity(pollUpdate);
   if (!identity) return;
-  const participant = await ensureParticipant(identity);
+  let participant;
+  try {
+    participant = await ensureParticipant(identity);
+  } catch (error) {
+    // Identity conflict = this human has TWO participants rows (e.g. one
+    // created from a LID jid, another from a PN jid). The RPC fails closed,
+    // which is right — but the vote vanishing with only a console log is
+    // not: audit it so an admin can merge the rows and the vote be recast.
+    if (String(error?.message || error).includes("whatsapp_identity_conflict")) {
+      const identities = uniqueUserJids([identity.voterJid, identity.rawJid, ...(identity.aliases ?? [])]);
+      await db.from("auction_events").insert({
+        auction_id: dispatch.auction_id,
+        admin_user_id: ADMIN_USER_ID,
+        event_type: "WHATSAPP_IDENTITY_CONFLICT",
+        external_event_id: `wa-identity-conflict:${dispatch.poll_message_id}:${Date.now()}`.slice(0, 200),
+        payload: { identities, display_name: identity.displayName || null, reason: "participant rows need merge" },
+      }).catch(() => {});
+      console.error(`⚠️  Conflito de identidade no leilão ${dispatch.auction_id}: jids ${identities.join(", ")} precisam de merge — voto auditado e descartado.`);
+      return;
+    }
+    throw error;
+  }
   logResolvedParticipant(participant, identity);
 
   const voterJid = identity.voterJid;
@@ -610,10 +681,19 @@ async function processIncomingPollMessage(message) {
 async function enrichParticipantFromMessage(message) {
   const groupJid = String(message?.key?.remoteJid ?? "");
   if (!trackedGroupJids.has(groupJid) || message?.message?.pollUpdateMessage) return;
+  const senderJids = uniqueUserJids([message?.key?.participant, message?.key?.participantAlt]);
+  const now = Date.now();
+  if (senderJids.length && senderJids.every(jid => {
+    const at = enrichmentMemo.get(jid);
+    return at != null && now - at < ENRICHMENT_TTL_MS;
+  })) return; // resolved recently: no wire call, no RPC
   const identity = await resolveVoterIdentity({ pollUpdateMessageKey: message.key });
   if (!identity) return;
   if (message.pushName && fallbackIdentityName(identity.displayName)) identity.displayName = message.pushName;
   await ensureParticipant(identity);
+  for (const jid of uniqueUserJids([identity.voterJid, identity.rawJid, ...(identity.aliases ?? [])])) {
+    enrichmentMemo.set(jid, now);
+  }
 }
 
 async function handleIncomingMessages(messages) {
@@ -674,6 +754,7 @@ async function connect() {
         isSocketReady: () => socketReady,
         send: sendDispatch,
         markFailed: markDispatchFailed,
+        heartbeat: heartbeatDispatchClaim,
         log: (...args) => console.log(...args),
       });
       console.log("🗂️  Fila de disparos persistente ativa (BullMQ/Redis).");

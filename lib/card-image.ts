@@ -241,9 +241,15 @@ async function uploadOne(client: SupabaseClient, authFetch: AuthFetch, prepared:
 
   // Another browser may have won the race for the same content-addressed path.
   // Re-authorize once: if the object now exists, reuse it instead of overwriting.
-  const retry = await authorizeImages(authFetch, [prepared]);
-  const resolved = retry[0];
-  if (resolved?.exists) return { ...prepared, path: resolved.path, url: resolved.url, deduplicated: true } satisfies UploadedCardImage;
+  // When the re-auth call itself fails, surface the ORIGINAL upload error —
+  // a network blip on the retry must not mask why the upload failed.
+  try {
+    const retry = await authorizeImages(authFetch, [prepared]);
+    const resolved = retry[0];
+    if (resolved?.exists) return { ...prepared, path: resolved.path, url: resolved.url, deduplicated: true } satisfies UploadedCardImage;
+  } catch {
+    // fall through to the original error below
+  }
   throw new Error(error.message || "Falha no upload direto ao Storage.");
 }
 

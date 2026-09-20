@@ -68,7 +68,7 @@ class TestNegativeCacheTTL(unittest.TestCase):
         calls = {"n": 0}
         original = catalog_module.resolve_scan_classified
 
-        def fake(image_base, alt_url=None):
+        def fake(image_base, alt_url=None, fast=False):
             result = outcomes[min(calls["n"], len(outcomes) - 1)]
             calls["n"] += 1
             return result

@@ -36,6 +36,23 @@ def synthetic_card_photo(brightness: float = 200.0, background: float = 30.0) ->
     return canvas
 
 
+def _sideways_card_photo(rotation_code: int) -> np.ndarray:
+    """A realistic card Lying sideways: white-bordered face (name strip and
+    footer INSIDE the border, like a real TCG card) on a dark desk, rotated
+    90° so the detected quad is landscape. The uniform-brightness fixture
+    above lets the contour detector prefer its inner rectangle once rotated —
+    a real card layout keeps the outer face the strongest quad."""
+    card = np.full((840, 600, 3), 235, dtype=np.uint8)
+    card[20:120, 20:580] = 20      # name strip
+    card[730:820, 20:580] = 20     # footer strip
+    card[300:540, 200:400] = 128   # artwork block
+    photo = cv2.rotate(card, rotation_code)
+    desk = np.zeros((1150, 950, 3), dtype=np.uint8)
+    y0, x0 = (1150 - photo.shape[0]) // 2, (950 - photo.shape[1]) // 2
+    desk[y0:y0 + photo.shape[0], x0:x0 + photo.shape[1]] = photo
+    return desk
+
+
 class TestPhotometric(unittest.TestCase):
     def test_gamma_auto_lifts_dark_images(self):
         dark = synthetic_card_photo(brightness=40, background=10)
@@ -74,6 +91,35 @@ class TestNormalize(unittest.TestCase):
     def test_rotated_photo_180_detected(self):
         photo = cv2.rotate(synthetic_card_photo(), cv2.ROTATE_180)
         card = normalize_card(photo)
+        self.assertEqual(card.image.shape[:2], (NORM_H, NORM_W))
+
+    def test_sideways_photo_90_stays_portrait(self):
+        # Card lying sideways on the desk (photo rotated 90°): the quad is
+        # LANDSCAPE. Regression guard: the old code warped the landscape quad
+        # onto the portrait canvas and then rotated it, returning an 840x600
+        # LANDSCAPE card with the aspect inverted (~2x distortion) — breaking
+        # OCR regions, SigLIP retrieval and SIFT probes for every sideways
+        # photo. The fix warps to swapped dims first, so the CCW rotation
+        # restores the upright PORTRAIT 600x840 card.
+        card = normalize_card(_sideways_card_photo(cv2.ROTATE_90_CLOCKWISE))
+        self.assertEqual(card.rotation_code, 90)
+        self.assertEqual(card.method, "quad-contour")
+        self.assertEqual(card.image.shape[:2], (NORM_H, NORM_W),
+                         "carta deitada deve voltar como retrato 600x840, não paisagem")
+        self.assertEqual(card.rotated180.shape[:2], (NORM_H, NORM_W))
+        # Aspect preservation: the card BODY (bright, between the dark name
+        # and footer strips) must span most of the canvas height. The old bug
+        # squeezed the sideways card into ~60% of the height with the aspect
+        # inverted; the strips are inside the card, so ~650 bright rows are
+        # expected on a correct 840-row portrait output.
+        gray = cv2.cvtColor(card.image, cv2.COLOR_BGR2GRAY)
+        bright_rows = int((gray.mean(axis=1) > 100).sum())
+        self.assertGreater(bright_rows, NORM_H * 0.7,
+                           f"corpo da carta deve preencher a altura (aspecto preservado): {bright_rows}")
+
+    def test_sideways_photo_270_stays_portrait(self):
+        card = normalize_card(_sideways_card_photo(cv2.ROTATE_90_COUNTERCLOCKWISE))
+        self.assertEqual(card.rotation_code, 90)
         self.assertEqual(card.image.shape[:2], (NORM_H, NORM_W))
 
     def test_quad_plausibility_rejects_squares(self):

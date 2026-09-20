@@ -304,9 +304,29 @@ class TestDenominatorFusionEvidence(unittest.TestCase):
                          denominator=189, number_confidence=0.95)
         candidate = self._candidate("swsh3-106", 189)
         candidate.visual_similarity = 0.95
+        # fuse() ran before decide(): the printed number 106 was compared with
+        # the read 107 and DISAGREED (tri-state False — a real contradiction,
+        # not a missing comparison).
+        candidate.ocr_number_match = False
         decision, evidence = recognizer.decide([candidate], hints)
         self.assertEqual(decision, "PROVAVEL")
         self.assertIn("collector-number-conflict", evidence)
+
+    def test_missing_local_id_is_not_a_number_conflict(self):
+        # Tri-state: a candidate with NO printed number cannot "disagree" with
+        # a read number — ocr_number_match stays None and the decision must not
+        # carry a fabricated collector-number-conflict (the old bool default
+        # punished exactly these candidates).
+        recognizer = self._recognizer()
+        from recognizer.hints import OcrHints
+        hints = OcrHints(name="Purrloin", name_confidence=0.95, local_id="107",
+                         denominator=189, number_confidence=0.95)
+        candidate = self._candidate("swsh3-106", 189)
+        candidate.local_id = ""
+        candidate.visual_similarity = 0.95
+        candidate.ocr_number_match = None
+        decision, evidence = recognizer.decide([candidate], hints)
+        self.assertNotIn("collector-number-conflict", evidence)
 
     def test_weak_ocr_never_vetoes(self):
         recognizer = self._recognizer()
@@ -815,6 +835,59 @@ class TestLanguageTwins(unittest.TestCase):
         decision, evidence, status = recognizer._cap_uncertain_language(ranked, hints, decision, evidence)
         self.assertEqual(status, "confirmed")
 
+    def test_pre2011_pt_print_with_en_only_entry_reports_conflict(self):
+        # REGRA DE NEGÓCIO (cartas pt-BR anteriores a 2011): o catálogo pt-BR
+        # começa em 2011 (bw1) — impressões Devir (EX/Neo, 1999-2010) só têm a
+        # gêmea EN no catálogo. OCR lê português forte (ex.: "fraqueza",
+        # "recuo" em Gloom "Pó Venenoso" 38/115 ©2006), o vencedor é a gêmea
+        # EN ex10-38 e NÃO existe gêmea pt-BR no pool. Identificar a carta
+        # INGLESA com confiança para uma impressão portuguesa é um erro de
+        # impressão/idioma: a decisão deve ser rebaixada a REVISAR com
+        # languageStatus="conflict" + evidência "language-conflict".
+        recognizer = self._recognizer()
+        from recognizer.features import Verification
+        en = self._candidate("ex10-38", "en", visual=0.94)
+        en.verification = Verification(inliers=60, matches=70, inlier_ratio=0.9,
+                                       reprojection_error=1.5,
+                                       homography=np.eye(3, dtype=np.float32), method="sift")
+        hints = self._hints("pt-BR", 0.9)  # leitura forte de português
+        ranked = recognizer.fuse([en], hints, [])
+        ranked = recognizer._apply_language_evidence(ranked, hints)
+        decision, evidence = recognizer.decide(ranked, hints)
+        decision, evidence, status = recognizer._cap_uncertain_language(ranked, hints, decision, evidence)
+        self.assertEqual(status, "conflict")
+        self.assertIn("language-conflict", evidence)
+        self.assertEqual(decision, "REVISAR",
+                         "IDENTIFICADO/PROVAVEL na gêmea EN de uma impressão pt-BR pré-2011 é proibido")
+        self.assertEqual(ranked[0].card_id, "ex10-38",
+                         "a identidade (arte/set/número) se mantém como melhor candidato")
+
+    def test_strong_language_read_matching_solo_winner_stays_confirmed(self):
+        # A solo winner whose language AGREES with a strong read must NOT be
+        # punished by the conflict branch (the pre-2011 rule is a contradiction
+        # detector, not a blanket demotion of every non-twin result).
+        recognizer = self._recognizer()
+        solo = self._candidate("swsh3-107", "pt-BR")
+        hints = self._hints("pt-BR", 0.9)
+        ranked = recognizer.fuse([solo], hints, [])
+        decision, evidence = recognizer.decide(ranked, hints)
+        decision, evidence, status = recognizer._cap_uncertain_language(ranked, hints, decision, evidence)
+        self.assertEqual(status, "confirmed")
+        self.assertNotIn("language-conflict", evidence)
+
+    def test_weak_language_read_never_conflicts(self):
+        # A weak contradicting read (single shared word, 0.62) must not cap a
+        # solo winner: the conflict branch needs the same 0.75 strong bar as
+        # the twin logic.
+        recognizer = self._recognizer()
+        solo = self._candidate("swsh3-107", "en")
+        hints = self._hints("pt-BR", 0.62)
+        ranked = recognizer.fuse([solo], hints, [])
+        decision, evidence = recognizer.decide(ranked, hints)
+        decision, evidence, status = recognizer._cap_uncertain_language(ranked, hints, decision, evidence)
+        self.assertEqual(status, "confirmed")
+        self.assertNotIn("language-conflict", evidence)
+
     def test_mirror_scan_is_not_language_evidence(self):
         # A pt-BR card verified through the EN mirror scan (pt scan missing)
         # must NOT inherit "en" from the mirror: scan_source stays transport
@@ -1120,7 +1193,7 @@ class TestScanSourceSurvivesCacheHit(unittest.TestCase):
             def card_by_key(self, language, card_id):
                 return FakeRecord()
 
-        def fake_resolve(image_base, alt_url=None):
+        def fake_resolve(image_base, alt_url=None, fast=False):
             return (("/fake/scan.webp", source), "ok")
 
         def fake_fromfile(path, dtype=None):
@@ -1242,7 +1315,7 @@ class TestScanSingleFlight(unittest.TestCase):
             def card_by_key(self, language, card_id):
                 return FakeRecord()
 
-        def fake_resolve(image_base, alt_url=None):
+        def fake_resolve(image_base, alt_url=None, fast=False):
             loads.append(image_base)
             load_event.wait(timeout=5)  # hold the first load so rivals pile up
             return (("/fake/scan.webp", "high.webp"), "ok")

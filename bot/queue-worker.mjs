@@ -87,7 +87,7 @@ export function isUnrecoverableDispatchError(error) {
  * - markFailed(dispatch, err)-> status='failed' + last_error no Supabase.
  */
 export async function processDispatchJob(job, deps) {
-  const { fetchDispatch, isSocketReady, send, markFailed, log = () => {} } = deps;
+  const { fetchDispatch, isSocketReady, send, markFailed, heartbeat, log = () => {} } = deps;
   const dispatchId = job?.data?.dispatchId;
   if (!dispatchId) return;
   const dispatch = await fetchDispatch(dispatchId);
@@ -99,6 +99,12 @@ export async function processDispatchJob(job, deps) {
   }
   if (!isSocketReady()) {
     log(`[queue] lote ${dispatchId}: aguardando reconexão do WhatsApp…`);
+    // Heartbeat the SQL claim: while THIS job retries with backoff (up to
+    // ~23 min), the dispatch row stays 'sending' with a stale locked_at —
+    // stale-lock recovery would otherwise re-claim it every 2 min, burn
+    // the SQL attempts counter and strand the lot as 'failed' long before
+    // the queue gives up. The heartbeat keeps the claim owned by this job.
+    if (heartbeat) await heartbeat(dispatchId).catch(() => {});
     throw new SocketDownError();
   }
   try {
@@ -123,6 +129,7 @@ export async function processDispatchJob(job, deps) {
       throw error;
     }
     log(`[queue] lote ${dispatchId}: falha transitória (${message}) — retentativa com backoff`);
+    if (heartbeat) await heartbeat(dispatchId).catch(() => {});
     throw error;
   }
 }

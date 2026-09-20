@@ -41,6 +41,53 @@ _lock = threading.Lock()
 # each other.
 _write_lock = threading.Lock()
 
+# Read cache for the REQUEST path: lookup() used to json.load + np.load
+# (compressed) BOTH files on EVERY call — twice per /recognize (two
+# orientations) — even with zero confirmed examples. The files only change
+# through add/remove (atomic tmp+replace) or manual edits; the signature
+# (mtime_ns + size of both files) makes any change a guaranteed miss, and
+# add/remove also invalidate explicitly so even a same-nanosecond rewrite
+# cannot serve a stale view.
+_read_lock = threading.Lock()
+_read_cache: Optional[tuple[list[MemoryExample], list[str], np.ndarray]] = None
+_read_cache_sig: Optional[tuple] = None
+
+
+def _file_signature() -> tuple:
+    sig = []
+    for path in (MEMORY_FILE, MEMORY_EMBEDDINGS):
+        try:
+            st = os.stat(path)
+            sig.append((st.st_mtime_ns, st.st_size))
+        except OSError:
+            sig.append(None)
+    return tuple(sig)
+
+
+def _invalidate_read_cache() -> None:
+    global _read_cache, _read_cache_sig
+    with _read_lock:
+        _read_cache = None
+        _read_cache_sig = None
+
+
+def _load_state() -> tuple[list[MemoryExample], list[str], np.ndarray]:
+    """(examples, ids, matrix) with the process-level read cache."""
+    global _read_cache, _read_cache_sig
+    sig = _file_signature()
+    with _read_lock:
+        if _read_cache is not None and _read_cache_sig == sig:
+            return _read_cache[0], list(_read_cache[1]), _read_cache[2]
+    examples = load_examples()
+    if not examples:
+        ids, matrix = [], np.zeros((0, 1), dtype=np.float32)
+    else:
+        ids, matrix = _load_embeddings()
+    with _read_lock:
+        _read_cache = (examples, ids, matrix)
+        _read_cache_sig = sig
+    return examples, list(ids), matrix
+
 
 @dataclass
 class MemoryExample:
@@ -161,6 +208,7 @@ def add_example(card: dict, image_bytes: bytes, embedding: np.ndarray, note: str
                   if matrix.size and matrix.shape[0] == len(ids) - 1
                   else embedding.astype(np.float32).reshape(1, -1))
         _atomic_savez(MEMORY_EMBEDDINGS, ids=np.array(ids, dtype=object), matrix=matrix)
+        _invalidate_read_cache()
         return example
 
 
@@ -188,6 +236,7 @@ def remove_example(example_id: str) -> int:
         for example in examples:
             if example.id == example_id:
                 _try_remove(os.path.join(MEMORY_IMAGES, example.image_file))
+        _invalidate_read_cache()
         return len(remaining)
 
 
@@ -225,10 +274,9 @@ def lookup(embedding: np.ndarray, threshold: Optional[float] = None,
     """
     threshold = MEMORY_MIN_SIMILARITY if threshold is None else threshold
     margin = MEMORY_MARGIN if margin is None else margin
-    examples = load_examples()
+    examples, ids, matrix = _load_state()
     if not examples:
         return None
-    ids, matrix = _load_embeddings()
     if matrix.shape[0] == 0 or matrix.shape[0] != len(ids):
         return None
     scores = (matrix @ embedding.astype(np.float32)).ravel()

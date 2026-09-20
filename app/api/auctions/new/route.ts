@@ -62,7 +62,7 @@ export async function POST(request: Request) {
     const buyout = auction.buyout_price === null || auction.buyout_price === "" || auction.buyout_price === undefined ? null : Number(auction.buyout_price);
     if (!Number.isFinite(startingPrice) || startingPrice < 0 || !twoDecimals(startingPrice)) throw new HttpError(400, "Lance inicial inválido.");
     if (!Number.isFinite(increment) || increment <= 0 || !twoDecimals(increment)) throw new HttpError(400, "Incremento inválido.");
-    if (buyout != null && (!Number.isFinite(buyout) || buyout < startingPrice || !twoDecimals(buyout))) throw new HttpError(400, "ARREMATE inválido.");
+    if (buyout != null && (!Number.isFinite(buyout) || buyout <= startingPrice || !twoDecimals(buyout))) throw new HttpError(400, "ARREMATE deve ser maior que o lance inicial.");
 
     const requestedOptionCount = buyout == null ? Number(auction.option_count ?? DEFAULT_POLL_OPTIONS) : DEFAULT_POLL_OPTIONS;
     if (buyout == null && (!Number.isSafeInteger(requestedOptionCount) || requestedOptionCount < 2 || requestedOptionCount > MAX_POLL_OPTIONS)) {

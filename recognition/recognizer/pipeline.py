@@ -51,7 +51,12 @@ class Candidate:
     visual_similarity: float = -1.0
     verification: Optional[Verification] = None
     ocr_name_similarity: float = 0.0
-    ocr_number_match: bool = False
+    # Tri-state collector-number evidence: None = not comparable (either the
+    # OCR read no number or the candidate prints none), True/False = both
+    # sides readable and (dis)agreeing. False is a real contradiction; None
+    # must never be punished as one (a candidate with no local_id cannot
+    # "disagree" with a number nobody compared).
+    ocr_number_match: Optional[bool] = None
     ocr_language_match: bool = False
     ocr_hp_match: bool = False
     # Tri-state denominator evidence: None = unknown (candidate or OCR lacks M),
@@ -147,6 +152,11 @@ class RecognitionResult:
     # route still ran; the decision honestly reflects the missing evidence
     # instead of a fabricated similarity.
     visual_error: Optional[str] = None
+    # Set when the OCR route itself errored (session/provider failure): Route
+    # B produced no hints at all. Surfaced like visualError so a silently
+    # degraded OCR is visible in the payload and /health instead of looking
+    # like an illegible card.
+    ocr_error: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -160,6 +170,7 @@ class RecognitionResult:
             "languageStatus": self.language_status,
             "fastPath": self.fast_path,
             "visualError": self.visual_error,
+            "ocrError": self.ocr_error,
             "hints": self.hints.to_dict() if self.hints else None,
             "evidence": self.evidence,
             "elapsedMs": self.elapsed_ms,
@@ -462,7 +473,11 @@ class Recognizer:
                 alt_url = (getattr(record, "image_alt", "") or "") if record is not None else ""
                 base = record.image_base if (record is not None and record.image_base) else None
                 if base or alt_url:
-                    resolved, reason = resolve_scan_classified(base, alt_url or None)
+                    # fast=True: the INTERACTIVE budget — one short attempt per
+                    # URL instead of the minutes-long sync ladder. The negative
+                    # cache below keeps the TTL-classified door open for the
+                    # background/sync paths to heal the gap later.
+                    resolved, reason = resolve_scan_classified(base, alt_url or None, fast=True)
                     if resolved is not None:
                         path, source = resolved
                         data = np.fromfile(path, dtype=np.uint8)
@@ -521,10 +536,14 @@ class Recognizer:
             if other.confidence_score > best.confidence_score:
                 best = other
         hints = extract_hints(best)
+        # A broken OCR session must not look like an illegible card: propagate
+        # the provider error so the result/health can distinguish "read
+        # nothing" from "could not run".
+        ocr_error = getattr(best, "error", None)
         candidates: list[Candidate] = []
         if self.catalog is not None and (hints.name or hints.local_id):
             candidates = self.catalog.text_candidates(hints)
-        return hints, candidates, passes
+        return hints, candidates, passes, ocr_error
 
     # ---------------------------------------------------------------- route A
     def route_a(self, card: NormalizedCard, return_views: bool = False):
@@ -626,7 +645,6 @@ class Recognizer:
     def fuse(self, candidates: list[Candidate], hints: OcrHints, route_b: list[Candidate]) -> list[Candidate]:
         """Combine evidence with fixed, benchmark-calibrated weights."""
         cal = self.calibration
-        ocr_best = {c.card_id + "|" + c.language: c for c in route_b}
         for candidate in candidates:
             weights = {}
             visual = candidate.visual_similarity
@@ -744,7 +762,7 @@ class Recognizer:
     def _cap_uncertain_language(self, ranked: list[Candidate], hints: OcrHints,
                                decision: str, evidence: list[str]) -> tuple[str, list[str], str]:
         """Cap the decision when the language of the winning identity is
-        still ambiguous; report languageStatus for the UI.
+        ambiguous or contradicted; report languageStatus for the UI.
 
         Rules:
         - twins = retrieved candidates of the SAME card_id in another language;
@@ -754,16 +772,27 @@ class Recognizer:
           identity (artwork/set/number/printing) stands, but the decision is
           capped at PROVAVEL — never IDENTIFICADO with a possibly wrong tongue;
         - no twins -> the language is inherent to the winning catalog entry.
+          BUT a strong OCR read in ANOTHER language is a contradiction: the
+          photographed print speaks a language the catalog does not carry for
+          that card (e.g. pre-2011 Brazilian Devir prints whose only catalog
+          entry is the EN twin). The identity may be right, the PRINTING is
+          not: cap at REVISAR and report "conflict" instead of a confident
+          IDENTIFICADO in the wrong language.
         """
         best = ranked[0] if ranked else None
         if best is None:
             return decision, evidence, "confirmed"
+        strong_language = (hints.language
+                           and hints.language_confidence >= self.LANGUAGE_STRONG_OCR_CONFIDENCE)
         twins = [c for c in ranked[1:] if c.card_id == best.card_id and c.language != best.language]
         if not twins:
+            if strong_language and hints.language != best.language:
+                evidence = ["language-conflict"] + evidence
+                if decision in ("IDENTIFICADO", "PROVAVEL"):
+                    decision = "REVISAR"
+                return decision, evidence, "conflict"
             return decision, evidence, "confirmed"
-        strong_language = (hints.language == best.language
-                           and hints.language_confidence >= self.LANGUAGE_STRONG_OCR_CONFIDENCE)
-        if strong_language:
+        if strong_language and hints.language == best.language:
             return decision, evidence, "confirmed"
         # Ambiguous language: keep the identity, flag the uncertainty and cap.
         evidence = ["language-uncertain"] + evidence
@@ -808,6 +837,7 @@ class Recognizer:
         # reprints, so a readable contradicting number caps the decision at
         # PROVAVEL — the user reviews instead of trusting a wrong exact match.
         id_conflict = (best.ocr_number_match is False
+                       and best.local_id
                        and hints.number_confidence >= 0.75 and hints.denominator)
         den_conflict = (best.ocr_denominator_match is False
                         and hints.number_confidence >= 0.75 and hints.denominator)
@@ -918,9 +948,12 @@ class Recognizer:
         # Fast path -> minimal OCR budget (critical metadata only); the
         # footer stays whenever language twins need its evidence.
         t0 = time.time()
-        hints, route_b_candidates, ocr_passes = self.route_b(card, orientation, minimal=fast_path,
-                                                             include_footer=not fast_path or has_twin)
+        hints, route_b_candidates, ocr_passes, ocr_error = self.route_b(
+            card, orientation, minimal=fast_path, include_footer=not fast_path or has_twin)
         timings["ocr_passes"] = ocr_passes
+        result.ocr_error = ocr_error
+        if ocr_error:
+            print(f"[recognize] ocr route degraded for this request: {ocr_error}", flush=True)
         if ocr_override:
             from .hints import apply_override
             apply_override(hints, ocr_override)
@@ -976,12 +1009,19 @@ class Recognizer:
         result.language_status = language_status
         # A high-similarity, unambiguous confirmed-memory example may upgrade a
         # REVISAR to PROVAVEL (never to IDENTIFICADO — that always requires
-        # independent route evidence).
-        if memory_hit is not None:
-            if "confirmed-memory" not in evidence:
-                evidence = ["confirmed-memory"] + evidence
-            if decision == "REVISAR":
-                decision = "PROVAVEL"
+        # independent route evidence). The upgrade + evidence tag apply ONLY
+        # when the memory's card is the winner: memory of card X must never
+        # vouch for a result whose best is a different card Y (the fusion
+        # already bounded memory's score contribution; this guards the
+        # post-decision upgrade path).
+        if memory_hit is not None and result.best is not None:
+            memory_is_winner = (result.best.card_id == memory_hit.example.card_id
+                                and result.best.language == memory_hit.example.language)
+            if memory_is_winner:
+                if "confirmed-memory" not in evidence:
+                    evidence = ["confirmed-memory"] + evidence
+                if decision == "REVISAR":
+                    decision = "PROVAVEL"
         result.decision = decision
         result.evidence = evidence
         result.candidates = ranked

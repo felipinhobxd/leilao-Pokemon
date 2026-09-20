@@ -276,7 +276,15 @@ def normalize_card(input_bgr: np.ndarray) -> NormalizedCard:
         # If the detected card is landscape in the source, the photo was rotated 90/270
         if width > height * 1.05:
             rotation_code = 90  # canonical orientation after rotating CCW
-        warped = _warp(image, quad, NORM_W, NORM_H)
+        # Warp target dims must MATCH THE QUAD's orientation: a landscape quad
+        # (sideways photo) warped onto the portrait 600x840 canvas inverts the
+        # card's aspect (~2x distortion) and the later 90 rotation then returns
+        # a LANDSCAPE 840x600 image — every consumer (SigLIP retrieval, OCR
+        # regions, SIFT probes) assumes the portrait 600x840 geometry. Warping
+        # the landscape quad onto 840x600 preserves the aspect, and the CCW
+        # rotation restores the upright portrait 600x840 card.
+        out_w, out_h = (NORM_H, NORM_W) if rotation_code else (NORM_W, NORM_H)
+        warped = _warp(image, quad, out_w, out_h)
     else:
         method, confidence = "aspect-fallback", 0.0
         # center crop to card aspect

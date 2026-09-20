@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { authorize, failure, HttpError } from "@/lib/backend";
+import { DEFAULT_RATE_LIMIT, DEFAULT_RATE_WINDOW_SECONDS, enforceUserRateLimit } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 
@@ -23,7 +24,19 @@ async function ensureBucket(db: Awaited<ReturnType<typeof authorize>>["db"]) {
 
 export async function POST(request: Request) {
   try {
-    const { db } = await authorize(request, true);
+    const { db, user } = await authorize(request, true);
+    // Same guard as the signed-URL sibling: both entry points feed the same
+    // Storage bucket and share its quota — one must not bypass the other.
+    const limit = await enforceUserRateLimit("card-image", user.id, {
+      limit: DEFAULT_RATE_LIMIT,
+      windowSeconds: DEFAULT_RATE_WINDOW_SECONDS,
+    });
+    if (!limit.allowed) {
+      return Response.json({ error: "Muitos uploads — tente novamente em instantes." }, {
+        status: 429,
+        headers: { "Retry-After": String(Math.max(1, limit.retryAfterSeconds)), "Cache-Control": "no-store" },
+      });
+    }
     const form = await request.formData();
     const file = form.get("file");
     if (!(file instanceof File)) throw new HttpError(400, "Selecione uma imagem.");

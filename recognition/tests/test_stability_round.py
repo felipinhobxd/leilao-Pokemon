@@ -188,7 +188,7 @@ class TestRecognizerFailSafe(unittest.TestCase):
 
         with patch.object(recognizer, "route_b") as fake_route_b:
             from recognizer.hints import OcrHints
-            fake_route_b.return_value = (OcrHints(name="", local_id=""), [], 0)
+            fake_route_b.return_value = (OcrHints(name="", local_id=""), [], 0, None)
             with patch.object(recognizer, "verify"):
                 with patch.object(recognizer, "fuse", return_value=[]):
                     with patch.object(recognizer, "decide", return_value=("NAO_IDENTIFICADO", [])):

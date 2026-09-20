@@ -102,11 +102,21 @@ _executor_lock = threading.Lock()
 
 
 def _journal_check_previous_crash() -> None:
-    """Startup wrapper: surface the recovered crash entry (see recognizer.journal)."""
-    entry = journal_check_previous_crash()
-    if entry:
+    """Startup wrapper: surface the recovered crash entry (see recognizer.journal).
+
+    The journal is PER-REQUEST (JOURNAL_PATH.<request-id>) so concurrent
+    recognitions never clear each other's entry; the glob sweep finds every
+    leftover — any file still present at startup belongs to a process that
+    died mid-request."""
+    import glob
+    recovered = None
+    for path in sorted(glob.glob(JOURNAL_PATH + "*")):
+        entry = journal_check_previous_crash(path)
+        if entry:
+            recovered = entry
+    if recovered:
         print(f"[service] CRASH RECOVERY: previous process died while processing request "
-              f"{entry.get('id')} at {entry.get('at')} (providers: {entry.get('providers') or 'unknown'}) — "
+              f"{recovered.get('id')} at {recovered.get('at')} (providers: {recovered.get('providers') or 'unknown'}) — "
               f"they were demoted; the service will run on the next provider in line",
               flush=True)
         _state["journal_crash"] = True
@@ -233,22 +243,29 @@ async def recognize(file: UploadFile = File(...)):
         data = await file.read()
         if len(data) > 25 * 1024 * 1024:
             raise HTTPException(status_code=413, detail="Imagem muito grande (max 25 MB)")
-        bgr = decode_upload(data)
-        if bgr is None or bgr.size == 0:
-            raise HTTPException(status_code=400, detail="Imagem inválida")
-        recognizer = get_recognizer()
 
         def work():
+            # Decode INSIDE the executor: a 25 MB JPEG decode (100-300 ms)
+            # on the event loop would stall every concurrent endpoint,
+            # including /health.
+            bgr = decode_upload(data)
+            if bgr is None or bgr.size == 0:
+                raise HTTPException(status_code=400, detail="Imagem inválida")
             started = time.time()
             waited = started - queued_at  # time spent behind other cards
+            recognizer = get_recognizer()
             # Crash journal: if the process dies natively inside a provider,
             # this entry tells the next startup exactly who was executing.
+            # PER-REQUEST path: with concurrency > 1 a shared file would be
+            # cleared by whichever request finished first, losing the crash
+            # attribution of the one still in flight.
             request_id = f"req-{_state['requests']}"
-            journal_write(JOURNAL_PATH, request_id, recognizer.runtime_providers())
+            journal_path = f"{JOURNAL_PATH}.{request_id}"
+            journal_write(journal_path, request_id, recognizer.runtime_providers())
             try:
                 result = recognizer.recognize(bgr)
             finally:
-                journal_clear(JOURNAL_PATH)
+                journal_clear(journal_path)
             if result.visual_error:
                 _state["invalid_embeddings"] += 1
             return result, time.time() - started, waited
@@ -293,18 +310,20 @@ def catalog_exists(language: str, set: str, number: str):
 @app.get("/scan/{language}/{card_id}")
 def scan(language: str, card_id: str):
     """Serve the locally cached official scan for a card, through the same
-    resolution chain the recognizer uses (high -> low -> EN mirror). Cards
-    whose CDN high.webp 404s get a working image exactly when they are
+    resolution chain the recognizer uses (high -> low -> EN mirror ->
+    second/third-source alt). Cards whose CDN high.webp 404s — including
+    scanless cards that only resolved via image_alt (pokemon-tcg-data /
+    Limitless backfill) — get a working image exactly when they are
     retrievable at all. No local filesystem paths are exposed."""
     store = _state["store"]
     if store is None:
         get_recognizer()
         store = _state["store"]
     record = store.card_by_key(language, card_id) if store else None
-    if record is None or not record.image_base:
+    if record is None or not (record.image_base or record.image_alt):
         raise HTTPException(status_code=404, detail="Carta não encontrada")
     from recognizer.catalog import resolve_scan
-    resolved = resolve_scan(record.image_base)
+    resolved = resolve_scan(record.image_base or None, record.image_alt or None)
     if resolved is None:
         raise HTTPException(status_code=404, detail="Scan não disponível")
     path, source = resolved
@@ -330,22 +349,33 @@ async def memory_confirm(file: UploadFile = File(...), card: str = Form(...)):
     data = await file.read()
     if len(data) > 25 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="Imagem muito grande (max 25 MB)")
+
+    def work():
+        # Decode + normalize + embed are heavy: run them on the bounded
+        # executor like /recognize instead of the event loop.
+        try:
+            bgr = decode_upload(data)
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail="Imagem inválida") from exc
+        recognizer = get_recognizer()
+        from recognizer.normalize import normalize_card
+        card_image = normalize_card(bgr).image
+        embedding = recognizer.index.model.embed([card_image])[0]
+        # Store the canonical normalized crop (JPEG q85) instead of the raw photo:
+        # the memory lookup embeds the normalized card anyway, and full photos
+        # (2-5 MB) would bloat the local store for no retrieval benefit.
+        ok, encoded = cv2.imencode(".jpg", card_image, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        canonical = encoded.tobytes() if ok else data
+        return memory_module.add_example(card_fields, canonical, embedding)
+
+    loop = asyncio.get_running_loop()
     try:
-        bgr = decode_upload(data)
+        example = await loop.run_in_executor(get_executor(), work)
     except HTTPException:
+        _state["errors"] += 1
         raise
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail="Imagem inválida") from exc
-    recognizer = get_recognizer()
-    from recognizer.normalize import normalize_card
-    card_image = normalize_card(bgr).image
-    embedding = recognizer.index.model.embed([card_image])[0]
-    # Store the canonical normalized crop (JPEG q85) instead of the raw photo:
-    # the memory lookup embeds the normalized card anyway, and full photos
-    # (2-5 MB) would bloat the local store for no retrieval benefit.
-    ok, encoded = cv2.imencode(".jpg", card_image, [cv2.IMWRITE_JPEG_QUALITY, 85])
-    canonical = encoded.tobytes() if ok else data
-    example = memory_module.add_example(card_fields, canonical, embedding)
     return {"status": "confirmed", "example": example.to_dict()}
 
 

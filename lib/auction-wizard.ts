@@ -56,7 +56,10 @@ export function buildPollPlan(startingPrice: number, increment: number, buyoutPr
   if (!Number.isFinite(startingPrice) || startingPrice < 0 || !Number.isFinite(increment) || increment <= 0) {
     return { options: [], overflow: false, minimumIncrement: null, optionCount: 0 };
   }
-  if (buyoutPrice != null && (!Number.isFinite(buyoutPrice) || buyoutPrice < startingPrice)) {
+  if (buyoutPrice != null && (!Number.isFinite(buyoutPrice) || buyoutPrice <= startingPrice)) {
+    // buyout == starting price would produce a degenerate single-option poll
+    // (ARREMATE-only): the batch route already rejects it — the plan builder
+    // must agree instead of silently emitting one option.
     return { options: [], overflow: false, minimumIncrement: null, optionCount: 0 };
   }
 

@@ -36,7 +36,7 @@ test("local service client probes health, degrades to browser pipeline, never fa
 test("OCR is never the gatekeeper in the local pipeline: visual route runs independently", () => {
   // Route A (visual retrieval) executes before OCR and never requires OCR hints.
   assert.match(pipeline, /route_a_candidates, orientation, view_embeddings, raw_rows = self\.route_a\(card, return_views=True\)/);
-  assert.match(pipeline, /hints, route_b_candidates, ocr_passes = self\.route_b\(card, orientation, minimal=fast_path/);
+  assert.match(pipeline, /hints, route_b_candidates, ocr_passes, ocr_error = self\.route_b\(/);
   // OCR failure does not empty the candidate pool: route A candidates merge first.
   assert.match(pipeline, /for candidate in route_a_candidates:/);
   // Geometric verification (RANSAC homography) is near-conclusive evidence.

@@ -35,6 +35,21 @@ class CatalogStore:
         self.by_name: dict[str, list[CardRecord]] = {}
         for card in self.cards:
             self.by_name.setdefault(_normalize(card.name), []).append(card)
+        # Collector-number indexes for the text route. The old code scanned the
+        # WHOLE catalog per request (10-80k cards x 2-3 string ops in Python)
+        # whenever OCR read a number — the common case. Both indexes preserve
+        # the exact old comparison semantics, just inverted:
+        #   by_local_id  -> key = local_id.lstrip("0")            (exact form)
+        #   by_digits    -> key = digits-only local_id.lstrip("0") (tail pool)
+        self.by_local_id: dict[str, list[CardRecord]] = {}
+        self.by_digits: dict[str, list[CardRecord]] = {}
+        for card in self.cards:
+            key = str(card.local_id or "").lstrip("0")
+            if not key:
+                continue
+            self.by_local_id.setdefault(key, []).append(card)
+            if str(card.local_id or "").isdigit():
+                self.by_digits.setdefault(key, []).append(card)
         self._lock = threading.Lock()
 
     def card_by_key(self, language: str, card_id: str) -> Optional[CardRecord]:
@@ -77,7 +92,13 @@ class CatalogStore:
             # signal — the prefix identified the SUBSET, the tail the card.
             read = hints.local_id
             read_tail = re.sub(r"^[A-Za-z]+", "", read) if not read.isdigit() else ""
-            for card in self.cards:
+            number_pool: list[CardRecord] = list(self.by_local_id.get(read.lstrip("0"), []))
+            if read_tail:
+                tail_key = read_tail.lstrip("0")
+                for card in self.by_digits.get(tail_key, []):
+                    if card not in number_pool and str(card.local_id).lstrip("0") != read.lstrip("0"):
+                        number_pool.append(card)
+            for card in number_pool:
                 exact = card.local_id.lstrip("0") == read.lstrip("0")
                 tail_only = (not exact and read_tail
                              and read_tail.lstrip("0") == card.local_id.lstrip("0"))
@@ -106,7 +127,9 @@ class CatalogStore:
             candidate = candidate_from_record(card)
             candidate.score = final_score
             candidate.ocr_name_similarity = name_similarity(hints.name, card.name) if hints.name else 0.0
-            candidate.ocr_number_match = bool(hints.local_id and card.local_id.lstrip("0") == hints.local_id.lstrip("0"))
+            candidate.ocr_number_match = (bool(hints.local_id and card.local_id
+                                               and card.local_id.lstrip("0") == hints.local_id.lstrip("0"))
+                                          if (hints.local_id and card.local_id) else None)
             candidate.ocr_language_match = bool(hints.language and card.language == hints.language)
             candidate.ocr_hp_match = bool(hints.hp and card.hp == hints.hp)
             results.append(candidate)

@@ -56,17 +56,30 @@ if ($LASTEXITCODE -ne 0) { Write-Error "Falha ao construir catalogo"; exit 1 }
 & .\.venv\Scripts\python.exe scripts\download_scans.py --languages pt-BR,en,ja --workers 16
 
 Write-Host "== [5/5] Indice de embeddings SigLIP2 ==" -ForegroundColor Cyan
-# batch=8 foi validado (16/32 causam OOM em maquinas com pouca RAM).
-# --only-missing torna o build retomavel: pode interromper e rodar de novo.
-# pt-BR primeiro para o servico ficar util cedo; en e ja em seguida.
-& .\.venv\Scripts\python.exe scripts\build_index.py --model siglip2-base-384 --batch 8 --languages pt-BR --only-missing
+# O índice é construído em CPU de propósito para não depender de kernels
+# DirectML instáveis durante a instalação. O serviço de reconhecimento pode
+# continuar usando GPU em runtime e faz fallback automático para CPU.
+$previousRecognitionProviders = $env:RECOGNITION_PROVIDERS
+$env:RECOGNITION_PROVIDERS = "cpu"
+try {
+  # batch=8 foi validado (16/32 causam OOM em maquinas com pouca RAM).
+  # --only-missing torna o build retomavel: pode interromper e rodar de novo.
+  # pt-BR primeiro para o servico ficar util cedo; en e ja em seguida.
+  & .\.venv\Scripts\python.exe scripts\build_index.py --model siglip2-base-384 --batch 8 --languages pt-BR --only-missing
 if ($LASTEXITCODE -ne 0) { Write-Error "Falha no indice pt-BR"; exit 1 }
 Write-Host "Indice pt-BR pronto. Construindo en (pode interromper e retomar)..." -ForegroundColor Cyan
 & .\.venv\Scripts\python.exe scripts\build_index.py --model siglip2-base-384 --batch 8 --languages pt-BR,en --only-missing
 if ($LASTEXITCODE -ne 0) { Write-Error "Falha no indice en"; exit 1 }
 Write-Host "Indice en pronto. Construindo ja (pode interromper e retomar)..." -ForegroundColor Cyan
-& .\.venv\Scripts\python.exe scripts\build_index.py --model siglip2-base-384 --batch 8 --languages pt-BR,en,ja --only-missing
-if ($LASTEXITCODE -ne 0) { Write-Error "Falha no indice ja"; exit 1 }
+  & .\.venv\Scripts\python.exe scripts\build_index.py --model siglip2-base-384 --batch 8 --languages pt-BR,en,ja --only-missing
+  if ($LASTEXITCODE -ne 0) { throw "Falha no indice ja" }
+} finally {
+  if ($null -eq $previousRecognitionProviders) {
+    Remove-Item Env:RECOGNITION_PROVIDERS -ErrorAction SilentlyContinue
+  } else {
+    $env:RECOGNITION_PROVIDERS = $previousRecognitionProviders
+  }
+}
 
 Write-Host ""
 Write-Host "Instalacao concluida. Inicie o servico com:" -ForegroundColor Green

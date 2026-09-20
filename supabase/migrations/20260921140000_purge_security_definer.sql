@@ -33,21 +33,21 @@ begin
  -- trigger is restored by the rollback itself.
  execute 'drop trigger if exists immutable_audit on public.auction_events';
 
- with gone as (delete from public.payments returning 1) select count(*) into n_payments from gone;
- with gone as (delete from public.deliveries returning 1) select count(*) into n_deliveries from gone;
- with gone as (delete from public.purchases returning 1) select count(*) into n_purchases from gone;
- with gone as (delete from public.warnings returning 1) select count(*) into n_warnings from gone;
- with gone as (delete from public.whatsapp_vote_state returning 1) select count(*) into n_votes from gone;
- with gone as (delete from public.whatsapp_dispatches returning 1) select count(*) into n_dispatches from gone;
- with gone as (delete from public.auction_publish_queues returning 1) select count(*) into n_queues from gone;
- with gone as (delete from public.auction_events returning 1) select count(*) into n_events from gone;
- with gone as (delete from public.bids returning 1) select count(*) into n_bids from gone;
- with gone as (delete from public.auctions returning 1) select count(*) into n_auctions from gone;
- with gone as (delete from public.cards returning 1) select count(*) into n_cards from gone;
- with gone as (delete from public.participant_identities returning 1) select count(*) into n_identities from gone;
- with gone as (delete from public.participants returning 1) select count(*) into n_participants from gone;
- with gone as (delete from public.processed_commands returning 1) select count(*) into n_commands from gone;
- with gone as (delete from public.whatsapp_bot_commands returning 1) select count(*) into n_bot_commands from gone;
+ with gone as (delete from public.payments where true returning 1) select count(*) into n_payments from gone;
+ with gone as (delete from public.deliveries where true returning 1) select count(*) into n_deliveries from gone;
+ with gone as (delete from public.purchases where true returning 1) select count(*) into n_purchases from gone;
+ with gone as (delete from public.warnings where true returning 1) select count(*) into n_warnings from gone;
+ with gone as (delete from public.whatsapp_vote_state where true returning 1) select count(*) into n_votes from gone;
+ with gone as (delete from public.whatsapp_dispatches where true returning 1) select count(*) into n_dispatches from gone;
+ with gone as (delete from public.auction_publish_queues where true returning 1) select count(*) into n_queues from gone;
+ with gone as (delete from public.auction_events where true returning 1) select count(*) into n_events from gone;
+ with gone as (delete from public.bids where true returning 1) select count(*) into n_bids from gone;
+ with gone as (delete from public.auctions where true returning 1) select count(*) into n_auctions from gone;
+ with gone as (delete from public.cards where true returning 1) select count(*) into n_cards from gone;
+ with gone as (delete from public.participant_identities where true returning 1) select count(*) into n_identities from gone;
+ with gone as (delete from public.participants where true returning 1) select count(*) into n_participants from gone;
+ with gone as (delete from public.processed_commands where true returning 1) select count(*) into n_commands from gone;
+ with gone as (delete from public.whatsapp_bot_commands where true returning 1) select count(*) into n_bot_commands from gone;
 
  execute 'create trigger immutable_audit before update or delete on public.auction_events for each row execute function public.reject_audit_mutation()';
 

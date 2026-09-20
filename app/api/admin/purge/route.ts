@@ -37,7 +37,7 @@ export async function POST(request: Request) {
     // so the session logout command is queued again only after the destructive transaction commits.
     const { data: worker, error: workerError } = await db
       .from("whatsapp_bot_workers")
-      .select("worker_id")
+      .select("worker_id,version")
       .order("heartbeat_at", { ascending: false, nullsFirst: false })
       .limit(1)
       .maybeSingle();

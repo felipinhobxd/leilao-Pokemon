@@ -1,6 +1,6 @@
 import { authorize, failure, HttpError } from "@/lib/backend";
 import { CARD_IMAGE_BUCKET } from "@/lib/card-image";
-import { isPurgeFinalPhrase } from "@/lib/purge";
+import { isPurgeFinalPhrase, normalizePurgePhrase, parsePurgeRpcError } from "@/lib/purge";
 
 export const runtime = "nodejs";
 
@@ -33,17 +33,29 @@ export async function POST(request: Request) {
     const body = await request.json().catch(() => ({})) as Record<string, unknown>;
     if (!isPurgeFinalPhrase(body.confirm)) throw new HttpError(400, 'Digite exatamente "quero excluir mesmo" para confirmar.');
 
-    const { data: result, error } = await db.rpc("purge_all_business_data", { p_confirm: String(body.confirm ?? "") });
-    if (error || !result) throw new Error(error?.message ?? "purge_failed");
+    // The UI unlocks the button on the NORMALIZED phrase ("Quero Excluir Mesmo"
+    // passes), but the RPC compares the literal 'quero excluir mesmo' — send
+    // the normalized form or every mixed-case confirmation 500s as
+    // purge_not_confirmed.
+    const confirm = normalizePurgePhrase(body.confirm);
+    const { data: result, error } = await db.rpc("purge_all_business_data", { p_confirm: confirm });
+    if (error || !result) {
+      const parsed = parsePurgeRpcError(error);
+      throw new HttpError(parsed.status, parsed.message);
+    }
 
     // Leave a first-class audit trail in the (now empty) activity feed so the
-    // restart is visible on the dashboard and in the Excel export.
-    await db.from("auction_events").insert({
-      admin_user_id: user.id,
-      event_type: "DATA_PURGED",
-      external_event_id: `purge:${user.id}:${new Date().toISOString()}`,
-      payload: { deleted: (result as { deleted?: Record<string, number> }).deleted ?? {}, by: user.id },
-    });
+    // restart is visible on the dashboard and in the Excel export. Best-effort:
+    // the database is already wiped at this point — a post-purge hiccup must
+    // never surface as "the purge failed".
+    try {
+      await db.from("auction_events").insert({
+        admin_user_id: user.id,
+        event_type: "DATA_PURGED",
+        external_event_id: `purge:${user.id}:${new Date().toISOString()}`,
+        payload: { deleted: (result as { deleted?: Record<string, number> }).deleted ?? {}, by: user.id },
+      });
+    } catch (issue) { console.error("DATA_PURGED audit insert failed:", issue); }
 
     let storage: { removed: number; failed: number } | null = null;
     try { storage = await emptyCardImagesBucket(db); }

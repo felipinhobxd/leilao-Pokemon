@@ -211,8 +211,13 @@ grant execute on function public.read_dashboard_snapshot() to service_role;
 --    identities -> participants. auction_events is append-only (a trigger
 --    raises on DELETE): the guard is lifted and restored inside this same
 --    transaction.
+--    SECURITY DEFINER: the function drops/recreates the immutable_audit trigger
+--    and restarts two sequences — DDL that requires OWNERSHIP, which
+--    service_role (the caller from the API route) does not have on Supabase.
+--    Runs as the owner instead; search_path is pinned, EXECUTE is
+--    service_role-only, and the phrase gate still applies inside.
 create or replace function public.purge_all_business_data(p_confirm text)
-returns jsonb language plpgsql security invoker set search_path='' as $$
+returns jsonb language plpgsql security definer set search_path='' as $$
 declare
  n_payments bigint; n_deliveries bigint; n_purchases bigint; n_warnings bigint;
  n_votes bigint; n_dispatches bigint; n_queues bigint; n_events bigint;

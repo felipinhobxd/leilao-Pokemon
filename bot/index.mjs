@@ -655,7 +655,7 @@ async function handlePollVote(dispatch, pollUpdate, originalMessageOverride) {
     }
   } catch (error) {
     const message = String(error?.message || error);
-    if (message.includes("auction_not_open") || message.includes("deadline_expired") || message.includes("participant_not_eligible") || message.includes("stale_event")) {
+    if (message.includes("auction_not_open") || message.includes("deadline_expired") || message.includes("participant_not_eligible") || message.includes("stale_event") || message.includes("bid_increment_required")) {
       const rejectedType = isBuyout && message.includes("auction_not_open") ? "BUYOUT_LOST_RACE" : "WHATSAPP_VOTE_REJECTED";
       const { data: closedAuction } = isBuyout ? await db.from("auctions").select("winner_participant_id,final_price,status").eq("id", dispatch.auction_id).maybeSingle() : { data: null };
       await auditLateVote(dispatch.auction_id, participant.id, rejectedType, eventId, { voter_jid: voterJid, phone_e164: participant.phone_e164, display_name: participant.display_name, option: selected.label, amount, reason: message.slice(0, 300), winner_participant_id: closedAuction?.winner_participant_id ?? null, final_price: closedAuction?.final_price ?? null, event_at: occurredAt });

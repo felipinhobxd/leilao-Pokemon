@@ -7,7 +7,7 @@ const messages: Record<string, string> = {
   active_bid_not_found: "Nenhum lance ativo para alterar ou retirar.", event_id_conflict: "ID de evento já utilizado com outro conteúdo.",
   stale_event: "Evento antigo: o estado atual foi preservado.", deadline_expired: "O prazo do leilão terminou. Finalize para apurar o vencedor.",
   card_unavailable: "Carta indisponível para leilão.", card_in_use: "Carta vinculada a uma disputa ou venda.", invalid_bid_amount: "Valor abaixo do inicial ou inválido.",
-  buyout_not_enabled: "Este leilão não tem ARREMATE.", forbidden: "Operação não autorizada.",
+  buyout_not_enabled: "Este leilão não tem ARREMATE.", bid_increment_required: "O lance precisa respeitar o incremento mínimo do leilão.", forbidden: "Operação não autorizada.",
 };
 export async function POST(request: Request) {
   try {

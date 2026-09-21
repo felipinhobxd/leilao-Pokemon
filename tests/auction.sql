@@ -26,6 +26,8 @@ begin
  perform pg_temp.rejects(cmd||'{"eventId":"below","amount":5}', 'active_bid_exists');
  perform pg_temp.rejects(cmd||jsonb_build_object('eventId','below2','participantId',p2->>'id','amount',5),'invalid_bid_amount');
  perform pg_temp.cmd(cmd||jsonb_build_object('eventId','b2','participantId',p2->>'id'));
+ perform pg_temp.rejects(cmd||jsonb_build_object('eventId','below_increment','participantId',p2->>'id','amount',24),'bid_increment_required');
+ perform pg_temp.cmd(cmd||jsonb_build_object('eventId','increment_ok','participantId',p2->>'id','amount',25));
  perform pg_temp.check_that((select count(*)=2 from public.bids),'two confirmed bids');
  perform pg_temp.cmd(cmd||'{"type":"BID_CHANGED","eventId":"change","amount":25}');
  perform pg_temp.check_that((select count(*)=1 from public.bids where participant_id=(p1->>'id')::uuid and status='active'),'one active after change');

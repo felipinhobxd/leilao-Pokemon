@@ -45,6 +45,7 @@ const contactNames = new Map();
 const pollMessageCache = new Map();
 const pendingPollVotes = new Map();
 const trackedGroupJids = new Set();
+const dispatchInFlight = new Map();
 // Bounded caches (review: the three Maps above grew without limit for the
 // process lifetime). contactNames: LRU by insertion order. groupMetadata: a
 // group's participant list is effectively immutable during an auction, but a
@@ -223,8 +224,11 @@ async function getStoredPollMessage(key) {
   const cached = pollMessageCache.get(key.id);
   if (cached?.message) return cached.message;
   const { data, error } = await db.from("whatsapp_dispatches").select("poll_message_json").eq("poll_message_id", key.id).maybeSingle();
-  if (error || !data?.poll_message_json) return undefined;
-  return reviveStoredMessage(data.poll_message_json);
+  if (error) throw new Error(error.message);
+  if (data?.poll_message_json) return reviveStoredMessage(data.poll_message_json);
+  const remote = await db.from("whatsapp_dispatches").select("poll_message_json").eq("poll_remote_message_id", key.id).maybeSingle();
+  if (remote.error || !remote.data?.poll_message_json) return undefined;
+  return reviveStoredMessage(remote.data.poll_message_json);
 }
 
 async function processCommand(command) {
@@ -371,7 +375,7 @@ async function drainPendingPollVotes(pollMessageId) {
   }
 }
 
-async function sendDispatch(claimedDispatch) {
+async function sendDispatchInternal(claimedDispatch) {
   let dispatch = await persistDispatchMessageIds(claimedDispatch);
   const { group, auction, card } = await fetchAuctionContext(dispatch);
   trackedGroupJids.add(group.group_jid);
@@ -386,9 +390,14 @@ async function sendDispatch(claimedDispatch) {
       : await sock.sendMessage(group.group_jid, { text: caption }, { messageId: dispatch.announcement_message_id });
     if (!announcement?.key?.id) throw new Error("announcement_send_failed");
     const sentAt = new Date().toISOString();
-    const { error } = await db.from("whatsapp_dispatches").update({ announcement_sent_at: sentAt, updated_at: sentAt }).eq("id", dispatch.id);
+    const remoteMessageId = String(announcement.key.id);
+    const { error } = await db.from("whatsapp_dispatches").update({
+      announcement_remote_message_id: remoteMessageId,
+      announcement_sent_at: sentAt,
+      updated_at: sentAt,
+    }).eq("id", dispatch.id);
     if (error) throw new Error(error.message);
-    dispatch = { ...dispatch, announcement_sent_at: sentAt };
+    dispatch = { ...dispatch, announcement_remote_message_id: remoteMessageId, announcement_sent_at: sentAt };
   }
 
   if (!dispatch.poll_sent_at || !dispatch.poll_message_json) {
@@ -404,7 +413,7 @@ async function sendDispatch(claimedDispatch) {
     const sentAt = new Date().toISOString();
     const realPollMessageId = poll.key.id;
     const serializedPoll = serializeMessage(poll.message);
-    dispatch = { ...dispatch, poll_message_id: realPollMessageId, poll_message_json: serializedPoll, poll_sent_at: sentAt };
+    dispatch = { ...dispatch, poll_remote_message_id: realPollMessageId, poll_message_json: serializedPoll, poll_sent_at: sentAt };
     pollMessageCache.set(realPollMessageId, { key: poll.key, message: poll.message, dispatch, ready: false });
     // Bounded poll cache: each entry holds the full dispatch row + the
     // serialized poll — unbounded growth over weeks of auctions. Evict the
@@ -415,7 +424,7 @@ async function sendDispatch(claimedDispatch) {
       pollMessageCache.delete(oldestReady);
     }
     const { error } = await db.from("whatsapp_dispatches").update({
-      poll_message_id: realPollMessageId,
+      poll_remote_message_id: realPollMessageId,
       poll_message_json: serializedPoll,
       poll_sent_at: sentAt,
       updated_at: sentAt,
@@ -428,8 +437,8 @@ async function sendDispatch(claimedDispatch) {
   }
   await db.from("auctions").update({
     whatsapp_group_id: group.group_jid,
-    poll_id: dispatch.poll_message_id,
-    message_id: dispatch.announcement_message_id,
+    poll_id: dispatch.poll_remote_message_id || dispatch.poll_message_id,
+    message_id: dispatch.announcement_remote_message_id || dispatch.announcement_message_id,
     updated_at: new Date().toISOString(),
   }).eq("id", auction.id);
 
@@ -445,11 +454,26 @@ async function sendDispatch(claimedDispatch) {
   if (error) throw new Error(error.message);
   dispatch = sentDispatch || { ...dispatch, status: "sent", sent_at: now };
 
-  const cached = pollMessageCache.get(dispatch.poll_message_id);
-  if (cached) pollMessageCache.set(dispatch.poll_message_id, { ...cached, dispatch, ready: true });
+  const remotePollId = dispatch.poll_remote_message_id || dispatch.poll_message_id;
+  const cached = pollMessageCache.get(remotePollId);
+  if (cached) pollMessageCache.set(remotePollId, { ...cached, dispatch, ready: true });
   console.log(`📤 Enquete enviada: ${card.name} → ${group.name}`);
-  await drainPendingPollVotes(dispatch.poll_message_id);
+  await drainPendingPollVotes(remotePollId);
   void syncAuctionGroup(group.group_jid);
+}
+
+async function sendDispatch(claimedDispatch) {
+  const dispatchId = String(claimedDispatch?.id || "");
+  if (!dispatchId) return sendDispatchInternal(claimedDispatch);
+  const running = dispatchInFlight.get(dispatchId);
+  if (running) return running;
+  const promise = sendDispatchInternal(claimedDispatch);
+  dispatchInFlight.set(dispatchId, promise);
+  try {
+    return await promise;
+  } finally {
+    if (dispatchInFlight.get(dispatchId) === promise) dispatchInFlight.delete(dispatchId);
+  }
 }
 
 async function runScheduler() {
@@ -630,9 +654,12 @@ async function handlePollVote(dispatch, pollUpdate, originalMessageOverride) {
 async function loadDispatchForPoll(pollMessageId) {
   const cached = pollMessageCache.get(pollMessageId);
   if (cached?.ready && cached.dispatch) return { dispatch: cached.dispatch, cached };
-  const { data: dispatch, error } = await db.from("whatsapp_dispatches").select("*").eq("poll_message_id", pollMessageId).maybeSingle();
-  if (error) throw new Error(error.message);
-  return { dispatch, cached };
+  const primary = await db.from("whatsapp_dispatches").select("*").eq("poll_message_id", pollMessageId).maybeSingle();
+  if (primary.error) throw new Error(primary.error.message);
+  if (primary.data) return { dispatch: primary.data, cached };
+  const remote = await db.from("whatsapp_dispatches").select("*").eq("poll_remote_message_id", pollMessageId).maybeSingle();
+  if (remote.error) throw new Error(remote.error.message);
+  return { dispatch: remote.data ?? null, cached };
 }
 
 async function processIncomingPollMessage(message) {

@@ -17,5 +17,28 @@ if (-not (Test-Path ".venv")) {
     exit 1
 }
 
+# Opcionalmente carrega recognition\.env. Nunca versionar esse arquivo.
+$envFile = Join-Path $here ".env"
+if (Test-Path $envFile) {
+    Get-Content $envFile | ForEach-Object {
+        $line = $_.Trim()
+        if ($line -and -not $line.StartsWith("#") -and $line -match '^([A-Za-z_][A-Za-z0-9_]*)=(.*) no startup para a primeira foto ja ser rapida.
+& .\.venv\Scripts\python.exe recognition_server.py --preload
+) {
+            $name = $Matches[1]
+            $value = $Matches[2].Trim()
+            if (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'"))) {
+                $value = $value.Substring(1, $value.Length - 2)
+            }
+            [Environment]::SetEnvironmentVariable($name, $value, "Process")
+        }
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($env:RECOGNITION_SERVICE_SHARED_SECRET) -or $env:RECOGNITION_SERVICE_SHARED_SECRET.Length -lt 32) {
+    Write-Error "Defina RECOGNITION_SERVICE_SHARED_SECRET (>= 32 caracteres) no ambiente ou em recognition\.env. Use o MESMO valor no servidor Next.js/Vercel."
+    exit 1
+}
+
 # Carrega modelos no startup para a primeira foto ja ser rapida.
 & .\.venv\Scripts\python.exe recognition_server.py --preload

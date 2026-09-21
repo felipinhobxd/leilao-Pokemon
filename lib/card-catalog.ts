@@ -1,4 +1,4 @@
-import { issueRecognitionServiceToken } from "./card-recognition-token";
+import { issueRecognitionServiceToken } from "./card-recognition-token.mjs";
 
 // Validação de lote contra o catálogo de reconhecimento (Fase 4.3).
 //

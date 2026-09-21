@@ -322,6 +322,7 @@ async function removeWhatsAppSession() {
     resolved === root ||
     resolved === here ||
     !relative ||
+    relative === ".." ||
     relative.startsWith(".." + path.sep) ||
     path.isAbsolute(relative)
   ) {

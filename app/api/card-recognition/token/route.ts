@@ -1,5 +1,5 @@
 import { authorize, failure } from "@/lib/backend";
-import { issueRecognitionServiceToken } from "@/lib/card-recognition-token";
+import { issueRecognitionServiceToken } from "@/lib/card-recognition-token.mjs";
 
 export const runtime = "nodejs";
 

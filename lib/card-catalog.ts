@@ -1,3 +1,5 @@
+import { issueRecognitionServiceToken } from "./card-recognition-token";
+
 // Validação de lote contra o catálogo de reconhecimento (Fase 4.3).
 //
 // O catálogo de cartas vive no SQLite LOCAL do PC do bot — não no Supabase.
@@ -41,7 +43,21 @@ export async function validateCardAgainstCatalog(input: {
   const params = new URLSearchParams({ language: input.language, set: setRef, number });
   const url = `${SERVICE_BASE}/catalog/exists?${params}`;
   try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(CHECK_TIMEOUT_MS) });
+    const sharedSecret = process.env.RECOGNITION_SERVICE_SHARED_SECRET?.trim();
+    if (!sharedSecret) {
+      return {
+        checked: false,
+        exists: false,
+        cardId: null,
+        setId: null,
+        unreachable: "segredo compartilhado do serviço de reconhecimento não configurado",
+      };
+    }
+    const { token } = issueRecognitionServiceToken("catalog-validator");
+    const response = await fetch(url, {
+      signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
+      headers: { Authorization: `Bearer ${token}` },
+    });
     if (!response.ok) {
       return { checked: false, exists: false, cardId: null, setId: null,
                unreachable: `HTTP ${response.status} do serviço de catálogo` };

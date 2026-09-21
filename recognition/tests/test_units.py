@@ -53,6 +53,90 @@ def _sideways_card_photo(rotation_code: int) -> np.ndarray:
     return desk
 
 
+class TestRecognitionServiceAuth(unittest.TestCase):
+    """The local service must reject direct calls unless the Next.js-issued
+    short-lived HMAC capability is valid."""
+
+    SECRET = "unit-test-recognition-secret-0123456789abcdef"
+
+    @staticmethod
+    def _token(secret: str, *, issued_at: int, expires_at: int) -> str:
+        import base64
+        import hashlib
+        import hmac
+        import json
+        payload = {
+            "v": 1,
+            "aud": "pokemon-card-recognition",
+            "sub": "unit-test-admin",
+            "iat": issued_at,
+            "exp": expires_at,
+            "jti": "unit-test-jti",
+        }
+        encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
+        signature = hmac.new(secret.encode(), encoded.encode("ascii"), hashlib.sha256).digest()
+        signed = base64.urlsafe_b64encode(signature).decode().rstrip("=")
+        return f"{encoded}.{signed}"
+
+    @staticmethod
+    def _request(token: str | None):
+        from starlette.requests import Request
+        headers = [] if token is None else [(b"authorization", f"Bearer {token}".encode())]
+        return Request({
+            "type": "http",
+            "method": "GET",
+            "path": "/recognize",
+            "headers": headers,
+            "query_string": b"",
+            "server": ("127.0.0.1", 8765),
+            "scheme": "http",
+        })
+
+    def test_valid_token_is_accepted(self):
+        import time
+        from unittest.mock import patch
+        from recognizer.service_auth import verify_service_token
+        now = int(time.time())
+        token = self._token(self.SECRET, issued_at=now, expires_at=now + 300)
+        with patch.dict(os.environ, {"RECOGNITION_SERVICE_SHARED_SECRET": self.SECRET}, clear=False):
+            payload = verify_service_token(self._request(token))
+        self.assertEqual(payload["sub"], "unit-test-admin")
+
+    def test_tampered_token_is_rejected(self):
+        import time
+        from fastapi import HTTPException
+        from unittest.mock import patch
+        from recognizer.service_auth import verify_service_token
+        now = int(time.time())
+        token = self._token(self.SECRET, issued_at=now, expires_at=now + 300) + "x"
+        with patch.dict(os.environ, {"RECOGNITION_SERVICE_SHARED_SECRET": self.SECRET}, clear=False):
+            with self.assertRaises(HTTPException) as ctx:
+                verify_service_token(self._request(token))
+        self.assertEqual(ctx.exception.status_code, 401)
+
+    def test_expired_token_is_rejected(self):
+        import time
+        from fastapi import HTTPException
+        from unittest.mock import patch
+        from recognizer.service_auth import verify_service_token
+        now = int(time.time())
+        token = self._token(self.SECRET, issued_at=now - 600, expires_at=now - 300)
+        with patch.dict(os.environ, {"RECOGNITION_SERVICE_SHARED_SECRET": self.SECRET}, clear=False):
+            with self.assertRaises(HTTPException) as ctx:
+                verify_service_token(self._request(token))
+        self.assertEqual(ctx.exception.status_code, 401)
+
+    def test_missing_secret_fails_closed(self):
+        from fastapi import HTTPException
+        from unittest.mock import patch
+        from recognizer.service_auth import verify_service_token
+        token = "a.b"
+        with patch.dict(os.environ, {"RECOGNITION_SERVICE_SHARED_SECRET": ""}, clear=False):
+            with self.assertRaises(HTTPException) as ctx:
+                verify_service_token(self._request(token))
+        self.assertEqual(ctx.exception.status_code, 503)
+
+
 class TestPhotometric(unittest.TestCase):
     def test_gamma_auto_lifts_dark_images(self):
         dark = synthetic_card_photo(brightness=40, background=10)

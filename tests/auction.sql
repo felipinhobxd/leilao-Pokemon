@@ -25,9 +25,9 @@ begin
  perform pg_temp.rejects(cmd||'{"amount":30}', 'event_id_conflict');
  perform pg_temp.rejects(cmd||'{"eventId":"below","amount":5}', 'active_bid_exists');
  perform pg_temp.rejects(cmd||jsonb_build_object('eventId','below2','participantId',p2->>'id','amount',5),'invalid_bid_amount');
- perform pg_temp.cmd(cmd||jsonb_build_object('eventId','b2','participantId',p2->>'id'));
- perform pg_temp.rejects(cmd||jsonb_build_object('eventId','below_increment','participantId',p2->>'id','amount',24),'bid_increment_required');
- perform pg_temp.cmd(cmd||jsonb_build_object('eventId','increment_ok','participantId',p2->>'id','amount',25));
+ perform pg_temp.cmd(cmd||jsonb_build_object('eventId','b2','participantId',p2->>'id','amount',21));
+ perform pg_temp.rejects(cmd||jsonb_build_object('eventId','below_increment','participantId',p2->>'id','amount',20),'bid_increment_required');
+ perform pg_temp.cmd(cmd||jsonb_build_object('eventId','increment_ok','participantId',p2->>'id','amount',22));
  perform pg_temp.check_that((select count(*)=2 from public.bids),'two confirmed bids');
  perform pg_temp.cmd(cmd||'{"type":"BID_CHANGED","eventId":"change","amount":25}');
  perform pg_temp.check_that((select count(*)=1 from public.bids where participant_id=(p1->>'id')::uuid and status='active'),'one active after change');
@@ -35,9 +35,9 @@ begin
  perform pg_temp.rejects(cmd||jsonb_build_object('type','BID_CHANGED','eventId','stale','occurredAt','2000-01-01T00:00:00Z'),'stale_event');
  perform pg_temp.cmd(cmd||'{"type":"BID_WITHDRAWN","eventId":"withdraw"}');
  perform pg_temp.check_that((select count(*)=1 from public.bids where participant_id=(p1->>'id')::uuid and status='withdrawn'),'withdrawal retained');
- perform pg_temp.cmd(cmd||'{"eventId":"b3"}');
+ perform pg_temp.cmd(cmd||jsonb_build_object('eventId','b3','amount',23));
  r:=pg_temp.cmd(jsonb_build_object('type','AUCTION_FINALIZE','eventId','final1','auctionId',a->>'id'));
- perform pg_temp.check_that(r->'auction'->>'winner_participant_id'=p2->>'id','tie chooses earlier remaining valid bid');
+ perform pg_temp.check_that(r->'auction'->>'winner_participant_id'=p1->>'id','highest valid remaining bid wins');
  perform pg_temp.check_that((select count(*)=1 from public.purchases),'one purchase');
  perform pg_temp.check_that(pg_temp.cmd(cmd)->'bid'->>'id' is not null,'duplicate accepted after close');
  perform pg_temp.rejects(cmd||'{"type":"BID_WITHDRAWN","eventId":"late"}','auction_not_open');

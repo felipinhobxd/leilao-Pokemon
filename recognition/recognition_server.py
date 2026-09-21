@@ -174,7 +174,8 @@ def health():
     # sessions. A lazy component that has not been warmed yet means the first
     # photo would stall for seconds — that is NOT ready.
     models_loaded = bool(recognizer and recognizer.embedding_ready and recognizer.ocr_ready)
-    ready = bool(recognizer and index_size > 0 and models_loaded)
+    auth_configured = len(os.environ.get("RECOGNITION_SERVICE_SHARED_SECRET", "").strip()) >= 32
+    ready = bool(recognizer and index_size > 0 and models_loaded and auth_configured)
     import onnxruntime as ort
     payload = {
         "status": "ok",
@@ -183,6 +184,7 @@ def health():
         # must use the local pipeline only when ready (status=ok alone just
         # means the process is alive).
         "ready": ready,
+        "authConfigured": auth_configured,
         "service": "pokemon-card-recognition",
         "version": "1.3.0",
         "uptimeSec": int(time.time() - _state["started"]),

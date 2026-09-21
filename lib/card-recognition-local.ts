@@ -33,6 +33,7 @@ import {
   type ServiceHealth,
   type ServiceResult,
 } from "./card-recognition-service-contract";
+import { createPublicSupabaseClient } from "./supabase";
 
 const SERVICE_BASE = "http://127.0.0.1:8765";
 const HEALTH_TIMEOUT_MS = 1200;
@@ -78,6 +79,47 @@ export type { ServiceCandidate, ServiceHealth, ServiceResult };
 type StatusCache = { status: LocalServiceStatus; checkedAt: number; health?: ServiceHealth };
 let statusCache: StatusCache = { status: "checking", checkedAt: 0 };
 let probePromise: Promise<StatusCache> | null = null;
+
+type ServiceTokenCache = { token: string; expiresAt: number; userId: string };
+const authDb = createPublicSupabaseClient();
+let serviceTokenCache: ServiceTokenCache | null = null;
+let serviceTokenPromise: Promise<string> | null = null;
+
+async function localServiceToken(force = false): Promise<string> {
+  const now = Date.now();
+  if (!force && serviceTokenCache && serviceTokenCache.expiresAt - now > 30_000) {
+    return serviceTokenCache.token;
+  }
+  if (serviceTokenPromise) return serviceTokenPromise;
+
+  serviceTokenPromise = (async () => {
+    const { data } = await authDb.auth.getSession();
+    if (!data.session) throw new Error("Sessão administrativa ausente.");
+    const response = await fetch("/api/card-recognition/token", {
+      method: "GET",
+      cache: "no-store",
+      headers: { Authorization: `Bearer ${data.session.access_token}` },
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok || typeof body?.token !== "string" || !body.expiresAt) {
+      throw new Error(body?.error ?? "Não foi possível autorizar o reconhecimento local.");
+    }
+    const expiresAt = Date.parse(body.expiresAt);
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      throw new Error("Token do reconhecimento local inválido.");
+    }
+    serviceTokenCache = { token: body.token, expiresAt, userId: data.session.user.id };
+    return body.token;
+  })().finally(() => {
+    serviceTokenPromise = null;
+  });
+
+  return serviceTokenPromise;
+}
+
+function clearLocalServiceToken() {
+  serviceTokenCache = null;
+}
 
 export function imageRecognitionEnabled(): boolean {
   if (typeof window === "undefined") return true;
@@ -191,11 +233,23 @@ async function recognizeWithLocalService(file: File, onProgress?: (message: stri
     onProgress?.("🖥️ Serviço local de reconhecimento · duas rotas (visual + OCR)…");
     const form = new FormData();
     form.append("file", file, file.name || "card.jpg");
-    const response = await fetch(`${SERVICE_BASE}/recognize`, {
+    let token = await localServiceToken();
+    let response = await fetch(`${SERVICE_BASE}/recognize`, {
       method: "POST",
       body: form,
       signal: AbortSignal.timeout(RECOGNIZE_TIMEOUT_MS),
+      headers: { Authorization: `Bearer ${token}` },
     });
+    if (response.status === 401) {
+      clearLocalServiceToken();
+      token = await localServiceToken(true);
+      response = await fetch(`${SERVICE_BASE}/recognize`, {
+        method: "POST",
+        body: form,
+        signal: AbortSignal.timeout(RECOGNIZE_TIMEOUT_MS),
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    }
     if (!response.ok) {
       const body = await response.json().catch(() => null);
       throw new Error(body?.detail ?? `Serviço local HTTP ${response.status}`);
@@ -253,8 +307,23 @@ export async function confirmRecognitionMemory(file: File, card: {
   const form = new FormData();
   form.append("file", file, file.name || "confirmed.jpg");
   form.append("card", JSON.stringify(card));
-  const response = await fetch(`${SERVICE_BASE}/memory/confirm`, { method: "POST", body: form,
-    signal: AbortSignal.timeout(30_000) });
+  let token = await localServiceToken();
+  let response = await fetch(`${SERVICE_BASE}/memory/confirm`, {
+    method: "POST",
+    body: form,
+    signal: AbortSignal.timeout(30_000),
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (response.status === 401) {
+    clearLocalServiceToken();
+    token = await localServiceToken(true);
+    response = await fetch(`${SERVICE_BASE}/memory/confirm`, {
+      method: "POST",
+      body: form,
+      signal: AbortSignal.timeout(30_000),
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  }
   if (!response.ok) throw new Error(`memory/confirm HTTP ${response.status}`);
   return (await response.json()) as { status: string; example: Record<string, unknown> };
 }

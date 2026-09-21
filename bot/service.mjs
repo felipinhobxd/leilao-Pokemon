@@ -315,7 +315,18 @@ async function syncGroupsWithRestart(automatic = false) {
 async function removeWhatsAppSession() {
   const resolved = path.resolve(SESSION_DIR);
   const root = path.parse(resolved).root;
-  if (resolved === root || resolved === here) throw new Error("unsafe_whatsapp_session_dir");
+  const relative = path.relative(here, resolved);
+  // The session must live INSIDE the bot directory. Besides protecting the
+  // bot source itself, this rejects ".." traversal and absolute paths outside it.
+  if (
+    resolved === root ||
+    resolved === here ||
+    !relative ||
+    relative.startsWith(".." + path.sep) ||
+    path.isAbsolute(relative)
+  ) {
+    throw new Error("unsafe_whatsapp_session_dir");
+  }
   // Logout must also clear partially-written/corrupted Baileys sessions.
   // Checking creds.json first left a broken folder behind precisely when
   // cleanup was most needed after a crash or interrupted pairing.

@@ -349,14 +349,29 @@ async function fetchAuctionContext(dispatch) {
 }
 
 async function persistDispatchMessageIds(dispatch) {
-  const announcementMessageId = dispatch.announcement_message_id || dispatchMessageId(dispatch.id, "announcement");
-  const pollMessageId = dispatch.poll_message_id || dispatchMessageId(dispatch.id, "poll");
-  if (dispatch.announcement_message_id === announcementMessageId && dispatch.poll_message_id === pollMessageId) {
-    return { ...dispatch, announcement_message_id: announcementMessageId, poll_message_id: pollMessageId };
+  const announcementMessageId = dispatchMessageId(dispatch.id, "announcement");
+  const pollMessageId = dispatchMessageId(dispatch.id, "poll");
+  // Before this hardening, poll_message_id was overwritten with the actual
+  // WhatsApp ID after the send. On an old in-flight dispatch that means a retry
+  // would use a NEW generated ID. Preserve that legacy value as the remote ID,
+  // then restore the deterministic idempotency key for future retries.
+  const legacyPollRemoteId = dispatch.poll_remote_message_id
+    || (dispatch.poll_message_id && dispatch.poll_message_id !== pollMessageId ? dispatch.poll_message_id : null);
+  const currentMatches = dispatch.announcement_message_id === announcementMessageId
+    && dispatch.poll_message_id === pollMessageId
+    && (dispatch.poll_remote_message_id || null) === (legacyPollRemoteId || null);
+  if (currentMatches) {
+    return {
+      ...dispatch,
+      announcement_message_id: announcementMessageId,
+      poll_message_id: pollMessageId,
+      poll_remote_message_id: legacyPollRemoteId,
+    };
   }
   const { data, error } = await db.from("whatsapp_dispatches").update({
     announcement_message_id: announcementMessageId,
     poll_message_id: pollMessageId,
+    poll_remote_message_id: legacyPollRemoteId,
     updated_at: new Date().toISOString(),
   }).eq("id", dispatch.id).select("*").single();
   if (error || !data) throw new Error(error?.message || "dispatch_message_ids_failed");

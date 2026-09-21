@@ -40,7 +40,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import uvicorn
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from PIL import Image
@@ -52,6 +52,7 @@ from recognizer.config import (BASE_DIR, DEFAULT_EMBEDDING, RECOGNITION_MAX_CONC
 from recognizer.journal import (JOURNAL_PATH, journal_check_previous_crash,
                                 journal_clear, journal_write)
 from recognizer.ort_session import demotion_report
+from recognizer.service_auth import verify_service_token
 from recognizer.pipeline import Recognizer
 from recognizer.store import CatalogStore
 
@@ -236,7 +237,8 @@ def _rewrite_candidate_urls(result) -> None:
 
 
 @app.post("/recognize")
-async def recognize(file: UploadFile = File(...)):
+async def recognize(request: Request, file: UploadFile = File(...)):
+    verify_service_token(request)
     _state["requests"] += 1
     queued_at = time.time()
     try:
@@ -288,7 +290,8 @@ async def recognize(file: UploadFile = File(...)):
 
 
 @app.get("/catalog/exists")
-def catalog_exists(language: str, set: str, number: str):
+def catalog_exists(request: Request, language: str, set: str, number: str):
+    verify_service_token(request)
     """Fase 4.3 — ghost-lot guard for the auction wizard: does this
     (language, set, collector number) exist in the local recognition
     catalog? Lightweight BY DESIGN: queries the SQLite catalog directly —
@@ -333,7 +336,8 @@ def scan(language: str, card_id: str):
 
 
 @app.post("/memory/confirm")
-async def memory_confirm(file: UploadFile = File(...), card: str = Form(...)):
+async def memory_confirm(request: Request, file: UploadFile = File(...), card: str = Form(...)):
+    verify_service_token(request)
     """Store a USER-CONFIRMED example (ground truth). Never called automatically.
 
     Hardened like /recognize: upload size limit (413), real image validation
@@ -380,12 +384,14 @@ async def memory_confirm(file: UploadFile = File(...), card: str = Form(...)):
 
 
 @app.get("/memory")
-def memory_list():
+def memory_list(request: Request):
+    verify_service_token(request)
     return {"examples": [e.to_dict() for e in memory_module.load_examples()]}
 
 
 @app.delete("/memory/{example_id}")
-def memory_delete(example_id: str):
+def memory_delete(request: Request, example_id: str):
+    verify_service_token(request)
     """Remove an example consistently from memory.json, memory-embeddings.npz
     AND memory-images/ under the same write lock used by confirm (atomic
     saves; concurrent confirm/delete pairs can never leave a half-removed or
@@ -398,7 +404,8 @@ def memory_delete(example_id: str):
 
 
 @app.post("/reload-index")
-def reload_index():
+def reload_index(request: Request):
+    verify_service_token(request)
     global _state
     with _lock:
         _state["recognizer"] = None

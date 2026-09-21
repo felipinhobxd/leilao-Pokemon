@@ -330,7 +330,16 @@ def scan(language: str, card_id: str):
     if resolved is None:
         raise HTTPException(status_code=404, detail="Scan não disponível")
     path, source = resolved
-    media = "image/webp" if source.endswith(".webp") else "image/jpeg"
+    suffix = os.path.splitext(path)[1].lower()
+    media = {
+        ".webp": "image/webp",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+    }.get(suffix)
+    if media is None:
+        raise HTTPException(status_code=415, detail="Formato de scan não suportado")
     return FileResponse(path, media_type=media,
                         headers={"Cache-Control": "public, max-age=604800"})
 

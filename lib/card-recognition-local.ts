@@ -163,6 +163,7 @@ export async function probeLocalService(force = false): Promise<LocalServiceStat
       // be exactly true — undefined/null/missing (partial JSON, older service)
       // must be treated as NOT usable, never as ready.
       if (health?.status !== "ok") throw new Error("health inválido");
+      if (health.authConfigured !== true) throw new Error("autenticação local não configurada");
       if (health.ready !== true) throw new Error("serviço não pronto (ready != true)");
       statusCache = { status: "online", checkedAt: Date.now(), health };
     } catch {

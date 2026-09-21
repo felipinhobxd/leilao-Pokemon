@@ -1,5 +1,5 @@
 // Contrato de transporte (Fase 3): esta rota APENAS ENFILEIRA comandos
-// (reconnect/disconnect/sync_groups) em `whatsapp_bot_commands` para o bot
+// (reconnect/disconnect/sync_groups/logout) em `whatsapp_bot_commands` para o bot
 // local consumir — ela NUNCA envia mensagens WhatsApp e não toca no Baileys.
 // O fluxo completo de um lote é: auctions/new → `whatsapp_dispatches`
 // (Supabase, fonte da verdade auditável) → fila persistente BullMQ/Redis no
@@ -10,7 +10,7 @@ import { authorize, failure, HttpError } from "@/lib/backend";
 
 export const runtime = "nodejs";
 
-const actions = ["reconnect", "disconnect", "sync_groups"] as const;
+const actions = ["reconnect", "disconnect", "sync_groups", "logout"] as const;
 type BotAction = typeof actions[number];
 
 function isOnline(heartbeat: unknown) {

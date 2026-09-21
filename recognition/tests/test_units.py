@@ -78,20 +78,6 @@ class TestRecognitionServiceAuth(unittest.TestCase):
         signed = base64.urlsafe_b64encode(signature).decode().rstrip("=")
         return f"{encoded}.{signed}"
 
-    @staticmethod
-    def _request(token: str | None):
-        from starlette.requests import Request
-        headers = [] if token is None else [(b"authorization", f"Bearer {token}".encode())]
-        return Request({
-            "type": "http",
-            "method": "GET",
-            "path": "/recognize",
-            "headers": headers,
-            "query_string": b"",
-            "server": ("127.0.0.1", 8765),
-            "scheme": "http",
-        })
-
     def test_valid_token_is_accepted(self):
         import time
         from unittest.mock import patch
@@ -99,41 +85,38 @@ class TestRecognitionServiceAuth(unittest.TestCase):
         now = int(time.time())
         token = self._token(self.SECRET, issued_at=now, expires_at=now + 300)
         with patch.dict(os.environ, {"RECOGNITION_SERVICE_SHARED_SECRET": self.SECRET}, clear=False):
-            payload = verify_service_token(self._request(token))
+            payload = verify_service_token(f"Bearer {token}")
         self.assertEqual(payload["sub"], "unit-test-admin")
 
     def test_tampered_token_is_rejected(self):
         import time
-        from fastapi import HTTPException
         from unittest.mock import patch
-        from recognizer.service_auth import verify_service_token
+        from recognizer.service_auth import ServiceAuthError, verify_service_token
         now = int(time.time())
         token = self._token(self.SECRET, issued_at=now, expires_at=now + 300) + "x"
         with patch.dict(os.environ, {"RECOGNITION_SERVICE_SHARED_SECRET": self.SECRET}, clear=False):
-            with self.assertRaises(HTTPException) as ctx:
-                verify_service_token(self._request(token))
+            with self.assertRaises(ServiceAuthError) as ctx:
+                verify_service_token(f"Bearer {token}")
         self.assertEqual(ctx.exception.status_code, 401)
 
     def test_expired_token_is_rejected(self):
         import time
-        from fastapi import HTTPException
         from unittest.mock import patch
-        from recognizer.service_auth import verify_service_token
+        from recognizer.service_auth import ServiceAuthError, verify_service_token
         now = int(time.time())
         token = self._token(self.SECRET, issued_at=now - 600, expires_at=now - 300)
         with patch.dict(os.environ, {"RECOGNITION_SERVICE_SHARED_SECRET": self.SECRET}, clear=False):
-            with self.assertRaises(HTTPException) as ctx:
-                verify_service_token(self._request(token))
+            with self.assertRaises(ServiceAuthError) as ctx:
+                verify_service_token(f"Bearer {token}")
         self.assertEqual(ctx.exception.status_code, 401)
 
     def test_missing_secret_fails_closed(self):
-        from fastapi import HTTPException
         from unittest.mock import patch
-        from recognizer.service_auth import verify_service_token
+        from recognizer.service_auth import ServiceAuthError, verify_service_token
         token = "a.b"
         with patch.dict(os.environ, {"RECOGNITION_SERVICE_SHARED_SECRET": ""}, clear=False):
-            with self.assertRaises(HTTPException) as ctx:
-                verify_service_token(self._request(token))
+            with self.assertRaises(ServiceAuthError) as ctx:
+                verify_service_token(f"Bearer {token}")
         self.assertEqual(ctx.exception.status_code, 503)
 
 

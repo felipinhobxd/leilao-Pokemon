@@ -42,6 +42,21 @@ begin
  perform pg_temp.check_that(pg_temp.cmd(cmd)->'bid'->>'id' is not null,'duplicate accepted after close');
  perform pg_temp.rejects(cmd||'{"type":"BID_WITHDRAWN","eventId":"late"}','auction_not_open');
  perform pg_temp.rejects(cmd||'{"type":"BUYOUT_CONFIRMED","eventId":"late-buyout"}','auction_not_open');
+
+ -- Database-level guard: the UI/API cannot be the final authority for the
+ -- increment. Use an isolated auction with increment R$ 5,00 and prove that
+ -- R$ 24,00 is rejected after a R$ 20,00 bid while R$ 25,00 is accepted.
+ card:=pg_temp.cmd('{"type":"CARD_CREATE","eventId":"card-increment","data":{"name":"Gengar","starting_price":10,"buyout_price":100}}');
+ a2:=pg_temp.cmd(jsonb_build_object('type','AUCTION_CREATE','eventId','a-increment','data',jsonb_build_object('card_id',card->>'id')));
+ update public.auctions set bid_increment=5 where id=(a2->>'id')::uuid;
+ perform pg_temp.cmd(jsonb_build_object('type','AUCTION_OPEN','eventId','open-increment','auctionId',a2->>'id'));
+ perform pg_temp.cmd(jsonb_build_object('type','BID_PLACED','eventId','increment-b1','auctionId',a2->>'id','participantId',p1->>'id','amount',20));
+ perform pg_temp.rejects(
+   jsonb_build_object('type','BID_PLACED','eventId','increment-bad','auctionId',a2->>'id','participantId',p2->>'id','amount',24),
+   'bid_increment_required'
+ );
+ perform pg_temp.cmd(jsonb_build_object('type','BID_PLACED','eventId','increment-ok','auctionId',a2->>'id','participantId',p2->>'id','amount',25));
+
  card:=pg_temp.cmd('{"type":"CARD_CREATE","eventId":"card2","data":{"name":"Eevee","starting_price":10,"buyout_price":100}}');
  a2:=pg_temp.cmd(jsonb_build_object('type','AUCTION_CREATE','eventId','a2','data',jsonb_build_object('card_id',card->>'id')));
  perform pg_temp.cmd(jsonb_build_object('type','AUCTION_OPEN','eventId','open2','auctionId',a2->>'id'));

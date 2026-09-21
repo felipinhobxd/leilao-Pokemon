@@ -33,7 +33,7 @@ begin
  perform pg_temp.cmd(
    jsonb_build_object('type','BID_CHANGED','eventId','increment_ok','auctionId',a->>'id','participantId',p2->>'id','amount',22)
  );
- perform pg_temp.check_that((select count(*)=2 from public.bids),'two confirmed bids');
+ perform pg_temp.check_that((select count(*)=2 from public.bids where auction_id=(a->>'id')::uuid and status='active'),'two active bids');
  perform pg_temp.cmd(cmd||'{"type":"BID_CHANGED","eventId":"change","amount":25}');
  perform pg_temp.check_that((select count(*)=1 from public.bids where participant_id=(p1->>'id')::uuid and status='active'),'one active after change');
  perform pg_temp.check_that((select count(*)=1 from public.bids where participant_id=(p1->>'id')::uuid and status='replaced' and replaced_by is not null),'replacement history');

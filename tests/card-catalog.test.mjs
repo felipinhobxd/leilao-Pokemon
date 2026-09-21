@@ -3,11 +3,18 @@ import assert from 'node:assert/strict';
 import { validateCardAgainstCatalog, isStrictCatalogMode } from '../lib/card-catalog.ts';
 
 const originalFetch = globalThis.fetch;
+const originalRecognitionSecret = process.env.RECOGNITION_SERVICE_SHARED_SECRET;
+process.env.RECOGNITION_SERVICE_SHARED_SECRET = originalRecognitionSecret || 'node-test-recognition-secret-0123456789abcdef';
 
 function withFetch(mock, run) {
   globalThis.fetch = mock;
   return run().finally(() => { globalThis.fetch = originalFetch; });
 }
+
+test.after(() => {
+  if (originalRecognitionSecret === undefined) delete process.env.RECOGNITION_SERVICE_SHARED_SECRET;
+  else process.env.RECOGNITION_SERVICE_SHARED_SECRET = originalRecognitionSecret;
+});
 
 test('carta presente no catalogo: checked=true, exists=true', async () => {
   await withFetch(async () => ({

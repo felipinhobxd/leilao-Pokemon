@@ -50,26 +50,13 @@ jobs:
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/bootstrap.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/schema.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/whatsapp_bridge.sql
-          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913042848_whatsapp_bot_runtime.sql
-          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913043449_whatsapp_bot_command_requester_index.sql
-          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913044443_whatsapp_group_sync_selection.sql
-          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913045744_auction_lot_increment_fields.sql
-          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913045753_auction_lot_number_sequence.sql
-          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913045801_auction_lot_number_constraints.sql
-          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913045807_auction_increment_constraint.sql
-          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913045819_auction_lot_edit_guard.sql
-          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913045826_card_images_bucket.sql
-          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913045842_create_auction_wizard_rpc.sql
-          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913050837_auction_lot_sequence_service_role_grant.sql
-          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913052500_whatsapp_dispatch_delivery_stages.sql
-          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913053833_whatsapp_dispatch_delivery_stages_noop_guard.sql
-          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913173647_dashboard_snapshot_perf.sql
-          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913180958_dashboard_snapshot.sql
-          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913193000_whatsapp_participant_identities.sql
-          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913202000_auction_publish_queues.sql
-          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913202500_auction_queue_trigger_permissions.sql
-          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913202800_auction_queue_fk_indexes.sql
-          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/20260913203200_auction_queue_actual_publish_deadline.sql
+          # Apply every versioned migration in lexical/version order so
+          # CI cannot silently drift behind production when a new migration
+          # is added. Base schema/bootstrap are loaded above first.
+          for migration in supabase/migrations/*.sql; do
+            echo "Applying $migration"
+            psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f "$migration"
+          done
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/participant-identities.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/auction.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/auction-wizard.sql

@@ -316,11 +316,9 @@ async function removeWhatsAppSession() {
   const resolved = path.resolve(SESSION_DIR);
   const root = path.parse(resolved).root;
   if (resolved === root || resolved === here) throw new Error("unsafe_whatsapp_session_dir");
-  try {
-    await readFile(path.join(resolved, "creds.json"), "utf8");
-  } catch {
-    return false;
-  }
+  // Logout must also clear partially-written/corrupted Baileys sessions.
+  // Checking creds.json first left a broken folder behind precisely when
+  // cleanup was most needed after a crash or interrupted pairing.
   await rm(resolved, { recursive: true, force: true });
   return true;
 }

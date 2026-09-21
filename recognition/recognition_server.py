@@ -52,7 +52,7 @@ from recognizer.config import (BASE_DIR, DEFAULT_EMBEDDING, RECOGNITION_MAX_CONC
 from recognizer.journal import (JOURNAL_PATH, journal_check_previous_crash,
                                 journal_clear, journal_write)
 from recognizer.ort_session import demotion_report
-from recognizer.service_auth import verify_service_token
+from recognizer.service_auth import ServiceAuthError, verify_service_token
 from recognizer.pipeline import Recognizer
 from recognizer.store import CatalogStore
 
@@ -80,6 +80,13 @@ app.add_middleware(
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+def require_service_auth(request: Request) -> None:
+    try:
+        verify_service_token(request.headers.get("authorization"))
+    except ServiceAuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @app.middleware("http")
@@ -240,7 +247,7 @@ def _rewrite_candidate_urls(result) -> None:
 
 @app.post("/recognize")
 async def recognize(request: Request, file: UploadFile = File(...)):
-    verify_service_token(request)
+    require_service_auth(request)
     _state["requests"] += 1
     queued_at = time.time()
     try:

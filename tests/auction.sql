@@ -93,7 +93,7 @@ reset role;
 set local role authenticated;
 select pg_temp.check_that((select count(*)=0 from public.cards),'non-staff cannot read');
 select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000001',true);
-select pg_temp.check_that((select count(*)=3 from public.cards),'staff can read');
+select pg_temp.check_that((select count(*)=4 from public.cards),'staff can read');
 select pg_temp.check_that(not has_table_privilege(current_user,'public.cards','INSERT'),'browser cannot write');
 select pg_temp.check_that(not has_function_privilege(current_user,'public.process_auction_command(jsonb,uuid)','EXECUTE'),'browser cannot call privileged command');
 reset role;

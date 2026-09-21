@@ -75,13 +75,25 @@ export async function recognitionLauncher(command) {
     const model = process.env.RECOGNITION_EMBEDDING || PRIMARY_EMBEDDING;
     const langs = process.env.RECOGNITION_LANGUAGES || SCAN_LANGUAGES;
     const py = pickPython();
-    let code = await run(py, [join(recognition, "scripts", "build_catalog.py"), "--languages", CATALOG_LANGUAGES]);
-    if (code !== 0) return void (process.exitCode = code);
-    code = await run(py, [join(recognition, "scripts", "download_scans.py"), "--languages", langs, "--workers", "16"]);
-    if (code !== 0) return void (process.exitCode = code);
-    code = await run(py, [join(recognition, "scripts", "build_index.py"),
-      "--model", model, "--batch", INDEX_BATCH, "--languages", langs, "--only-missing"]);
-    process.exitCode = code;
+
+    // Index construction is deliberately CPU-only on Windows. The target
+    // machines commonly use DirectML and SigLIP2 can return NaN during a long
+    // bulk build even when runtime inference is otherwise usable. Runtime
+    // recognition remains GPU-capable and has its own provider handling.
+    const previousProvider = process.env.RECOGNITION_PROVIDERS;
+    if (isWindows) process.env.RECOGNITION_PROVIDERS = "cpu";
+    try {
+      let code = await run(py, [join(recognition, "scripts", "build_catalog.py"), "--languages", CATALOG_LANGUAGES]);
+      if (code !== 0) return void (process.exitCode = code);
+      code = await run(py, [join(recognition, "scripts", "download_scans.py"), "--languages", langs, "--workers", "16"]);
+      if (code !== 0) return void (process.exitCode = code);
+      code = await run(py, [join(recognition, "scripts", "build_index.py"),
+        "--model", model, "--batch", INDEX_BATCH, "--languages", langs, "--only-missing"]);
+      process.exitCode = code;
+    } finally {
+      if (previousProvider === undefined) delete process.env.RECOGNITION_PROVIDERS;
+      else process.env.RECOGNITION_PROVIDERS = previousProvider;
+    }
     return;
   }
   console.error(`Comando desconhecido: ${command}`);

@@ -1,5 +1,18 @@
 # Serviço local de reconhecimento de cartas Pokémon (Python + ONNX)
 
+## Autenticação do serviço
+
+As rotas pesadas (`/recognize`, `/memory`, `/memory/confirm`, `/memory/{id}`, `/reload-index` e `/catalog/exists`) exigem um token curto emitido pelo servidor Next.js. O segredo compartilhado **nunca vai para o navegador**: somente o token assinado de poucos minutos chega ao cliente.
+
+No PC, crie `recognition/.env` (esse arquivo não entra no Git):
+
+```env
+RECOGNITION_SERVICE_SHARED_SECRET=um-segredo-aleatorio-com-pelo-menos-32-caracteres
+RECOGNITION_ALLOWED_ORIGINS=https://leilaopokemon.vercel.app
+```
+
+No Vercel, configure a mesma `RECOGNITION_SERVICE_SHARED_SECRET` como variável **server-only**. O domínio da Vercel continua precisando estar em `RECOGNITION_ALLOWED_ORIGINS` no PC.
+
 Pipeline forte de duas rotas rodando na máquina do usuário (`127.0.0.1:8765`), consumido pelo site com fallback automático para o pipeline do navegador (v11) quando offline.
 
 **Regra de projeto nº 1: OCR nunca é gatekeeper.** A rota visual identifica a carta mesmo quando o OCR lê lixo (ex.: "escia" numa carta Shroodle). Regressões obrigatórias em `tests/test_units.py` + fixtures.

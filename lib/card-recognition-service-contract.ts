@@ -68,6 +68,7 @@ export type ServiceResult = {
 export type ServiceHealth = {
   status: string;
   ready?: boolean;
+  authConfigured?: boolean;
   service: string;
   version: string;
   backend?: { providers?: string[]; embedding?: string; matcher?: string; ocr?: string; maxConcurrency?: number };

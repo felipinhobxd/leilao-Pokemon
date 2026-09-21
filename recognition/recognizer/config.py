@@ -4,6 +4,44 @@ from __future__ import annotations
 
 import os
 
+
+def load_local_env(path: str | None = None, environ: dict | None = None) -> list[str]:
+    """Apply recognition/.env (KEY=VALUE) without overriding the real env.
+
+    `npm start` (scripts/start-all.mjs) and `npm run recognition:local`
+    spawn this process directly — only run-local.ps1 reads recognition/.env,
+    so the documented setup silently produced a service with
+    authConfigured=false (health.ready=false) and the site fell back to the
+    browser pipeline for every photo. Loading the file here makes EVERY
+    launch path honor it. setdefault semantics: variables already in the
+    process environment (launcher, tests, CI) always win.
+    """
+    env = os.environ if environ is None else environ
+    target = path or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+    applied: list[str] = []
+    try:
+        with open(target, "r", encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return applied
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, _, value = line.partition("=")
+        name = name.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        if not name or name in env:
+            continue
+        env[name] = value
+        applied.append(name)
+    return applied
+
+
+load_local_env()
+
 BASE_DIR = os.environ.get(
     "RECOGNITION_HOME",
     os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "card-index"),

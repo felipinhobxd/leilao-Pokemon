@@ -1351,13 +1351,29 @@ class TestScanSingleFlight(unittest.TestCase):
 
     def test_example_ids_never_collide_within_the_same_millisecond(self):
         # Two DIFFERENT cards confirmed back-to-back used to get the same
-        # time-based id, so removing one deleted both.
-        first = memory_module.add_example({"cardId": "a", "language": "pt-BR", "name": "X"},
-                                          fake_png(4096), np.array([[1.0, 0.0]]))
-        second = memory_module.add_example({"cardId": "b", "language": "pt-BR", "name": "Y"},
-                                           fake_png(4100), np.array([[0.0, 1.0]]))
-        self.assertNotEqual(first.id, second.id)
-        remaining = memory_module.remove_example(second.id)
-        self.assertEqual(remaining, 1)
-        survivors = [e.card_id for e in memory_module.load_examples()]
-        self.assertEqual(survivors, ["a"])
+        # time-based id, so removing one deleted both. Memory paths MUST be
+        # redirected first: without isolation this test writes the operator's
+        # REAL confirmed-memory store (memory.json gains an "a"/"X" example
+        # whose embedding never lands, leaving the two stores inconsistent).
+        self.tmp = tempfile.mkdtemp(prefix="rec-memory-ids-")
+        self._orig_memory = (memory_module.MEMORY_FILE, memory_module.MEMORY_EMBEDDINGS,
+                             memory_module.MEMORY_IMAGES)
+        memory_module.MEMORY_FILE = os.path.join(self.tmp, "memory.json")
+        memory_module.MEMORY_EMBEDDINGS = os.path.join(self.tmp, "memory-embeddings.npz")
+        memory_module.MEMORY_IMAGES = os.path.join(self.tmp, "memory-images")
+        os.makedirs(memory_module.MEMORY_IMAGES, exist_ok=True)
+        try:
+            first = memory_module.add_example({"cardId": "a", "language": "pt-BR", "name": "X"},
+                                              fake_png(4096), np.array([[1.0, 0.0]]))
+            second = memory_module.add_example({"cardId": "b", "language": "pt-BR", "name": "Y"},
+                                                fake_png(4100), np.array([[0.0, 1.0]]))
+            self.assertNotEqual(first.id, second.id)
+            remaining = memory_module.remove_example(second.id)
+            self.assertEqual(remaining, 1)
+            survivors = [e.card_id for e in memory_module.load_examples()]
+            self.assertEqual(survivors, ["a"])
+        finally:
+            memory_module.MEMORY_FILE, memory_module.MEMORY_EMBEDDINGS, memory_module.MEMORY_IMAGES = \
+                self._orig_memory
+            memory_module._invalidate_read_cache()
+            shutil.rmtree(self.tmp, ignore_errors=True)

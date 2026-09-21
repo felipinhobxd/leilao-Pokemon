@@ -120,6 +120,62 @@ class TestRecognitionServiceAuth(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 503)
 
 
+class TestLocalEnvLoader(unittest.TestCase):
+    """config.load_local_env makes `npm start` honor recognition/.env.
+
+    scripts/start-all.mjs spawns the Python server directly — nothing on that
+    path reads recognition/.env, so a secret configured per README left the
+    service with authConfigured=false (health.ready=false) and the site
+    silently degraded EVERY photo to the browser pipeline.
+    """
+
+    def _write(self, tmp: str, content: str) -> str:
+        path = os.path.join(tmp, ".env")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        return path
+
+    def test_applies_keys_not_already_in_environment(self):
+        import tempfile
+        from recognizer.config import load_local_env
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, "\n".join([
+                "# comment line",
+                "RECOGNITION_TEST_A=alpha",
+                "  RECOGNITION_TEST_B = with spaces  ",
+                'RECOGNITION_TEST_C="quoted value"',
+                "RECOGNITION_TEST_D='single'",
+                "MALFORMED_LINE_NO_EQUALS",
+                "=ignored",
+            ]))
+            env: dict = {}
+            applied = load_local_env(path, env)
+        self.assertEqual(env["RECOGNITION_TEST_A"], "alpha")
+        self.assertEqual(env["RECOGNITION_TEST_B"], "with spaces")
+        self.assertEqual(env["RECOGNITION_TEST_C"], "quoted value")
+        self.assertEqual(env["RECOGNITION_TEST_D"], "single")
+        self.assertNotIn("MALFORMED_LINE_NO_EQUALS", env)
+        self.assertEqual(applied, ["RECOGNITION_TEST_A", "RECOGNITION_TEST_B",
+                                    "RECOGNITION_TEST_C", "RECOGNITION_TEST_D"])
+
+    def test_existing_environment_wins_over_file(self):
+        import tempfile
+        from recognizer.config import load_local_env
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, "RECOGNITION_TEST_A=from-file\n")
+            env = {"RECOGNITION_TEST_A": "from-process"}
+            applied = load_local_env(path, env)
+        self.assertEqual(env["RECOGNITION_TEST_A"], "from-process")
+        self.assertEqual(applied, [])
+
+    def test_missing_file_is_silently_ignored(self):
+        from recognizer.config import load_local_env
+        env: dict = {"PRESENT": "1"}
+        applied = load_local_env(os.path.join("C:\\", "definitely", "missing", "dir", ".env"), env)
+        self.assertEqual(applied, [])
+        self.assertEqual(env, {"PRESENT": "1"})
+
+
 class TestPhotometric(unittest.TestCase):
     def test_gamma_auto_lifts_dark_images(self):
         dark = synthetic_card_photo(brightness=40, background=10)

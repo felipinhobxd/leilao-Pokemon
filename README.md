@@ -40,6 +40,7 @@ Configure no `.env.local`:
 NEXT_PUBLIC_SUPABASE_URL=https://SEU-PROJETO.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=CHAVE_PUBLICAVEL
 SUPABASE_SECRET_KEY=CHAVE_PRIVADA_APENAS_NO_SERVIDOR
+RECOGNITION_SERVICE_SHARED_SECRET=SEGREDO_COMPARTILHADO_APENAS_NO_SERVIDOR
 ```
 
 Na Vercel, a integração do Supabase fornece `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` e `SUPABASE_SECRET_KEY`. Para instalações locais/self-hosted, `SUPABASE_SERVICE_ROLE_KEY` continua aceito como fallback. Nunca use uma chave secreta em variável `NEXT_PUBLIC_*`, no navegador, no GitHub ou em mensagens.
@@ -182,4 +183,5 @@ O CI também valida PostgreSQL 17, migrations, fluxo transacional de criação d
 - QR só é retornado a `admin`/`operator` enquanto estiver dentro do TTL.
 - A pasta de sessão Baileys e as chaves privadas ficam fora do Git.
 - O worker local ainda é infraestrutura privilegiada porque utiliza uma chave de servidor; proteja o PC e o arquivo `bot/.env`.
+- O serviço local de reconhecimento exige um token HMAC de curta duração emitido por uma API autenticada; o segredo compartilhado nunca é exposto ao navegador.
 - Baileys é uma integração não oficial do WhatsApp e deve ser acompanhado após atualizações do WhatsApp/Baileys.

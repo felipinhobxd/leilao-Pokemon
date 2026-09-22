@@ -100,3 +100,72 @@ export function buildPollPlan(startingPrice: number, increment: number, buyoutPr
 export function buildPollOptions(startingPrice: number, increment: number, buyoutPrice: number | null, requestedOptionCount = DEFAULT_POLL_OPTIONS): PollOption[] {
   return buildPollPlan(startingPrice, increment, buyoutPrice, requestedOptionCount).options;
 }
+
+// ---------------------------------------------------------------------------
+// Valores personalizados: em vez de incrementos automáticos, o operador digita
+// exatamente os valores da enquete ("1, 2, 5, 10"). O primeiro valor é o lance
+// inicial; o maior valor pode ser marcado como ARREMATE. O incremento do leilão
+// passa a ser o MENOR intervalo entre valores consecutivos — o guard do banco
+// exige novo lance >= maior lance + incremento, e com o menor intervalo toda
+// opção seguinte da lista sempre passa.
+// ---------------------------------------------------------------------------
+
+export type CustomValuesPlan = {
+  options: PollOption[];
+  startingPrice: number;
+  bidIncrement: number | null;
+  buyoutPrice: number | null;
+  error: string | null;
+};
+
+const twoDecimalsOk = (value: number) => Math.abs(value * 100 - Math.round(value * 100)) < 0.00001;
+
+/** Converte "1, 2,5 · 10" em [1, 2.5, 10]; null quando um token não é número válido. */
+export function parseCustomValues(raw: string): number[] | null {
+  const text = String(raw ?? "").trim();
+  if (!text) return null;
+  // Separa por ponto-e-vírgula/quebra de linha; a vírgula só é separador de
+  // lista quando o token não é um decimal vírgula ("1,50" = 1.50; "1, 2" =
+  // dois valores).
+  const tokens: string[] = [];
+  for (const chunk of text.split(/[;\n]+/)) {
+    const clean = chunk.trim();
+    if (!clean) continue;
+    if (/^\d{1,7},\d{1,2}$/.test(clean)) tokens.push(clean);
+    else tokens.push(...clean.split(",").map(token => token.trim()).filter(Boolean));
+  }
+  if (!tokens.length) return null;
+  const values: number[] = [];
+  for (const token of tokens) {
+    const value = Number(token.replace(",", "."));
+    if (!Number.isFinite(value) || value <= 0 || !twoDecimalsOk(value)) return null;
+    values.push(value);
+  }
+  return values;
+}
+
+export function buildCustomValuesPlan(values: number[], buyoutLast: boolean): CustomValuesPlan {
+  const empty: CustomValuesPlan = { options: [], startingPrice: 0, bidIncrement: null, buyoutPrice: null, error: "" };
+  if (!Array.isArray(values) || values.length < 2) return { ...empty, error: "Informe ao menos 2 valores." };
+  if (values.length > MAX_POLL_OPTIONS) return { ...empty, error: `A enquete aceita no máximo ${MAX_POLL_OPTIONS} valores.` };
+  for (const value of values) {
+    if (!Number.isFinite(value) || value <= 0 || !twoDecimalsOk(value)) return { ...empty, error: "Cada valor precisa ser positivo com até 2 casas decimais." };
+  }
+  const cents = values.map(toCents);
+  for (let index = 1; index < cents.length; index++) {
+    if (cents[index] <= cents[index - 1]) return { ...empty, error: "Os valores precisam estar em ordem crescente, sem repetições." };
+  }
+  let minGap = Infinity;
+  for (let index = 1; index < cents.length; index++) minGap = Math.min(minGap, cents[index] - cents[index - 1]);
+  const options = values.map((value, index) => {
+    const isBuyout = Boolean(buyoutLast) && index === values.length - 1;
+    return { label: isBuyout ? `${label(value)} 🦭` : label(value), amount: value, isBuyout };
+  });
+  return {
+    options,
+    startingPrice: values[0],
+    bidIncrement: Math.max(1, minGap) / 100,
+    buyoutPrice: buyoutLast ? values[values.length - 1] : null,
+    error: null,
+  };
+}

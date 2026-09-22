@@ -1,5 +1,5 @@
 import { authorize, failure, HttpError } from "@/lib/backend";
-import { buildPollPlan, cardConditions, cardLanguages, DEFAULT_POLL_OPTIONS, MAX_POLL_OPTIONS } from "@/lib/auction-wizard";
+import { buildCustomValuesPlan, buildPollPlan, cardConditions, cardLanguages, DEFAULT_POLL_OPTIONS, MAX_POLL_OPTIONS, parseCustomValues } from "@/lib/auction-wizard";
 import { validateCardAgainstCatalog, isStrictCatalogMode } from "@/lib/card-catalog";
 
 export const runtime = "nodejs";
@@ -60,19 +60,44 @@ export async function POST(request: Request) {
     const startingPrice = Number(auction.starting_price);
     const increment = Number(auction.bid_increment);
     const buyout = auction.buyout_price === null || auction.buyout_price === "" || auction.buyout_price === undefined ? null : Number(auction.buyout_price);
-    if (!Number.isFinite(startingPrice) || startingPrice < 0 || !twoDecimals(startingPrice)) throw new HttpError(400, "Lance inicial inválido.");
-    if (!Number.isFinite(increment) || increment <= 0 || !twoDecimals(increment)) throw new HttpError(400, "Incremento inválido.");
-    if (buyout != null && (!Number.isFinite(buyout) || buyout <= startingPrice || !twoDecimals(buyout))) throw new HttpError(400, "ARREMATE deve ser maior que o lance inicial.");
 
-    const requestedOptionCount = buyout == null ? Number(auction.option_count ?? DEFAULT_POLL_OPTIONS) : DEFAULT_POLL_OPTIONS;
-    if (buyout == null && (!Number.isSafeInteger(requestedOptionCount) || requestedOptionCount < 2 || requestedOptionCount > MAX_POLL_OPTIONS)) {
-      throw new HttpError(400, `A enquete sem ARREMATE precisa ter entre 2 e ${MAX_POLL_OPTIONS} opções.`);
+    // Modo de valores: "increment" (padrão — lance inicial + incremento +
+    // ARREMATE opcionais) ou "custom" (o operador digita os valores exatos
+    // da enquete; primeiro = lance inicial, maior pode ser ARREMATE).
+    const pricingMode = String(auction.pricing_mode ?? "increment");
+    let planOptions: { label: string; amount: number; isBuyout: boolean }[] = [];
+    let effectiveStarting = startingPrice;
+    let effectiveIncrement = increment;
+    let effectiveBuyout = buyout;
+
+    if (pricingMode === "custom") {
+      const rawValues = auction.custom_values;
+      const values = Array.isArray(rawValues)
+        ? rawValues.map(value => Number(value))
+        : parseCustomValues(String(rawValues ?? ""));
+      if (!values) throw new HttpError(400, "Valores personalizados inválidos.");
+      const plan = buildCustomValuesPlan(values, Boolean(auction.custom_buyout_last));
+      if (plan.error) throw new HttpError(400, plan.error);
+      planOptions = plan.options;
+      effectiveStarting = plan.startingPrice;
+      effectiveIncrement = plan.bidIncrement ?? 0.01;
+      effectiveBuyout = plan.buyoutPrice;
+    } else {
+      if (!Number.isFinite(startingPrice) || startingPrice < 0 || !twoDecimals(startingPrice)) throw new HttpError(400, "Lance inicial inválido.");
+      if (!Number.isFinite(increment) || increment <= 0 || !twoDecimals(increment)) throw new HttpError(400, "Incremento inválido.");
+      if (buyout != null && (!Number.isFinite(buyout) || buyout <= startingPrice || !twoDecimals(buyout))) throw new HttpError(400, "ARREMATE deve ser maior que o lance inicial.");
+
+      const requestedOptionCount = buyout == null ? Number(auction.option_count ?? DEFAULT_POLL_OPTIONS) : DEFAULT_POLL_OPTIONS;
+      if (buyout == null && (!Number.isSafeInteger(requestedOptionCount) || requestedOptionCount < 2 || requestedOptionCount > MAX_POLL_OPTIONS)) {
+        throw new HttpError(400, `A enquete sem ARREMATE precisa ter entre 2 e ${MAX_POLL_OPTIONS} opções.`);
+      }
+      const plan = buildPollPlan(startingPrice, increment, buyout, requestedOptionCount);
+      if (plan.overflow && buyout != null && plan.minimumIncrement != null) {
+        throw new HttpError(400, `Esses valores gerariam ${plan.optionCount} opções, mas o WhatsApp aceita no máximo ${MAX_POLL_OPTIONS}. Use incremento de pelo menos ${money(plan.minimumIncrement)}.`);
+      }
+      if (!plan.options.length || plan.options.length > MAX_POLL_OPTIONS) throw new HttpError(400, "Não foi possível montar os valores da enquete.");
+      planOptions = plan.options;
     }
-    const plan = buildPollPlan(startingPrice, increment, buyout, requestedOptionCount);
-    if (plan.overflow && buyout != null && plan.minimumIncrement != null) {
-      throw new HttpError(400, `Esses valores gerariam ${plan.optionCount} opções, mas o WhatsApp aceita no máximo ${MAX_POLL_OPTIONS}. Use incremento de pelo menos ${money(plan.minimumIncrement)}.`);
-    }
-    if (!plan.options.length || plan.options.length > MAX_POLL_OPTIONS) throw new HttpError(400, "Não foi possível montar os valores da enquete.");
 
     const groupId = String(auction.group_id ?? "");
     if (!uuid.test(groupId)) throw new HttpError(400, "Selecione um grupo do WhatsApp.");
@@ -114,13 +139,13 @@ export async function POST(request: Request) {
       },
       auction: {
         lot_number: lotNumber,
-        starting_price: startingPrice,
-        bid_increment: increment,
-        buyout_price: buyout,
+        starting_price: effectiveStarting,
+        bid_increment: effectiveIncrement,
+        buyout_price: effectiveBuyout,
         scheduled_at: new Date(scheduledTime).toISOString(),
         scheduled_end_at: endAt ? new Date(endAt).toISOString() : null,
         group_id: groupId,
-        poll_options: plan.options,
+        poll_options: planOptions,
       },
     };
 

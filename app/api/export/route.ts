@@ -5,7 +5,7 @@ import { excelBrasiliaDate } from "@/lib/brasilia-time";
 export const runtime = "nodejs";
 
 const sheets: [Table, string, [string, string][]][] = [
-  ["cards", "Cartas", [["ID","id"],["Nome","name"],["Coleção","collection"],["Número","card_number"],["Imagem","image_url"],["Preço inicial","starting_price"],["ARREMATE","buyout_price"],["Status","status"],["Observações","notes"]]],
+  ["cards", "Cartas", [["ID","id"],["Nome","name"],["Número","card_number"],["Imagem","image_url"],["Preço inicial","starting_price"],["ARREMATE","buyout_price"],["Status","status"],["Observações","notes"]]],
   ["participants", "Participantes", [["ID","id"],["Nome","display_name"],["Telefone","phone_e164"],["WhatsApp técnico","whatsapp_id"],["Status","status"],["Primeiro voto","first_seen_at"],["Último voto","last_seen_at"],["Observações","notes"]]],
   ["auctions", "Leilões", [["ID","id"],["Lote","lot_number"],["Carta","card_name"],["ID carta","card_id"],["Status","status"],["Inicial","starting_price"],["ARREMATE","buyout_price"],["Vencedor","participant_name"],["Telefone vencedor","participant_phone"],["WhatsApp técnico","participant_whatsapp"],["Valor final","final_price"],["Tipo de vitória","win_type"],["Início","started_at"],["Prazo","scheduled_end_at"],["Fim","ended_at"]]],
   ["bids", "Lances", [["ID","id"],["Leilão","auction_id"],["Participante","participant_name"],["Telefone","participant_phone"],["WhatsApp técnico","participant_whatsapp"],["Valor","amount"],["Tipo","kind"],["Status","status"],["Confirmado em","processed_at"],["Ordem","confirmation_order"],["Evento externo","whatsapp_event_id"],["Substituído por","replaced_by"]]],
@@ -51,9 +51,17 @@ function styleSheet(sheet: ExcelJS.Worksheet) {
   sheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF18243D" } };
   sheet.getRow(1).alignment = { vertical: "middle" };
   sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: Math.max(1, sheet.columnCount) } };
-  for (let row = 2; row <= sheet.rowCount; row++) {
-    sheet.getRow(row).alignment = { vertical: "middle" };
-    if (row % 2 === 0) sheet.getRow(row).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF6F8FB" } };
+  const thinBorder: Partial<ExcelJS.Borders> = {
+    top: { style: "thin", color: { argb: "FFD9DEE7" } },
+    left: { style: "thin", color: { argb: "FFD9DEE7" } },
+    bottom: { style: "thin", color: { argb: "FFD9DEE7" } },
+    right: { style: "thin", color: { argb: "FFD9DEE7" } },
+  };
+  for (let row = 1; row <= sheet.rowCount; row++) {
+    const active = sheet.getRow(row);
+    active.alignment = { vertical: "middle" };
+    active.eachCell({ includeEmpty: true }, cell => { cell.border = thinBorder; });
+    if (row > 1 && row % 2 === 0) active.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF6F8FB" } };
   }
 }
 
@@ -71,15 +79,15 @@ export async function GET(request: Request) {
 
     const sales = workbook.addWorksheet("Vendas");
     sales.columns = [
-      { header: "Lote", key: "lot", width: 10 },
-      { header: "Carta", key: "card", width: 30 },
-      { header: "Coleção", key: "collection", width: 22 },
+      { header: "Lote", key: "lot", width: 8 },
+      { header: "Carta", key: "card", width: 32 },
       { header: "Número", key: "cardNumber", width: 14 },
       { header: "Comprador", key: "buyer", width: 28 },
-      { header: "Telefone / WhatsApp", key: "phone", width: 24 },
-      { header: "Valor", key: "amount", width: 16 },
-      { header: "Tipo", key: "winType", width: 18 },
-      { header: "Data da venda", key: "confirmedAt", width: 24 },
+      { header: "Telefone / WhatsApp", key: "phone", width: 22 },
+      { header: "Valor", key: "amount", width: 14 },
+      { header: "Tipo", key: "winType", width: 16 },
+      { header: "Data da venda", key: "confirmedAt", width: 22 },
+      { header: "Observações", key: "notes", width: 34 },
     ];
 
     for (const purchase of confirmedPurchases) {
@@ -89,13 +97,13 @@ export async function GET(request: Request) {
       sales.addRow({
         lot: auction?.lot_number ?? "",
         card: card?.name ?? "",
-        collection: card?.collection ?? "",
         cardNumber: card?.card_number ?? "",
         buyer: person?.display_name ?? "",
         phone: cleanPhone(person?.phone_e164, person?.whatsapp_id),
         amount: Number(purchase.amount ?? 0),
         winType: winTypeLabel(auction?.win_type),
         confirmedAt: excelDateValue(purchase.confirmed_at),
+        notes: "",
       });
     }
     sales.getColumn("amount").numFmt = '"R$" #,##0.00';

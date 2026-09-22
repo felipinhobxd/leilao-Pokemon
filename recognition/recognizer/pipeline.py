@@ -69,6 +69,10 @@ class Candidate:
     # Rarity as published by the catalog source ("Rare", "Illustration
     # Rare", …). Display metadata — it NEVER influences fusion scores.
     rarity: str = ""
+    # ISO release date of the card's set ("2000-02-24"), used ONLY by the
+    # language-cap rules (pre-2011 pt-BR Devir prints have no pt catalog
+    # entries by construction — see _cap_uncertain_language). Never scored.
+    release_date: str = ""
     # Which scan source actually resolved for this candidate
     # ("high.webp" | "low.webp" | "en-high.webp" | "en-low.webp" | None).
     # Transient metadata: candidates whose source is NOT the standard
@@ -204,6 +208,7 @@ def candidate_from_record(record) -> "Candidate":
         image_url=f"{record.image_base}/high.webp" if record.image_base else "",
         variant=variant,
         rarity=rarity,
+        release_date=getattr(record, "release_date", "") or "",
     )
 
 
@@ -802,12 +807,18 @@ class Recognizer:
           identity (artwork/set/number/printing) stands, but the decision is
           capped at PROVAVEL — never IDENTIFICADO with a possibly wrong tongue;
         - no twins -> the language is inherent to the winning catalog entry.
-          BUT a strong OCR read in ANOTHER language is a contradiction: the
+          A strong OCR read in ANOTHER language is a contradiction: the
           photographed print speaks a language the catalog does not carry for
-          that card (e.g. pre-2011 Brazilian Devir prints whose only catalog
-          entry is the EN twin). The identity may be right, the PRINTING is
-          not: cap at REVISAR and report "conflict" instead of a confident
-          IDENTIFICADO in the wrong language.
+          that card. EXCEPT the pre-2011 Devir case (project decision
+          2026-09-21): the pt-BR catalog starts at bw1 (2011), so pre-2011
+          Brazilian prints exist ONLY as their EN twins — a strong pt-BR read
+          against an EN-only winner of a pre-2011 set is the EXPECTED
+          situation for every Devir card, not a contradiction. The identity
+          stands at full strength (decision NOT demoted), flagged with
+          evidence "pt-br-pre-2011-print" + languageStatus "pt-br-pre-2011"
+          so the operator knows the entry is the EN twin of a pt print.
+          Any OTHER strong read on a twin-less winner still caps at REVISAR
+          with "conflict".
         """
         best = ranked[0] if ranked else None
         if best is None:
@@ -817,6 +828,9 @@ class Recognizer:
         twins = [c for c in ranked[1:] if c.card_id == best.card_id and c.language != best.language]
         if not twins:
             if strong_language and hints.language != best.language:
+                if self._is_pre_2011_pt_print(best, hints):
+                    evidence = ["pt-br-pre-2011-print"] + evidence
+                    return decision, evidence, "pt-br-pre-2011"
                 evidence = ["language-conflict"] + evidence
                 if decision in ("IDENTIFICADO", "PROVAVEL"):
                     decision = "REVISAR"
@@ -829,6 +843,18 @@ class Recognizer:
         if decision == "IDENTIFICADO":
             decision = "PROVAVEL"
         return decision, evidence, "uncertain"
+
+    # The pt-BR catalog covers 2011+ (bw1 onward); pre-2011 Brazilian prints
+    # (Devir: Base/Neo/EX eras, 1999-2010) exist in the catalog only as their
+    # EN twins. A strong pt-BR read against an EN-only winner of a pre-2011
+    # set is the expected Devir case — not a language contradiction.
+    PT_PRINT_CATALOG_START_YEAR = 2011
+
+    def _is_pre_2011_pt_print(self, best: Candidate, hints: OcrHints) -> bool:
+        if hints.language != "pt-BR":
+            return False
+        year = (best.release_date or "")[:4]
+        return year.isdigit() and int(year) < self.PT_PRINT_CATALOG_START_YEAR
 
     # ------------------------------------------------------------------ decide
     def decide(self, ranked: list[Candidate], hints: OcrHints) -> tuple[str, list[str]]:
@@ -1043,10 +1069,13 @@ class Recognizer:
         # when the memory's card is the winner: memory of card X must never
         # vouch for a result whose best is a different card Y (the fusion
         # already bounded memory's score contribution; this guards the
-        # post-decision upgrade path).
-        if memory_hit is not None and result.best is not None:
-            memory_is_winner = (result.best.card_id == memory_hit.example.card_id
-                                and result.best.language == memory_hit.example.language)
+        # post-decision upgrade path). The winner is ranked[0] — result.best
+        # is only assigned BELOW, so the old `result.best is not None` guard
+        # was always False and the upgrade never fired.
+        winner = ranked[0] if ranked else None
+        if memory_hit is not None and winner is not None:
+            memory_is_winner = (winner.card_id == memory_hit.example.card_id
+                                and winner.language == memory_hit.example.language)
             if memory_is_winner:
                 if "confirmed-memory" not in evidence:
                     evidence = ["confirmed-memory"] + evidence
@@ -1055,7 +1084,7 @@ class Recognizer:
         result.decision = decision
         result.evidence = evidence
         result.candidates = ranked
-        result.best = ranked[0] if ranked else None
+        result.best = winner
         result.elapsed_ms = int((time.time() - started) * 1000)
         result.timings = timings
         return result

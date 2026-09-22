@@ -337,6 +337,27 @@ class TestHints(unittest.TestCase):
         read_en = self._read([("TRAINER", 0.96)])
         self.assertEqual(extract_hints(read_en).name, "")
 
+    def test_junk_cjk_glyphs_are_not_japanese(self):
+        # False-ja guard (pre-2011 scans, 2026-09-21): PP-OCR emits 1-3 junk
+        # CJK glyphs on noisy EN/pt cards ("康店", "本本", "武"). The old
+        # >=2 threshold turned that noise into a confident "ja" read that
+        # poisoned language evidence. Junk must NOT read as ja; the pt/en
+        # word evidence underneath decides instead.
+        from recognizer.hints import detect_language
+        noisy_pt = "Fraqueza Recuo 60 PS 1 energia Pokemon Basico " + "康店武"
+        language, confidence = detect_language(noisy_pt)
+        self.assertNotEqual(language, "ja")
+        self.assertEqual(language, "pt-BR")
+
+    def test_real_japanese_text_is_japanese(self):
+        # Real ja reads carry 51-134 glyphs across 15+ lines: the >=4
+        # threshold must never reject an actual Japanese card.
+        from recognizer.hints import detect_language
+        real_ja = "ポケモンカード にげる わざ エネルギー " * 5
+        language, confidence = detect_language(real_ja)
+        self.assertEqual(language, "ja")
+        self.assertGreaterEqual(confidence, 0.9)
+
 
 class TestCalibration(unittest.TestCase):
     def test_every_registered_model_has_calibration(self):

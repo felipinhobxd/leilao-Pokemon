@@ -835,18 +835,21 @@ class TestLanguageTwins(unittest.TestCase):
         decision, evidence, status = recognizer._cap_uncertain_language(ranked, hints, decision, evidence)
         self.assertEqual(status, "confirmed")
 
-    def test_pre2011_pt_print_with_en_only_entry_reports_conflict(self):
-        # REGRA DE NEGÓCIO (cartas pt-BR anteriores a 2011): o catálogo pt-BR
-        # começa em 2011 (bw1) — impressões Devir (EX/Neo, 1999-2010) só têm a
-        # gêmea EN no catálogo. OCR lê português forte (ex.: "fraqueza",
-        # "recuo" em Gloom "Pó Venenoso" 38/115 ©2006), o vencedor é a gêmea
-        # EN ex10-38 e NÃO existe gêmea pt-BR no pool. Identificar a carta
-        # INGLESA com confiança para uma impressão portuguesa é um erro de
-        # impressão/idioma: a decisão deve ser rebaixada a REVISAR com
-        # languageStatus="conflict" + evidência "language-conflict".
+    def test_pre2011_pt_print_with_en_only_entry_is_expected_devir_case(self):
+        # REGRA DE NEGÓCIO (cartas pt-BR anteriores a 2011, revisada em
+        # 2026-09-21): o catálogo pt-BR começa em 2011 (bw1) — impressões
+        # Devir (Base/Neo/EX, 1999-2010) só têm a gêmea EN no catálogo. OCR
+        # lê português forte (ex.: "fraqueza", "recuo" em Gloom "Pó Venenoso"
+        # 38/115 ©2006), o vencedor é a gêmea EN ex10-38 de um set de 2006 e
+        # NÃO existe gêmea pt-BR no pool: é a situação ESPERADA de toda carta
+        # Devir, não uma contradição. A identidade se mantém com força total
+        # (sem rebaixamento), marcada com evidência "pt-br-pre-2011-print" +
+        # languageStatus "pt-br-pre-2011" para o operador saber que a entrada
+        # é a gêmea EN de uma impressão pt.
         recognizer = self._recognizer()
         from recognizer.features import Verification
         en = self._candidate("ex10-38", "en", visual=0.94)
+        en.release_date = "2006-08-01"  # EX era (Devir) — bem antes de 2011
         en.verification = Verification(inliers=60, matches=70, inlier_ratio=0.9,
                                        reprojection_error=1.5,
                                        homography=np.eye(3, dtype=np.float32), method="sift")
@@ -854,13 +857,51 @@ class TestLanguageTwins(unittest.TestCase):
         ranked = recognizer.fuse([en], hints, [])
         ranked = recognizer._apply_language_evidence(ranked, hints)
         decision, evidence = recognizer.decide(ranked, hints)
+        capped_decision, capped_evidence, status = recognizer._cap_uncertain_language(ranked, hints, decision, evidence)
+        self.assertEqual(status, "pt-br-pre-2011")
+        self.assertIn("pt-br-pre-2011-print", capped_evidence)
+        self.assertEqual(capped_decision, decision,
+                         "caso Devir pré-2011 é esperado: identidade não é rebaixada")
+        self.assertEqual(ranked[0].card_id, "ex10-38",
+                         "a identidade (arte/set/número) se mantém como melhor candidato")
+
+    def test_post2011_pt_print_with_en_only_entry_reports_conflict(self):
+        # Fronteira da regra Devir: pt lido FORTE contra vencedor EN de set
+        # 2011+ (o catálogo pt-BR DEVERIA ter a entrada) ainda é contradição
+        # real — rebaixado a REVISAR com "language-conflict".
+        recognizer = self._recognizer()
+        from recognizer.features import Verification
+        en = self._candidate("swsh3-106", "en", visual=0.94)
+        en.release_date = "2020-08-14"
+        en.verification = Verification(inliers=60, matches=70, inlier_ratio=0.9,
+                                       reprojection_error=1.5,
+                                       homography=np.eye(3, dtype=np.float32), method="sift")
+        hints = self._hints("pt-BR", 0.9)
+        ranked = recognizer.fuse([en], hints, [])
+        ranked = recognizer._apply_language_evidence(ranked, hints)
+        decision, evidence = recognizer.decide(ranked, hints)
         decision, evidence, status = recognizer._cap_uncertain_language(ranked, hints, decision, evidence)
         self.assertEqual(status, "conflict")
         self.assertIn("language-conflict", evidence)
-        self.assertEqual(decision, "REVISAR",
-                         "IDENTIFICADO/PROVAVEL na gêmea EN de uma impressão pt-BR pré-2011 é proibido")
-        self.assertEqual(ranked[0].card_id, "ex10-38",
-                         "a identidade (arte/set/número) se mantém como melhor candidato")
+        self.assertEqual(decision, "REVISAR")
+
+    def test_unknown_release_date_pt_print_stays_conflict(self):
+        # Sem release_date no registro (fonte incompleta): a regra Devir não
+        # pode disparar às cegas — mantém o conflito conservador.
+        recognizer = self._recognizer()
+        from recognizer.features import Verification
+        en = self._candidate("ex10-38", "en", visual=0.94)
+        en.release_date = ""  # desconhecido
+        en.verification = Verification(inliers=60, matches=70, inlier_ratio=0.9,
+                                       reprojection_error=1.5,
+                                       homography=np.eye(3, dtype=np.float32), method="sift")
+        hints = self._hints("pt-BR", 0.9)
+        ranked = recognizer.fuse([en], hints, [])
+        ranked = recognizer._apply_language_evidence(ranked, hints)
+        decision, evidence = recognizer.decide(ranked, hints)
+        decision, evidence, status = recognizer._cap_uncertain_language(ranked, hints, decision, evidence)
+        self.assertEqual(status, "conflict")
+        self.assertIn("language-conflict", evidence)
 
     def test_strong_language_read_matching_solo_winner_stays_confirmed(self):
         # A solo winner whose language AGREES with a strong read must NOT be

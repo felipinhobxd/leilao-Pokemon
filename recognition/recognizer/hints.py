@@ -104,8 +104,15 @@ class OcrHints:
 
 
 def detect_language(text: str) -> tuple[str, float]:
+    # False-ja guard (measured on pre-2011 scans, 2026-09-21): PP-OCR emits
+    # 1-3 junk CJK glyphs on noisy EN/pt cards ("康店", "本本", "武" — one or
+    # two noise lines out of 55-79), which the old >=2 threshold turned into
+    # a confident "ja" read that poisoned language evidence and capped every
+    # decision. Real ja reads carry 51-134 glyphs across 15+ lines. Threshold
+    # >=4 glyphs sits far above the observed junk (max 3) and far below the
+    # real density (min 51).
     japanese = len(re.findall(r"[ぁ-んァ-ン一-龯]", text))
-    if japanese >= 2:
+    if japanese >= 4:
         return "ja", min(0.99, 0.7 + 0.05 * japanese)
     lowered = _normalize(text)
     words = set(lowered.split())
@@ -249,7 +256,13 @@ def extract_hints(ocr: OcrResult) -> OcrHints:
 
 
 def apply_override(hints: OcrHints, override: dict) -> OcrHints:
-    """Benchmark regression: simulate OCR failures (e.g. name -> 'escia')."""
+    """Benchmark regression: simulate OCR failures (e.g. name -> 'escia').
+
+    Keys: `name` (forced read, confidence 0.45), `cardNumber` ("N/M" read,
+    confidence 0.35), `language` (forced language read, strong confidence
+    0.92 — simulates a pt-BR Devir print whose catalog only carries the EN
+    twin, or any other tongue the text evidence claims).
+    """
     if "name" in override:
         hints.name = str(override["name"])
         hints.name_confidence = 0.45
@@ -259,6 +272,9 @@ def apply_override(hints: OcrHints, override: dict) -> OcrHints:
             hints.local_id = match.group(1).lstrip("0") or match.group(1)
             hints.denominator = int(match.group(2))
             hints.number_confidence = 0.35
+    if "language" in override:
+        hints.language = str(override["language"])
+        hints.language_confidence = 0.92
     return hints
 
 

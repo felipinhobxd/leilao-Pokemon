@@ -60,6 +60,10 @@ const ENRICHMENT_TTL_MS = 6 * 60 * 60 * 1000;
 const enrichmentMemo = new Map();
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+// Ritmo da publicação: a FOTO sai primeiro e a enquete nativa só sai
+// WHATSAPP_POLL_DELAY_MS depois, para o grupo ver a carta antes das
+// opções de lance. Configurável (0 = comportamento antigo, tudo junto).
+const POLL_AFTER_PHOTO_MS = Math.max(0, Number(process.env.WHATSAPP_POLL_DELAY_MS ?? 5000));
 const brl = value => new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(Number(value));
 
 function storageValue(value) {
@@ -398,6 +402,7 @@ async function sendDispatchInternal(claimedDispatch) {
   const options = Array.isArray(dispatch.poll_options) ? dispatch.poll_options : [];
   if (!options.length || options.length > 12) throw new Error("invalid_poll_options");
   const caption = buildAuctionCaption(card, auction);
+  let announcementJustSent = false;
 
   if (!dispatch.announcement_sent_at) {
     const announcement = card.image_url
@@ -413,9 +418,15 @@ async function sendDispatchInternal(claimedDispatch) {
     }).eq("id", dispatch.id);
     if (error) throw new Error(error.message);
     dispatch = { ...dispatch, announcement_remote_message_id: remoteMessageId, announcement_sent_at: sentAt };
+    announcementJustSent = true;
   }
 
   if (!dispatch.poll_sent_at || !dispatch.poll_message_json) {
+    // Foto primeiro, enquete depois: espera o atraso configurado APENAS
+    // quando o anúncio acabou de sair nesta mesma execução — numa
+    // retentativa (anúncio já enviado antes, enquete pendente) o envio é
+    // imediato, sem queimar tempo de retry.
+    if (announcementJustSent && POLL_AFTER_PHOTO_MS > 0) await sleep(POLL_AFTER_PHOTO_MS);
     const poll = await sock.sendMessage(group.group_jid, {
       poll: {
         name: dispatch.poll_title,

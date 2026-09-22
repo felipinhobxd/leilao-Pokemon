@@ -1,5 +1,5 @@
 import { authorize, failure, HttpError } from "@/lib/backend";
-import { buildPollPlan, cardConditions, cardLanguages, DEFAULT_POLL_OPTIONS, MAX_POLL_OPTIONS } from "@/lib/auction-wizard";
+import { buildCustomValuesPlan, buildPollPlan, cardConditions, cardLanguages, DEFAULT_POLL_OPTIONS, MAX_POLL_OPTIONS, parseCustomValues } from "@/lib/auction-wizard";
 
 export const runtime = "nodejs";
 
@@ -51,20 +51,45 @@ export async function POST(request: Request) {
       const increment = Number(auction.bid_increment);
       const buyout = auction.buyout_price === null || auction.buyout_price === "" || auction.buyout_price === undefined ? null : Number(auction.buyout_price);
       const durationSeconds = Number(auction.duration_seconds);
-      if (!Number.isFinite(startingPrice) || startingPrice < 0 || !twoDecimals(startingPrice)) throw new HttpError(400, `${label}: lance inicial inválido.`);
-      if (!Number.isFinite(increment) || increment <= 0 || !twoDecimals(increment)) throw new HttpError(400, `${label}: incremento deve ser maior que R$ 0.`);
-      if (buyout != null && (!Number.isFinite(buyout) || buyout <= startingPrice || !twoDecimals(buyout))) throw new HttpError(400, `${label}: ARREMATE deve ser maior que o lance inicial.`);
       if (!Number.isSafeInteger(durationSeconds) || durationSeconds < 1 || durationSeconds > 604800) throw new HttpError(400, `${label}: duração inválida.`);
 
-      const requestedOptionCount = buyout == null ? Number(auction.option_count ?? DEFAULT_POLL_OPTIONS) : DEFAULT_POLL_OPTIONS;
-      if (buyout == null && (!Number.isSafeInteger(requestedOptionCount) || requestedOptionCount < 2 || requestedOptionCount > MAX_POLL_OPTIONS)) {
-        throw new HttpError(400, `${label}: escolha entre 2 e ${MAX_POLL_OPTIONS} opções.`);
+      // Modo de valores por item (o mesmo do wizard de carta única): "increment"
+      // (padrão) ou "custom" — o operador digita os valores exatos da enquete.
+      const pricingMode = String(auction.pricing_mode ?? "increment");
+      let planOptions: { label: string; amount: number; isBuyout: boolean }[] = [];
+      let effectiveStarting = startingPrice;
+      let effectiveIncrement = increment;
+      let effectiveBuyout = buyout;
+
+      if (pricingMode === "custom") {
+        const rawValues = auction.custom_values;
+        const values = Array.isArray(rawValues)
+          ? rawValues.map(value => Number(value))
+          : parseCustomValues(String(rawValues ?? ""));
+        if (!values) throw new HttpError(400, `${label}: valores personalizados inválidos.`);
+        const plan = buildCustomValuesPlan(values, Boolean(auction.custom_buyout_last));
+        if (plan.error) throw new HttpError(400, `${label}: ${plan.error}`);
+        if (!plan.options.length || plan.options.length > MAX_POLL_OPTIONS) throw new HttpError(400, `${label}: não foi possível montar a enquete.`);
+        planOptions = plan.options;
+        effectiveStarting = plan.startingPrice;
+        effectiveIncrement = plan.bidIncrement ?? 0.01;
+        effectiveBuyout = plan.buyoutPrice;
+      } else {
+        if (!Number.isFinite(startingPrice) || startingPrice < 0 || !twoDecimals(startingPrice)) throw new HttpError(400, `${label}: lance inicial inválido.`);
+        if (!Number.isFinite(increment) || increment <= 0 || !twoDecimals(increment)) throw new HttpError(400, `${label}: incremento deve ser maior que R$ 0.`);
+        if (buyout != null && (!Number.isFinite(buyout) || buyout <= startingPrice || !twoDecimals(buyout))) throw new HttpError(400, `${label}: ARREMATE deve ser maior que o lance inicial.`);
+
+        const requestedOptionCount = buyout == null ? Number(auction.option_count ?? DEFAULT_POLL_OPTIONS) : DEFAULT_POLL_OPTIONS;
+        if (buyout == null && (!Number.isSafeInteger(requestedOptionCount) || requestedOptionCount < 2 || requestedOptionCount > MAX_POLL_OPTIONS)) {
+          throw new HttpError(400, `${label}: escolha entre 2 e ${MAX_POLL_OPTIONS} opções.`);
+        }
+        const plan = buildPollPlan(startingPrice, increment, buyout, requestedOptionCount);
+        if (plan.overflow && buyout != null && plan.minimumIncrement != null) {
+          throw new HttpError(400, `${label}: os valores gerariam ${plan.optionCount} opções. Use incremento de pelo menos ${money(plan.minimumIncrement)}.`);
+        }
+        if (!plan.options.length || plan.options.length > MAX_POLL_OPTIONS) throw new HttpError(400, `${label}: não foi possível montar a enquete.`);
+        planOptions = plan.options;
       }
-      const plan = buildPollPlan(startingPrice, increment, buyout, requestedOptionCount);
-      if (plan.overflow && buyout != null && plan.minimumIncrement != null) {
-        throw new HttpError(400, `${label}: os valores gerariam ${plan.optionCount} opções. Use incremento de pelo menos ${money(plan.minimumIncrement)}.`);
-      }
-      if (!plan.options.length || plan.options.length > MAX_POLL_OPTIONS) throw new HttpError(400, `${label}: não foi possível montar a enquete.`);
 
       const lotNumber = Number(auction.lot_number);
       if (!Number.isSafeInteger(lotNumber) || lotNumber <= 0) throw new HttpError(400, `${label}: número do lote inválido.`);
@@ -83,11 +108,11 @@ export async function POST(request: Request) {
         },
         auction: {
           lot_number: lotNumber,
-          starting_price: startingPrice,
-          bid_increment: increment,
-          buyout_price: buyout,
+          starting_price: effectiveStarting,
+          bid_increment: effectiveIncrement,
+          buyout_price: effectiveBuyout,
           duration_seconds: durationSeconds,
-          poll_options: plan.options,
+          poll_options: planOptions,
         },
       };
     });

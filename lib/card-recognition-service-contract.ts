@@ -52,9 +52,13 @@ export type ServiceResult = {
   routeB?: boolean;
   normalization?: { method?: string; confidence?: number };
   orientation?: string;
-  // "confirmed" | "uncertain": same-card language twins with no OCR language
-  // evidence — the card identity stands, the language needs user review.
-  languageStatus?: "confirmed" | "uncertain";
+  // Language of the winning entry AFTER the two-step decision:
+  //   "confirmed"      — OCR language evidence agrees (or single-language print)
+  //   "uncertain"      — same-card language twins compete with no language evidence
+  //   "conflict"       — strong OCR read contradicts a twin-less winner
+  //   "pt-br-pre-2011" — Devir case: pt-BR print pre-2011 whose catalog entry is
+  //                      the EN twin (identity stands, flagged for the operator)
+  languageStatus?: "confirmed" | "uncertain" | "conflict" | "pt-br-pre-2011";
   hints?: Record<string, unknown>;
   evidence?: string[];
   elapsedMs?: number;
@@ -163,7 +167,7 @@ export function mapServiceResult(service: ServiceResult, serviceBase: string): R
     routeA?: boolean;
     routeB?: boolean;
     orientation?: string;
-    languageStatus?: "confirmed" | "uncertain";
+    languageStatus?: "confirmed" | "uncertain" | "conflict" | "pt-br-pre-2011";
     evidence?: string[];
     timings?: Record<string, number>;
     queueMs?: number;
@@ -187,7 +191,7 @@ export function mapServiceResult(service: ServiceResult, serviceBase: string): R
       routeA?: boolean;
       routeB?: boolean;
       orientation?: string;
-      languageStatus?: "confirmed" | "uncertain";
+      languageStatus?: "confirmed" | "uncertain" | "conflict" | "pt-br-pre-2011";
       evidence?: string[];
       timings?: Record<string, number>;
       queueMs?: number;

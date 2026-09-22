@@ -345,6 +345,52 @@ class TestDenominatorFusionEvidence(unittest.TestCase):
         self.assertIsNone(ranked[0].ocr_denominator_match)
         self.assertGreater(ranked[0].score, 0)
 
+    def test_italic_misread_denominator_is_inert_not_a_veto(self):
+        # Pre-2011 italic-gray denominators misread systematically at high
+        # confidence (measured 2026-09-22: 110->130, 102->130, 100->123 —
+        # same-length 1-2 digit glyph confusions). A read M that misses every
+        # pool candidate by only 1-2 digits is OCR noise: it must NOT veto the
+        # true card (ocr_denominator_match stays None) nor cap the decision —
+        # the collector-number N bonus still applies.
+        recognizer = self._recognizer()
+        from recognizer.hints import OcrHints
+        hints = OcrHints(name="Purrloin", name_confidence=0.95, local_id="15",
+                         denominator=130, number_confidence=0.9)  # truth: 15/102
+        true_print = Candidate(card_id="base4-15", language="en", set_id="base4",
+                              set_name="Base Set 2", name="Purrloin", local_id="15",
+                              denominator=102, hp=50, visual_similarity=0.95)
+        ranked = recognizer.fuse([true_print], hints, [])
+        self.assertTrue(ranked[0].ocr_number_match)
+        self.assertIsNone(ranked[0].ocr_denominator_match,
+                          "misread M próximo (130 vs 102) é ruído, não contradição")
+        decision, evidence = recognizer.decide(ranked, hints)
+        self.assertNotIn("denominator-conflict", evidence)
+        self.assertEqual(decision, "IDENTIFICADO")
+
+    def test_genuinely_distant_denominator_read_still_vetoes(self):
+        # The misread tolerance is BOUNDED: a read M far from every pool
+        # candidate (189 read against a 73 print — different lengths, zero
+        # shared structure) is a genuine contradiction and keeps the full
+        # veto + decision cap (the exact-print-missing scenario).
+        recognizer = self._recognizer()
+        from recognizer.hints import OcrHints
+        hints = OcrHints(name="Purrloin", name_confidence=0.95, local_id="106",
+                         denominator=189, number_confidence=0.9)
+        reprint = self._candidate("swsh3.5-106", 73)
+        reprint.visual_similarity = 0.95
+        ranked = recognizer.fuse([reprint], hints, [])
+        self.assertFalse(ranked[0].ocr_denominator_match)
+        decision, evidence = recognizer.decide(ranked, hints)
+        self.assertIn("denominator-conflict", evidence)
+        self.assertEqual(decision, "PROVAVEL")
+
+    def test_digits_close_bounds(self):
+        close = Recognizer._digits_close
+        self.assertTrue(close(130, 102))    # 2 substituições
+        self.assertTrue(close(110, 130))    # 1 substituição
+        self.assertFalse(close(189, 73))    # comprimentos diferentes
+        self.assertFalse(close(999, 102))   # 3 substituições: distante
+
 
 # --------------------------------------------------------------------------- P1-6
 class TestOcrNumberConsensus(unittest.TestCase):

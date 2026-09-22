@@ -318,14 +318,19 @@ class PpOcr:
                     passes += 1
                     lines.extend(self._recognize_batch(bottom, self._detect_boxes(bottom), "footer"))
 
-            # --- pass 3: collector number. Four complementary regions:
+            # --- pass 3: collector number. Five complementary regions:
             #   a) bottom corner, full width (tight framings / synthetic scans)
             #   b) wide bottom band, full width (loose warps push the number
             #      up to 70-90% of the frame)
             #   c) wide bottom band, left 60% (real photos: the right-side
-            #      set code / copyright / stand noise defeats detection)
+            #      set code / copyright / stand noise defeats detection there)
             #   d) short bottom-left band (numbers that sit 86-100% down: the
             #      taller band's extra body text defeats detection there)
+            #   e) bottom-RIGHT corner (pre-2011 WotC layout: "15/102" prints
+            #      italic gray at ~x 0.78-0.96, y 0.93-0.97 — the left crops
+            #      (c)/(d) never see it, and the full-width bands drown it in
+            #      copyright/body text; measured 2026-09-22 on Base/LC/EX/HGSS
+            #      scans. Modern cards keep the number bottom-left.)
             # Breadth-first: the raw variant of every region runs before any
             # denoising variant, and the bilateral/Otsu ladder only climbs on
             # the left-crop regions (where noisy photos actually benefit).
@@ -338,6 +343,7 @@ class PpOcr:
                 (0.0, 0.72, 1.0, 1.0, 3.0),
                 (0.0, 0.72, 0.60, 1.0, 5.0),
                 (0.0, 0.86, 0.60, 1.0, 5.0),
+                (0.55, 0.88, 1.0, 1.0, 5.5),
             )
             if minimal:
                 # Fast path: the two complementary raw regions (corner + wide

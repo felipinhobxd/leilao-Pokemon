@@ -190,7 +190,7 @@ export type LocalRecognitionResult = RecognitionResult & {
     routeA?: boolean;
     routeB?: boolean;
     orientation?: string;
-    languageStatus?: "confirmed" | "uncertain";
+    languageStatus?: "confirmed" | "uncertain" | "conflict" | "pt-br-pre-2011";
     evidence?: string[];
     timings?: Record<string, number>;
     queueMs?: number;

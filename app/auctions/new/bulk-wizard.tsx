@@ -77,11 +77,17 @@ function draftFor(file: File | null, preview: string, lot: number, expanded: boo
 }
 
 function recognitionLabel(card: Draft) {
-  const uncertainLanguage = (card.recognitionResult as { localPipeline?: { languageStatus?: string } } | undefined)?.localPipeline?.languageStatus === "uncertain";
+  const localPipeline = (card.recognitionResult as { localPipeline?: { languageStatus?: string } } | undefined)?.localPipeline;
+  const uncertainLanguage = localPipeline?.languageStatus === "uncertain";
+  // Impressão pt-BR anterior a 2011 (Devir): o catálogo só tem a gêmea EN —
+  // identidade correta, entrada em inglês por construção do catálogo.
+  const devirPtPre2011 = localPipeline?.languageStatus === "pt-br-pre-2011";
   if (card.recognitionStage === "not-found" && (card.recognitionResult as { decisionStatus?: string } | undefined)?.decisionStatus === "REVISAR") return "🔎 Evidências insuficientes ou conflitantes · revisar";
   if (card.recognitionStage === "identified") return card.recognitionMessage === "Candidato escolhido manualmente" ? "✅ Carta escolhida manualmente"
+    : devirPtPre2011 ? "✅ Carta identificada · impressão pt-BR pré-2011 (catálogo tem a versão EN)"
     : uncertainLanguage ? `✅ Carta identificada · ${card.language} (idioma incerto — revise)` : "✅ Carta identificada";
-  if (card.recognitionStage === "review") return uncertainLanguage ? `🟡 Carta provável · ${card.language} (idioma incerto — revise)` : "🟡 Carta provável · verifique os dados";
+  if (card.recognitionStage === "review") return devirPtPre2011 ? "🟡 Carta provável · impressão pt-BR pré-2011 (catálogo tem a versão EN)"
+    : uncertainLanguage ? `🟡 Carta provável · ${card.language} (idioma incerto — revise)` : "🟡 Carta provável · verifique os dados";
   if (card.recognitionStage === "not-found") return "🔴 Não consegui identificar com segurança";
   if (card.recognitionStage === "error") return "⚠ Reconhecimento indisponível";
   if (card.recognitionStage === "queued") return "🔍 Na fila de reconhecimento…";

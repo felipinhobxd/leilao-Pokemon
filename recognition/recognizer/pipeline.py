@@ -677,9 +677,41 @@ class Recognizer:
             candidate.verification = best
 
     # ------------------------------------------------------------------ fusion
+    # A read denominator that misses every pool candidate by only 1-2
+    # same-length digit substitutions is an OCR misread of one of them
+    # (pre-2011 italic font confusions), not a genuine different-set number.
+    @staticmethod
+    def _digits_close(a: int, b: int, max_subs: int = 2) -> bool:
+        sa, sb = str(a), str(b)
+        if len(sa) != len(sb):
+            return False
+        return sum(1 for x, y in zip(sa, sb) if x != y) <= max_subs
+
     def fuse(self, candidates: list[Candidate], hints: OcrHints, route_b: list[Candidate]) -> list[Candidate]:
         """Combine evidence with fixed, benchmark-calibrated weights."""
         cal = self.calibration
+        # Denominators the OCR read is CORROBORATED by (M values printed by
+        # N-matching candidates), plus whether an uncorroborated read is a
+        # plausible 1-2 digit misread of one of them (see the inert branch
+        # below for the pre-2011 rationale).
+        try:
+            read_n = int(str(hints.local_id).lstrip("0")) if hints.local_id else None
+        except ValueError:
+            read_n = None
+        corroborated_denominators: set[int] = set()
+        denominator_read_is_plausible_misread = False
+        if read_n is not None and hints.denominator is not None:
+            for other in candidates:
+                if not other.local_id or other.denominator is None:
+                    continue
+                try:
+                    if int(str(other.local_id).lstrip("0")) == read_n:
+                        corroborated_denominators.add(int(other.denominator))
+                except ValueError:
+                    continue
+            denominator_read_is_plausible_misread = any(
+                self._digits_close(int(hints.denominator), m)
+                for m in corroborated_denominators)
         for candidate in candidates:
             weights = {}
             visual = candidate.visual_similarity
@@ -715,9 +747,31 @@ class Recognizer:
                 #   False -> N agrees but M contradicts (reprint of other set)
                 if (match and hints.denominator is not None
                         and candidate.denominator is not None):
-                    denominator_match = int(hints.denominator) == int(candidate.denominator)
-                    candidate.ocr_denominator_match = denominator_match
-                    candidate.ocr_full_number_match = denominator_match
+                    read_m = int(hints.denominator)
+                    if read_m in corroborated_denominators:
+                        # The read M is printed by SOME N-matching candidate:
+                        # a strict, decidable comparison (exact print vs the
+                        # same-N reprint of another set).
+                        denominator_match = read_m == int(candidate.denominator)
+                        candidate.ocr_denominator_match = denominator_match
+                        candidate.ocr_full_number_match = denominator_match
+                    elif denominator_read_is_plausible_misread:
+                        # Pre-2011 italic-gray denominators misread
+                        # SYSTEMATICALLY (measured 2026-09-22: 110→130,
+                        # 102→130, 100→123 — same-length 1-2 digit glyph
+                        # confusions at HIGH confidence). When the read M
+                        # matches no candidate but sits 1-2 digits from one,
+                        # it is far more likely OCR noise than a genuine
+                        # different-set reprint: treat M as unknown (inert)
+                        # instead of vetoing every N-match at once and
+                        # deposing the true card. A genuine contradiction
+                        # (189 read against a 73 pool) stays far from every
+                        # candidate and keeps the full veto.
+                        candidate.ocr_denominator_match = None
+                        candidate.ocr_full_number_match = False
+                    else:
+                        candidate.ocr_denominator_match = False
+                        candidate.ocr_full_number_match = False
                 if match and hints.number_confidence >= 0.6:
                     if candidate.ocr_denominator_match is False:
                         # Readable N/M vs printed N/M' — strong penalty, symmetric

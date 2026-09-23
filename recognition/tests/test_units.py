@@ -358,6 +358,28 @@ class TestHints(unittest.TestCase):
         self.assertEqual(language, "ja")
         self.assertGreaterEqual(confidence, 0.9)
 
+    def test_dense_junk_cjk_never_reads_japanese(self):
+        # Real-photo regression (2026-09-22, operator batch: 4 of 53 photos
+        # with 4-7 junk CJK glyphs among ~300 latin chars - 1.3-2.4% density -
+        # produced a false 'ja' that demoted VERIFIED matches to REVISAR).
+        # The count gate (>=4) alone was not enough; the DENSITY gate (>=10%)
+        # separates junk (max 2.4% measured) from real ja (19-40% measured).
+        from recognizer.hints import detect_language
+        # Magneton real case: 7 junk glyphs in 288 latin chars (2.4%).
+        magneton_noise = "Rear 20 Pokemon Resistance 20 Retreat 1 Stage 1 " + "水* 桥 商" + \
+                        " Fraqueza Recuo 60 PS energia basico ataque"
+        language, confidence = detect_language(magneton_noise)
+        self.assertNotEqual(language, "ja")
+        # Whismur real case: 4 junk glyphs in 305 chars (1.3%).
+        whismur_noise = "Weakness Resistance Retreat Stage 1 energia basico " + "四 回 万2M4" + \
+                        " Fraqueza PS dano ataque"
+        language, confidence = detect_language(whismur_noise)
+        self.assertNotEqual(language, "ja")
+        # Sparse REAL Japanese (even a tiny clean read stays ja: density high).
+        from recognizer.hints import detect_language as dl
+        language, confidence = dl("ポケモン にげる わざ トレーナーズ")
+        self.assertEqual(language, "ja")
+
 
 class TestCalibration(unittest.TestCase):
     def test_every_registered_model_has_calibration(self):

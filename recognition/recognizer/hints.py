@@ -104,16 +104,17 @@ class OcrHints:
 
 
 def detect_language(text: str) -> tuple[str, float]:
-    # False-ja guard (measured on pre-2011 scans, 2026-09-21): PP-OCR emits
-    # 1-3 junk CJK glyphs on noisy EN/pt cards ("康店", "本本", "武" — one or
-    # two noise lines out of 55-79), which the old >=2 threshold turned into
-    # a confident "ja" read that poisoned language evidence and capped every
-    # decision. Real ja reads carry 51-134 glyphs across 15+ lines. Threshold
-    # >=4 glyphs sits far above the observed junk (max 3) and far below the
-    # real density (min 51).
+    # False-ja guard (measured 2026-09-22 and AGAIN on the operator's real
+    # 2026-09-22 photo batch: 4 of 53 real photos produced 4-7 junk CJK
+    # glyphs out of ~300 latin chars - a 1.3-2.4% density - which poisoned
+    # the language evidence and demoted 4 VERIFIED matches to REVISAR).
+    # Real ja reads carry 51+ glyphs at 19-40% density. Two gates, both
+    # measured with huge margin: absolute count AND share of the text.
     japanese = len(re.findall(r"[ぁ-んァ-ン一-龯]", text))
     if japanese >= 4:
-        return "ja", min(0.99, 0.7 + 0.05 * japanese)
+        non_space = len(re.sub(r"\s", "", text))
+        if non_space and japanese / non_space >= 0.10:
+            return "ja", min(0.99, 0.7 + 0.05 * japanese)
     lowered = _normalize(text)
     words = set(lowered.split())
     pt = len(words & set(PT_WORDS))

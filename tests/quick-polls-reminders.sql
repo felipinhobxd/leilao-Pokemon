@@ -87,15 +87,29 @@ begin
   perform pg_temp.check_that((select count(*)=1 from public.auction_events where event_type='PURCHASE_PAID'),'replay never re-audits');
 
   -- ------------------------------------------------------------------
-  -- 3) payment_reminders: cascade com a compra.
+  -- 3) payment_reminders: uma linha sobrevive para as checagens de RLS do
+  --    fim do arquivo (compra 1); o CASCADE é provado numa segunda compra.
   -- ------------------------------------------------------------------
   insert into public.payment_reminders(purchase_id,participant_id,reminded_count,last_reminded_at)
   values(v_purchase,(select participant_id from public.purchases where id=v_purchase),1,now());
   perform pg_temp.check_that((select count(*)=1 from public.payment_reminders rem where rem.purchase_id=v_purchase),'reminder row created');
-  delete from public.payments pay where pay.purchase_id=v_purchase;
-  delete from public.deliveries deliv where deliv.purchase_id=v_purchase;
-  delete from public.purchases where id=v_purchase;
-  perform pg_temp.check_that((select count(*)=0 from public.payment_reminders rem where rem.purchase_id=v_purchase),'reminders cascade with purchase');
+
+  wizard:=public.create_auction_wizard(jsonb_build_object(
+    'eventId','x-img-5','card',jsonb_build_object('name','Cascade','language','pt-BR','starting_price',1),
+    'auction',base),'00000000-0000-0000-0000-000000000011');
+  perform pg_temp.cmd(jsonb_build_object('type','AUCTION_OPEN','eventId','x-open-2','auctionId',wizard->'auction'->>'id'));
+  perform pg_temp.cmd(jsonb_build_object('type','BUYOUT_CONFIRMED','eventId','x-buyout-2','auctionId',wizard->'auction'->>'id','participantId',p));
+  declare cascade_purchase uuid;
+  begin
+    select id into cascade_purchase from public.purchases where auction_id=(wizard->'auction'->>'id')::uuid;
+    insert into public.payment_reminders(purchase_id,participant_id,reminded_count,last_reminded_at)
+    values(cascade_purchase,(select participant_id from public.purchases where id=cascade_purchase),1,now());
+    perform pg_temp.check_that((select count(*)=1 from public.payment_reminders rem2 where rem2.purchase_id=cascade_purchase),'cascade fixture created');
+    delete from public.payments pay2 where pay2.purchase_id=cascade_purchase;
+    delete from public.deliveries deliv2 where deliv2.purchase_id=cascade_purchase;
+    delete from public.purchases purch2 where purch2.id=cascade_purchase;
+    perform pg_temp.check_that((select count(*)=0 from public.payment_reminders rem2 where rem2.purchase_id=cascade_purchase),'reminders cascade with purchase');
+  end;
 
   -- ------------------------------------------------------------------
   -- 4) whatsapp_quick_polls: inserção + duplicado de evento rejeitado.

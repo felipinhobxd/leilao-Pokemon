@@ -31,7 +31,7 @@ exception when others then
 end $$;
 set local role service_role;
 do $$
-declare wizard jsonb; card_id uuid; purchase_id uuid; result jsonb; p uuid;
+declare wizard jsonb; card_id uuid; v_purchase uuid; result jsonb; p uuid;
   poll jsonb:=jsonb_build_array(
     jsonb_build_object('label','R$ 1,00','amount',1,'isBuyout',false),
     jsonb_build_object('label','R$ 2,00','amount',2,'isBuyout',false),
@@ -71,18 +71,18 @@ begin
   select id into p from public.participants where whatsapp_id='ana-x';
   perform pg_temp.cmd(jsonb_build_object('type','AUCTION_OPEN','eventId','x-open','auctionId',wizard->'auction'->>'id'));
   perform pg_temp.cmd(jsonb_build_object('type','BUYOUT_CONFIRMED','eventId','x-buyout','auctionId',wizard->'auction'->>'id','participantId',p));
-  select id into purchase_id from public.purchases where auction_id=(wizard->'auction'->>'id')::uuid;
-  perform pg_temp.check_that((select status='waiting_payment' from public.deliveries deliv where deliv.purchase_id=purchase_id),'delivery starts waiting_payment');
+  select id into v_purchase from public.purchases where auction_id=(wizard->'auction'->>'id')::uuid;
+  perform pg_temp.check_that((select status='waiting_payment' from public.deliveries deliv where deliv.purchase_id=v_purchase),'delivery starts waiting_payment');
 
-  result:=public.mark_purchase_paid(purchase_id,'00000000-0000-0000-0000-000000000011','pix');
+  result:=public.mark_purchase_paid(v_purchase,'00000000-0000-0000-0000-000000000011','pix');
   perform pg_temp.check_that((result->>'already_paid')='false','first mark is a transition');
-  perform pg_temp.check_that((select status='paid' from public.payments pay where pay.purchase_id=purchase_id),'payment marked paid');
-  perform pg_temp.check_that((select amount=10 from public.payments pay where pay.purchase_id=purchase_id),'payment carries the purchase amount');
-  perform pg_temp.check_that((select method='pix' from public.payments pay where pay.purchase_id=purchase_id),'payment keeps the method');
-  perform pg_temp.check_that((select status='ready' from public.deliveries deliv where deliv.purchase_id=purchase_id),'delivery leaves waiting_payment');
-  perform pg_temp.check_that((select count(*)=1 from public.auction_events where event_type='PURCHASE_PAID' and payload->>'purchase_id'=purchase_id::text),'exactly one audit event');
+  perform pg_temp.check_that((select status='paid' from public.payments pay where pay.purchase_id=v_purchase),'payment marked paid');
+  perform pg_temp.check_that((select amount=10 from public.payments pay where pay.purchase_id=v_purchase),'payment carries the purchase amount');
+  perform pg_temp.check_that((select method='pix' from public.payments pay where pay.purchase_id=v_purchase),'payment keeps the method');
+  perform pg_temp.check_that((select status='ready' from public.deliveries deliv where deliv.purchase_id=v_purchase),'delivery leaves waiting_payment');
+  perform pg_temp.check_that((select count(*)=1 from public.auction_events where event_type='PURCHASE_PAID' and payload->>'purchase_id'=v_purchase::text),'exactly one audit event');
 
-  result:=public.mark_purchase_paid(purchase_id,'00000000-0000-0000-0000-000000000011');
+  result:=public.mark_purchase_paid(v_purchase,'00000000-0000-0000-0000-000000000011');
   perform pg_temp.check_that((result->>'already_paid')='true','second mark reports already_paid');
   perform pg_temp.check_that((select count(*)=1 from public.auction_events where event_type='PURCHASE_PAID'),'replay never re-audits');
 
@@ -90,12 +90,12 @@ begin
   -- 3) payment_reminders: cascade com a compra.
   -- ------------------------------------------------------------------
   insert into public.payment_reminders(purchase_id,participant_id,reminded_count,last_reminded_at)
-  values(purchase_id,(select participant_id from public.purchases where id=purchase_id),1,now());
-  perform pg_temp.check_that((select count(*)=1 from public.payment_reminders rem where rem.purchase_id=purchase_id),'reminder row created');
-  delete from public.payments pay where pay.purchase_id=purchase_id;
-  delete from public.deliveries deliv where deliv.purchase_id=purchase_id;
-  delete from public.purchases where id=purchase_id;
-  perform pg_temp.check_that((select count(*)=0 from public.payment_reminders rem where rem.purchase_id=purchase_id),'reminders cascade with purchase');
+  values(v_purchase,(select participant_id from public.purchases where id=v_purchase),1,now());
+  perform pg_temp.check_that((select count(*)=1 from public.payment_reminders rem where rem.purchase_id=v_purchase),'reminder row created');
+  delete from public.payments pay where pay.purchase_id=v_purchase;
+  delete from public.deliveries deliv where deliv.purchase_id=v_purchase;
+  delete from public.purchases where id=v_purchase;
+  perform pg_temp.check_that((select count(*)=0 from public.payment_reminders rem where rem.purchase_id=v_purchase),'reminders cascade with purchase');
 
   -- ------------------------------------------------------------------
   -- 4) whatsapp_quick_polls: inserção + duplicado de evento rejeitado.

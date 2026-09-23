@@ -3,9 +3,24 @@ import { authorize, failure, HttpError } from "@/lib/backend";
 // P-07 — Brinde rápido: enquete livre (texto/emoji) criada no painel e
 // publicada pelo bot no horário agendado ("quem clicar primeiro leva").
 // Vota em whatsapp_quick_polls (tabela própria — dispatches exige auction_id).
+// GET lista os recentes (agendados + enviados) para a Central WhatsApp.
 export const runtime = "nodejs";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export async function GET(request: Request) {
+  try {
+    const { db } = await authorize(request, false);
+    const { data, error } = await db.from("whatsapp_quick_polls")
+      .select("id,group_id,title,options,scheduled_at,sent_at,poll_message_id,created_at")
+      .order("created_at", { ascending: false })
+      .limit(20);
+    if (error) throw new Error("quick_polls_read_failed");
+    return Response.json({ data: data ?? [] }, { headers: { "Cache-Control": "private, no-store" } });
+  } catch (error) {
+    return failure(error);
+  }
+}
 
 export async function POST(request: Request) {
   try {

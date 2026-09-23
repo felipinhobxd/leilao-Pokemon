@@ -433,15 +433,17 @@ export default function BulkAuctionWizard() {
   async function uploadImages() {
     const urls = new Map<string, string>();
     // P-08: a foto principal E as de detalhe (até 4) sobem no mesmo lote
-    // incremental; extras usam id composto `${cardId}#e${n}` para o callback
-    // saber onde gravar.
+    // incremental; extras usam id composto `${cardId}#e${n}`. As URLs voltam
+    // pelo RETORNO (Map) — o payload NÃO pode ler card.extraImages aqui:
+    // o setCards do upload ainda não chegou ao closure de startQueue.
+    const extraUrls = new Map<string, string[]>();
     const pending: Array<{ id: string; file: File }> = [];
     for (const card of cards) {
       if (card.file) pending.push({ id: card.id, file: card.file });
       card.extraFiles.forEach((file, index) => pending.push({ id: `${card.id}#e${index}`, file }));
     }
     for (const card of cards) if (!card.file) urls.set(card.id, card.imageUrl.trim());
-    if (!pending.length) return { urls, failures: [] as CardImageUploadFailure[] };
+    if (!pending.length) return { urls, extraUrls, failures: [] as CardImageUploadFailure[] };
 
     const completed = new Set<string>();
     const { uploaded, failures } = await uploadCardImageBatch({
@@ -459,9 +461,15 @@ export default function BulkAuctionWizard() {
       onUploaded: (id, result) => {
         completed.add(id);
         setUploadProgress(`${completed.size} de ${pending.length} imagem(ns) concluídas`);
+        const cardId = id.includes("#") ? id.split("#")[0] : id;
+        if (id.includes("#")) {
+          extraUrls.set(cardId, [...(extraUrls.get(cardId) ?? []), result.url]);
+        } else {
+          urls.set(cardId, result.url);
+        }
         setCards(current => current.map(card => {
           if (id.includes("#")) {
-            if (card.id !== id.split("#")[0]) return card;
+            if (card.id !== cardId) return card;
             const index = Number(id.split("#e")[1]);
             const extraFiles = card.extraFiles.filter((_, i) => i !== index);
             const extraImages = [...card.extraImages, result.url];
@@ -472,8 +480,15 @@ export default function BulkAuctionWizard() {
         }));
       },
     });
-    for (const [id, result] of uploaded) urls.set(id, result.url);
-    return { urls, failures };
+    for (const [id, result] of uploaded) {
+      if (id.includes("#")) {
+        const cardId = id.split("#")[0];
+        extraUrls.set(cardId, [...(extraUrls.get(cardId) ?? []), result.url]);
+      } else {
+        urls.set(id, result.url);
+      }
+    }
+    return { urls, extraUrls, failures };
   }
 
   async function startQueue() {
@@ -481,7 +496,7 @@ export default function BulkAuctionWizard() {
     if (message) { setError(message); return; }
     setBusy(true); setError("");
     try {
-      const { urls: imageUrls, failures } = await uploadImages();
+      const { urls: imageUrls, extraUrls, failures } = await uploadImages();
       if (failures.length) {
         // Uma imagem problemática não pode mais travar o leilão inteiro.
         // O usuário escolhe: enviar os lotes sem essas imagens (o bot publica
@@ -506,7 +521,7 @@ export default function BulkAuctionWizard() {
         items: cards.map(card => {
           const pricing = pricingOf(card);
           return {
-            card: { name: card.name, collection: card.collection, card_number: card.cardNumber, variant: card.variant, condition: card.condition, language: card.language, image_url: imageUrls.get(card.id) || null, extra_images: card.extraImages },
+            card: { name: card.name, collection: card.collection, card_number: card.cardNumber, variant: card.variant, condition: card.condition, language: card.language, image_url: imageUrls.get(card.id) || null, extra_images: card.extraImages.length ? card.extraImages : (extraUrls.get(card.id) ?? []) },
             auction: pricing.mode === "custom"
               ? { lot_number: Number(card.lotNumber), starting_price: pricing.startingPrice, bid_increment: pricing.bidIncrement ?? 0.01, buyout_price: pricing.buyoutPrice, duration_seconds: Math.round(Number(card.durationMinutes) * 60), option_count: pricing.options.length, pricing_mode: "custom", custom_values: pricing.values, custom_buyout_last: card.customBuyoutLast }
               : { lot_number: Number(card.lotNumber), starting_price: Number(card.startingPrice), bid_increment: Number(card.increment), buyout_price: card.buyout.trim() ? Number(card.buyout) : null, duration_seconds: Math.round(Number(card.durationMinutes) * 60), option_count: Number(card.optionCount || DEFAULT_POLL_OPTIONS), pricing_mode: "increment" },

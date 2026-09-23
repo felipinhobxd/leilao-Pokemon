@@ -197,3 +197,11 @@ dialog::backdrop{background:#000b}
 .giveaway-form textarea{width:100%;padding:9px 12px;border:1px solid #d9dee7;border-radius:8px;font:inherit;resize:vertical}
 .giveaway-form button{align-self:end}
 @media(max-width:720px){.giveaway-form{grid-template-columns:1fr}}
+
+/* P-07: lista de brindes recentes + nota do grupo padrão. */
+.giveaway-group-note{align-self:center;font-size:13px}
+.giveaway-list{display:flex;flex-direction:column;gap:6px;margin-top:12px;padding-top:10px;border-top:1px solid #eef1f6}
+.giveaway-list>strong{font-size:13px;color:#5b6577}
+.giveaway-item{font-size:14px}
+.giveaway-item small{color:#8a93a5;margin-left:6px}
+.giveaway-item.pending small{color:#b8860b}

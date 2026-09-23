@@ -90,6 +90,7 @@ export async function GET(request: Request) {
       { header: "Valor", key: "amount", width: 14 },
       { header: "Tipo", key: "winType", width: 16 },
       { header: "Avisos (global)", key: "globalWarnings", width: 14 },
+      { header: "Pagamento", key: "payment", width: 16 },
       { header: "Data da venda", key: "confirmedAt", width: 22 },
       { header: "Observações", key: "notes", width: 34 },
     ];
@@ -99,11 +100,19 @@ export async function GET(request: Request) {
       const key = String(warning.participant_id ?? "");
       if (key) globalWarningCount.set(key, (globalWarningCount.get(key) ?? 0) + 1);
     }
+    const paidByPurchase = new Map<string, { paid_at: string | null }>();
+    for (const payment of data.payments ?? []) {
+      if (String(payment.status ?? "") === "paid") {
+        paidByPurchase.set(String(payment.purchase_id ?? ""), { paid_at: (payment.paid_at as string | null) ?? null });
+      }
+    }
 
     for (const purchase of confirmedPurchases) {
       const auction = data.auctions.find(a => a.id === purchase.auction_id);
       const card = data.cards.find(c => c.id === purchase.card_id);
       const person = data.participants.find(p => p.id === purchase.participant_id);
+      const paid = paidByPurchase.get(String(purchase.id));
+      const paidDate = paid?.paid_at ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeZone: "America/Sao_Paulo" }).format(new Date(paid.paid_at)) : "";
       sales.addRow({
         lot: auction?.lot_number ?? "",
         card: card?.name ?? "",
@@ -114,6 +123,7 @@ export async function GET(request: Request) {
         amount: Number(purchase.amount ?? 0),
         winType: winTypeLabel(auction?.win_type),
         globalWarnings: person ? (globalWarningCount.get(String(person.id)) ?? 0) : 0,
+        payment: paid ? (paidDate ? `✔ Pago (${paidDate})` : "✔ Pago") : "⏳ Pendente",
         confirmedAt: excelDateValue(purchase.confirmed_at),
         notes: "",
       });

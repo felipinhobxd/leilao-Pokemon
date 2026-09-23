@@ -399,7 +399,7 @@ language sql stable security invoker set search_path='' as $body$
   ),'[]'::jsonb),
   -- ADDITION C: real payment state + reminder cycle (was hardcoded '[]').
   'payments',coalesce((select jsonb_agg(t order by id) from (select id,purchase_id,amount,status,method,paid_at,reference from public.payments) t),'[]'::jsonb),
-  'payment_reminders',coalesce((select jsonb_agg(t order by last_reminded_at desc nulls last,id) from (select purchase_id,participant_id,reminded_count,last_reminded_at from public.payment_reminders) t),'[]'::jsonb),
+  'payment_reminders',coalesce((select jsonb_agg(t order by last_reminded_at desc nulls last) from (select purchase_id,participant_id,reminded_count,last_reminded_at from public.payment_reminders) t),'[]'::jsonb),
   'deliveries','[]'::jsonb,
   'warnings','[]'::jsonb
  );

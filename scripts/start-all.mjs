@@ -108,7 +108,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
       commands.push({
         cwd: path.join(root, 'recognition'),
         bin: venvPython,
-        args: [path.join(root, 'recognition', 'recognition_server.py'), '--preload'],
+        // No --preload: models load on the first photo and UNLOAD after
+        // RECOGNITION_IDLE_UNLOAD_MINUTES idle, so a PC without an active
+        // wizard session does not hold ~2 GB of ONNX sessions for nothing.
+        args: [path.join(root, 'recognition', 'recognition_server.py')],
         optional: true,
         label: 'reconhecimento local',
       });

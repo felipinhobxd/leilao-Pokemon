@@ -5,7 +5,7 @@ import { excelBrasiliaDate } from "@/lib/brasilia-time";
 export const runtime = "nodejs";
 
 const sheets: [Table, string, [string, string][]][] = [
-  ["cards", "Cartas", [["ID","id"],["Nome","name"],["Número","card_number"],["Imagem","image_url"],["Preço inicial","starting_price"],["ARREMATE","buyout_price"],["Status","status"],["Observações","notes"]]],
+  ["cards", "Cartas", [["ID","id"],["Nome","name"],["Número","card_number"],["Variante","variant"],["Imagem","image_url"],["Preço inicial","starting_price"],["ARREMATE","buyout_price"],["Status","status"],["Observações","notes"]]],
   ["participants", "Participantes", [["ID","id"],["Nome","display_name"],["Telefone","phone_e164"],["WhatsApp técnico","whatsapp_id"],["Status","status"],["Primeiro voto","first_seen_at"],["Último voto","last_seen_at"],["Observações","notes"]]],
   ["auctions", "Leilões", [["ID","id"],["Lote","lot_number"],["Carta","card_name"],["ID carta","card_id"],["Status","status"],["Inicial","starting_price"],["ARREMATE","buyout_price"],["Vencedor","participant_name"],["Telefone vencedor","participant_phone"],["WhatsApp técnico","participant_whatsapp"],["Valor final","final_price"],["Tipo de vitória","win_type"],["Início","started_at"],["Prazo","scheduled_end_at"],["Fim","ended_at"]]],
   ["bids", "Lances", [["ID","id"],["Leilão","auction_id"],["Participante","participant_name"],["Telefone","participant_phone"],["WhatsApp técnico","participant_whatsapp"],["Valor","amount"],["Tipo","kind"],["Status","status"],["Confirmado em","processed_at"],["Ordem","confirmation_order"],["Evento externo","whatsapp_event_id"],["Substituído por","replaced_by"]]],
@@ -82,6 +82,7 @@ export async function GET(request: Request) {
       { header: "Lote", key: "lot", width: 8 },
       { header: "Carta", key: "card", width: 32 },
       { header: "Número", key: "cardNumber", width: 14 },
+      { header: "Variante", key: "variant", width: 18 },
       { header: "Comprador", key: "buyer", width: 28 },
       { header: "Telefone / WhatsApp", key: "phone", width: 22 },
       { header: "Valor", key: "amount", width: 14 },
@@ -98,6 +99,7 @@ export async function GET(request: Request) {
         lot: auction?.lot_number ?? "",
         card: card?.name ?? "",
         cardNumber: card?.card_number ?? "",
+        variant: card?.variant ?? "",
         buyer: person?.display_name ?? "",
         phone: cleanPhone(person?.phone_e164, person?.whatsapp_id),
         amount: Number(purchase.amount ?? 0),

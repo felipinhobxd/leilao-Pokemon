@@ -67,7 +67,9 @@ export async function recognitionLauncher(command) {
       process.exitCode = 1;
       return;
     }
-    const code = await run(venvPython, [join(recognition, "recognition_server.py"), "--preload"]);
+    // No --preload: lazy load on first request + idle unload (see
+    // recognition_server.py) keeps the RAM free between wizard sessions.
+    const code = await run(venvPython, [join(recognition, "recognition_server.py")]);
     if (code !== 0) process.exitCode = code;
     return;
   }

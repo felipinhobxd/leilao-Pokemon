@@ -58,6 +58,16 @@ from recognizer.store import CatalogStore
 
 app = FastAPI(title="Pokemon Card Recognition (local)", version="1.3.0")
 
+# Idle unload: recognition models (SigLIP2 + PP-OCR + catalog index) hold
+# ~2 GB of RAM once loaded. Between wizard sessions the PC paid that for
+# nothing — the loader was eager (--preload) and never released. The
+# watchdog below drops the whole recognizer after N idle minutes (default
+# 10; RECOGNITION_IDLE_UNLOAD_MINUTES=0 disables) and /health re-arms a
+# BACKGROUND warm so the next wizard probe finds ready=true within ~60s
+# (the probe TTL on the client), paying at most one browser-pipeline photo
+# on a cold session.
+RECOGNITION_IDLE_UNLOAD_MINUTES = float(os.environ.get("RECOGNITION_IDLE_UNLOAD_MINUTES", "10"))
+
 # Dedicated read-only SQLite connection for the lightweight /catalog/exists
 # endpoint: independent of the recognizer/models, guarded because FastAPI
 # sync endpoints run on a threadpool (WAL + busy_timeout handle the rest).
@@ -103,10 +113,67 @@ async def private_network_access(request, call_next):
 
 
 _state = {"recognizer": None, "store": None, "started": 0, "requests": 0, "errors": 0,
-           "journal_crash": False, "invalid_embeddings": 0}
+           "journal_crash": False, "invalid_embeddings": 0,
+           "last_used": time.time(), "warming": False}
 _lock = threading.Lock()
 _executor: ThreadPoolExecutor | None = None
 _executor_lock = threading.Lock()
+
+
+def _touch_last_used() -> None:
+    with _lock:
+        _state["last_used"] = time.time()
+
+
+def _drop_recognizer_locked() -> None:
+    """Release the models (caller holds _lock). The ONNX sessions and the
+    catalog leave the process heap; Python's gc reclaims the ~2 GB."""
+    import gc
+    _state["recognizer"] = None
+    _state["store"] = None
+    gc.collect()
+
+
+def _idle_watchdog() -> None:
+    """Daemon: unload models after N idle minutes (0 = feature off)."""
+    while True:
+        time.sleep(30)
+        minutes = RECOGNITION_IDLE_UNLOAD_MINUTES
+        if minutes <= 0:
+            continue
+        with _lock:
+            recognizer = _state["recognizer"]
+            idle_for = time.time() - float(_state.get("last_used", time.time()))
+            if recognizer is not None and not _state.get("warming") and idle_for >= minutes * 60:
+                _drop_recognizer_locked()
+                print(f"[service] modelos descarregados apos {int(idle_for // 60)} min de inatividade "
+                      f"(RAM devolvida ao sistema; a proxima foto recarrega em ~15s)", flush=True)
+
+
+def _rewarm_if_cold() -> None:
+    """Background warm when a health probe arrives on a cold service.
+
+    The client treats ready!=true as offline and falls back to the browser
+    pipeline — correct for a dead process, wasteful for a merely-unloaded
+    one. The probe that finds the service cold triggers the warm in the
+    background and returns immediately; the next probe (60s TTL) sees
+    ready=true."""
+    with _lock:
+        if _state["recognizer"] is not None or _state.get("warming"):
+            return
+        _state["warming"] = True
+
+    def warm():
+        try:
+            get_recognizer()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[service] rewarm falhou: {exc}", flush=True)
+        finally:
+            with _lock:
+                _state["warming"] = False
+                _state["last_used"] = time.time()
+
+    threading.Thread(target=warm, name="rewarm", daemon=True).start()
 
 
 def _journal_check_previous_crash() -> None:
@@ -183,6 +250,11 @@ def health():
     models_loaded = bool(recognizer and recognizer.embedding_ready and recognizer.ocr_ready)
     auth_configured = len(os.environ.get("RECOGNITION_SERVICE_SHARED_SECRET", "").strip()) >= 32
     ready = bool(recognizer and index_size > 0 and models_loaded and auth_configured)
+    # Cold (idle-unloaded) service: arm a background warm so the NEXT probe
+    # (client TTL is 60s) finds ready=true instead of degrading the whole
+    # session to the browser pipeline.
+    if recognizer is None and auth_configured:
+        _rewarm_if_cold()
     import onnxruntime as ort
     payload = {
         "status": "ok",
@@ -197,6 +269,9 @@ def health():
         "uptimeSec": int(time.time() - _state["started"]),
         "requests": _state["requests"],
         "errors": _state["errors"],
+        # true while a background warm runs after idle unload / cold start
+        "warming": bool(_state.get("warming")),
+        "idleUnloadMinutes": RECOGNITION_IDLE_UNLOAD_MINUTES,
         "backend": {
             "providers": ort.get_available_providers(),
             # What each session ACTUALLY runs on right now: ORT silently falls
@@ -259,6 +334,7 @@ async def recognize(request: Request, file: UploadFile = File(...)):
             # Decode INSIDE the executor: a 25 MB JPEG decode (100-300 ms)
             # on the event loop would stall every concurrent endpoint,
             # including /health.
+            _touch_last_used()
             bgr = decode_upload(data)
             if bgr is None or bgr.size == 0:
                 raise HTTPException(status_code=400, detail="Imagem inválida")
@@ -331,6 +407,7 @@ def scan(language: str, card_id: str):
     if store is None:
         get_recognizer()
         store = _state["store"]
+    _touch_last_used()
     record = store.card_by_key(language, card_id) if store else None
     if record is None or not (record.image_base or record.image_alt):
         raise HTTPException(status_code=404, detail="Carta não encontrada")
@@ -375,6 +452,7 @@ async def memory_confirm(request: Request, file: UploadFile = File(...), card: s
     def work():
         # Decode + normalize + embed are heavy: run them on the bounded
         # executor like /recognize instead of the event loop.
+        _touch_last_used()
         try:
             bgr = decode_upload(data)
         except HTTPException:
@@ -440,6 +518,8 @@ def main() -> None:
     args = parser.parse_args()
     _state["started"] = time.time()
     _journal_check_previous_crash()
+    if RECOGNITION_IDLE_UNLOAD_MINUTES > 0:
+        threading.Thread(target=_idle_watchdog, name="idle-watchdog", daemon=True).start()
     if args.preload:
         get_recognizer()
     print(f"[service] listening on http://{args.host}:{args.port} (local only) "

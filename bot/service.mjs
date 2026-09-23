@@ -192,7 +192,11 @@ async function startChild() {
   await publishState();
 
   const instrument = pathToFileURL(path.join(here, "instrument.mjs")).href;
-  const activeChild = spawn(process.execPath, ["--import", instrument, path.join(here, "index.mjs")], {
+  // Teto de heap do bot: o V8 cresce durante sincronizacoes/enquetes e NAO
+  // devolve a memoria ao Windows (RAM ociosa de ~1.8-2 GB medida). 384 MB e
+  // folgado para o Baileys + caches limitados do index.mjs e faz o GC
+  // devolver memoria agressivamente.
+  const activeChild = spawn(process.execPath, ["--max-old-space-size=384", "--import", instrument, path.join(here, "index.mjs")], {
     cwd: here,
     env: process.env,
     windowsHide: true,
@@ -436,6 +440,7 @@ async function shutdown(signal) {
   shuttingDown = true;
   desiredRunning = false;
   clearTimeout(restartTimer);
+  clearTimeout(nightRestartTimer);
   clearInterval(heartbeatTimer);
   clearInterval(commandTimer);
   console.log(`Encerrando supervisor (${signal})...`);
@@ -446,6 +451,33 @@ async function shutdown(signal) {
   await publishState({ status: "disconnected" });
   process.exit(0);
 }
+
+// ---------------------------------------------------------------------------
+// Restart noturno: o heap do Baileys cresce ao longo de dias de operacao
+// (sessao de 11 grupos, enquetes, sincronizacoes) e o V8 nao devolve tudo ao
+// sistema. Uma reinicializacao limpa por madrugada zera a RAM acumulada; o
+// supervisor reinicia o bot ~5s depois com heap novo. BOT_NIGHT_RESTART_HOUR
+// desativa com -1 (padrao 4h da manha, longe dos leiloes noturnos).
+// ---------------------------------------------------------------------------
+const NIGHT_RESTART_HOUR = Number(process.env.BOT_NIGHT_RESTART_HOUR ?? 4);
+let nightRestartTimer = null;
+function scheduleNightRestart() {
+  clearTimeout(nightRestartTimer);
+  if (!Number.isInteger(NIGHT_RESTART_HOUR) || NIGHT_RESTART_HOUR < 0 || NIGHT_RESTART_HOUR > 23) return;
+  const now = new Date();
+  const next = new Date(now);
+  next.setHours(NIGHT_RESTART_HOUR, 5, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1);
+  nightRestartTimer = setTimeout(() => {
+    if (child && desiredRunning && !shuttingDown) {
+      console.log(`[service] restart noturno (${String(NIGHT_RESTART_HOUR).padStart(2, "0")}h05) — devolvendo memoria ao sistema`);
+      child.kill();
+    }
+    scheduleNightRestart();
+  }, next - now);
+  nightRestartTimer.unref?.();
+}
+scheduleNightRestart();
 
 process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));

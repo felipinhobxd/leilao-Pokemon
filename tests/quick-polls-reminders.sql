@@ -132,6 +132,8 @@ select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000011'
 select pg_temp.check_that((select count(*)=1 from public.payment_reminders),'staff can read reminders');
 select pg_temp.check_that(not has_table_privilege(current_user,'public.whatsapp_quick_polls','INSERT'),'browser cannot write quick polls');
 set local role authenticated;
+-- o claim do staff check acima ainda está ativo na transação: limpa antes
+select set_config('request.jwt.claim.sub',null,true);
 select pg_temp.check_that((select count(*)=0 from public.payment_reminders),'non-staff cannot read reminders');
 reset role;
 rollback;

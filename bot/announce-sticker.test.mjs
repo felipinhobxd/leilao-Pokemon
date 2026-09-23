@@ -3,7 +3,18 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadAnnouncedQueueIds, loadAnnouncementSticker, saveAnnouncementSticker, markQueueAnnounced, buildOpeningMessage } from "./announce-sticker.mjs";
+
+// Os testes redirecionam BOT_DATA_DIR para um temp ANTES do import: sem isso
+// a suíte escrevia no estado real do operador (bug real — ver announce-sticker.mjs).
+const dataDir = mkdtempSync(join(tmpdir(), "announce-sticker-test-"));
+process.env.BOT_DATA_DIR = dataDir;
+
+const { loadAnnouncedQueueIds, loadAnnouncementSticker, saveAnnouncementSticker, markQueueAnnounced, buildOpeningMessage, STICKER_FILE } = await import("./announce-sticker.mjs");
+
+test.after(() => {
+  rmSync(dataDir, { recursive: true, force: true });
+  delete process.env.BOT_DATA_DIR;
+});
 
 const STICKER = { key: { id: "ABC", remoteJid: "1203@g.us" }, message: { stickerMessage: { url: "https://x" } } };
 
@@ -39,4 +50,9 @@ test("mensagem de abertura menciona participantes reais", () => {
   const solo = buildOpeningMessage(["5541@s.whatsapp.net"]);
   assert.ok(!solo.text.includes("@todos"), "sem grupo não promete @todos");
   assert.deepEqual(solo.mentions, ["5541@s.whatsapp.net"]);
+});
+
+test("estado de produção NÃO é tocado (BOT_DATA_DIR redirecionado)", () => {
+  // O arquivo real do operador não pode ganhar nada desta suíte.
+  assert.ok(STICKER_FILE.startsWith(dataDir), "os testes escrevem no temp, nunca em bot/data");
 });

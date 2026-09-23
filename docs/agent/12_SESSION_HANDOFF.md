@@ -1,70 +1,65 @@
 # SESSION HANDOFF
 
 ## Última atualização
-2026-09-24 (fim da sessão: caça a bugs residuais pós-P-06..P-09)
+2026-09-24 (fim da sessão: npm run doctor + fix de poluição de estado pelos testes)
 
 ## Sessão atual
-Analisar o código inteiro e corrigir os bugs que ficaram das rodadas anteriores (P-05 explicitamente deixado para depois pelo operador).
+"O que mais você faria" — construir o check-up pré-leilão e limpar os bugs que ele próprio revelou.
 
 ## O que foi concluído
-1. **BUG crítico — extras vazios no payload (P-08)**: os DOIS wizards liam card.extraImages/form.extraImages do closure React ANTES do setState do upload chegar -> a API recebia extra_images: [] mesmo com as fotos subidas (funcionava só no re-envio). Corrigido no padrão que a foto principal já usava: upload()/uploadImages() RETORNAM as URLs (Map/array) e os payloads consomem o retorno.
-2. **BUG — backup incompleto**: export_business_backup (20260923120000) não cobria whatsapp_quick_polls/payment_reminders (criadas depois). Nova migration 20260924140000 substitui o RPC com as duas (arquivo SEPARADO — o CI aplica em ordem lexical e LANGUAGE SQL valida as referências no CREATE; editar a 120000 in-place quebraria o pipeline).
-3. **Lacuna de UX — brindes invisíveis**: GET /api/quick-polls + lista "Brindes recentes" (agendado/enviado com horários) na Central WhatsApp, recarregada junto com os polls da página; select de grupo desativado substituído por nota do grupo padrão.
-4. **Planilha**: coluna Pagamento ("Pago (dd/mm)" / "Pendente") na aba Vendas — controle de quem pagou direto no Excel.
-5. Varredura ampla: sem TODO/FIXME no código; "Coleção" restante no dashboard é gestão de cartas (legítimo, não é wizard); purge tests não afetados pelas chaves novas.
-6. **P-12 FECHADO**: os scripts com truth-key inválido eram ad hoc (temp), não versionados; os benchmarks do repo usam fixtures+ground-truth.json.
+1. **npm run doctor** (scripts/doctor.mjs): verifica em ~5s — segredo consistente (.env.local x recognition/.env), migrations aplicadas (tabelas novas via REST + RPCs via OpenAPI), bot no ar (heartbeat <60s), reconhecimento pronto (127.0.0.1:8765/health), figurinha de abertura capturada, backup recente (<48h), aviso Vercel. Saída ✅/⚠️/❌ com a correção exata de cada item; exit 1 quando há problema.
+2. **P-02 CONCLUÍDO**: o doctor confirmou que o OPERADOR JÁ APLICou as 4 migrations (tabelas + RPCs presentes na instância). Padrão novo: rodar doctor depois de aplicar migrations futuras.
+3. **BUG REAL achado pelo doctor**: os testes de announce-sticker escreviam no estado de produção (bot/data/announcement-sticker.json com figurinha "ABC" falsa + announce-state com "q1"/"q2"). Corrigido: módulo aceita BOT_DATA_DIR; suíte redireciona para mkdtemp antes do import + asserção de que nunca toca bot/data; arquivos poluídos DELETADOS (o operador ainda não capturou figurinha nenhuma — o doctor agora diz a verdade).
+4. Docs: P-02/P-12 fechados, 00_INDEX atualizado (restam só P-03, P-04, P-11).
 
 ## O que está em andamento
-- Nada. CI verde em 1887446e.
+- Nada de código. Aguardando CI do push.
 
 ## Arquivos modificados
-- app/auctions/new/bulk-wizard.tsx (uploadImages retorna extraUrls; payload usa retorno)
-- app/auctions/new/wizard.tsx (upload devolve {imageUrl, extraImages}; publish usa retorno; validação de falha do upload corrigida)
-- supabase/migrations/20260924140000_backup_covers_new_tables.sql (novo)
-- app/api/quick-polls/route.ts (GET lista)
-- app/whatsapp/page.tsx (+ globals.css: lista de brindes, nota de grupo)
-- app/api/export/route.ts (coluna Pagamento)
-- docs/agent/11_PENDING_WORK.md (P-12) + este handoff
+- scripts/doctor.mjs (novo), package.json (script doctor)
+- bot/announce-sticker.mjs (BOT_DATA_DIR), bot/announce-sticker.test.mjs (temp dir + 5º teste anti-poluição)
+- bot/data/announcement-sticker.json e announce-state.json (DELETADOS — eram lixo de teste)
+- docs/agent/00_INDEX.md, 11_PENDING_WORK.md (P-02), este handoff
 
 ## Arquivos analisados
-- Fluxos completos de upload/publish dos dois wizards, export_business_backup, snapshot do export, purge.test.mjs, grep TODO/FIXME/Coleção em todo app/.
+- scripts/doctor.mjs executado ao vivo contra a instância real do operador (revelou P-02 concluído e a poluição).
 
 ## Decisões tomadas
-- Correção do backup em migration NOVA (não edit in-place) por causa da ordem lexical do CI + validação no CREATE de LANGUAGE SQL.
-- Célula "Pagamento" carrega a data ("Pago (dd/mm)"); "Data da venda" continua sendo o confirmed_at.
+- Doctor lê .env.local/bot/.env direto do disco (sem rede pra conferir segredo da Vercel — vira aviso informativo).
+- Checagem de RPCs via OpenAPI do PostgREST (Accept: application/openapi+json) — sem executar nada pesado.
 
 ## Problemas encontrados
-- Apenas os corrigidos (bugs 1 e 2 eram reais e teriam sido percebidos em produção: cartas publicadas sem as fotos de detalhe no primeiro envio).
+- Testes que escrevem em estado de produção (announce-sticker) — mesma classe do bug de memória da rodada 2026-09-22. REGLA REGISTRADA nos PERIGOS: suíte que persiste estado deve aceitar redirecionamento de diretório e redirecionar ANTES do import dinâmico.
 
 ## Testes executados
-- typecheck OK, npm test 155/155 OK, bot 26/26 OK, build OK, CI (Postgres 17 + todas migrations + SQL tests + concorrência + smoke) OK.
+- node --test bot/*.test.mjs 31/31 (novo teste anti-poluição incluído); npm test 155/155; doctor executado ao vivo (2 falhas esperadas: bot/reconhecimento desligados no momento).
 
 ## Resultado dos testes
-- Tudo verde. CI 1887446e success.
+- Verdes; doctor reporta corretamente os 2 itens dependentes de `npm run start` estar rodando.
 
 ## Ponto EXATO onde paramos
-Rodada de correções completa e publicada. Sem trabalho de código em estado parcial.
+Doctor publicado; estado de produção limpo; P-02/P-12 fechados. Backlog real restante: P-03 (índice es — 2-3h CPU, decidir janela), P-04 (SigLIP2 quantizado — maior), P-11 (env Vercel — operador).
 
 ## Próximo passo EXATO
-1. Operador aplicar as 4 migrations no SQL Editor (ordem lexical): 20260923093000 (avisos) -> 20260923120000 (backup) -> 20260924120000 (brindes/extras/lembretes) -> 20260924140000 (backup completo). Se as duas primeiras já foram aplicadas, aplicar só as que faltam — todas são create-or-replace/aditivas.
-2. npm run start + smoke ao vivo (menções, brinde, fotos extras, lembrete DM + botão de baixa).
-3. Backlog restante: P-02 (aplicar), P-03 (índice es — decidir quando), P-04 (quantizado), P-05 (figurinha — depois, por decisão do operador), P-11 (env Vercel).
+1. Operador: `npm run start` e depois `npm run doctor` — esperado: só o ⚠️ do backup até passar das 4h30 uma vez, e ⚠️ da figurinha até capturar com !figurinha.
+2. P-11: configurar RECOGNITION_SERVICE_SHARED_SECRET na Vercel (server-only).
+3. Se o operador aprovar: P-03 (rodar `npm run recognition:index` numa janela sem leilão; ~2-3h CPU).
 
 ## Arquivo recomendado para continuar
 docs/agent/11_PENDING_WORK.md.
 
 ## Arquivos de código prioritários
-- app/auctions/new/bulk-wizard.tsx e app/auctions/new/wizard.tsx (futuras mudanças de upload: sempre consumir o RETORNO, nunca o estado do closure)
-- supabase/migrations/20260924140000_backup_covers_new_tables.sql
+- scripts/doctor.mjs (manter atualizado quando novos itens exigirem check pré-leilão)
+- bot/announce-sticker.mjs (BOT_DATA_DIR)
 
 ## Comandos úteis
 ```bash
-npm run typecheck && npm test && npm run build
+npm run doctor
+npm run start
 node --test bot/*.test.mjs
-git add -A && git commit -m "..." && git push
 ```
 
 ## Atenções
-- Padrão anti-bug para o futuro: em fluxos upload->publish, o payload lê RETORNOS de função, nunca state React do closure.
-- Migrations que referenciam tabelas de migrations posteriores precisam de arquivo próprio com timestamp maior (ordem lexical do CI).
+- Toda suíte que persiste estado DEVE redirecionar o diretório (BOT_DATA_DIR) antes do import dinâmico — registrar em 03_DATABASE/09 se surgir de novo.
+- doctor não valida o segredo na Vercel (não há acesso) — é aviso, não check.
 - Atualizar 11_PENDING_WORK.md e ESTE arquivo ao concluir qualquer item.

@@ -68,5 +68,6 @@ npm test                     # node --test tests/*.test.mjs
 npm --prefix bot test        # testes do bot (via npm run check)
 npm run build                # next build
 npm run start                # site + bot + serviço de reconhecimento (Windows, máquina do operador)
+pm run doctor               # check-up pré-leilão: migrations, bot, reconhecimento, backup, figurinha
 python -m unittest discover -s recognition/tests   # testes python (no venv recognition/.venv)
 ```

@@ -15,12 +15,16 @@
 // Estado "já anunciado" por fila em bot/data/announce-state.json (idempotência
 // entre restarts; arquivo local como sessão/logs/backups — não é dado do
 // negócio, é estado de operação do PC).
+//
+// BOT_DATA_DIR permite aos TESTES redirecionar o diretório para um temp:
+// sem isso a suíte escrevia no estado REAL do operador (bug real: a figurinha
+// de produção virou "ABC" de teste — doctor acusou capturada sem captura).
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = join(fileURLToPath(new URL(".", import.meta.url)));
-export const DATA_DIR = join(here, "data");
+export const DATA_DIR = process.env.BOT_DATA_DIR ? join(process.env.BOT_DATA_DIR) : join(here, "data");
 export const STICKER_FILE = join(DATA_DIR, "announcement-sticker.json");
 export const ANNOUNCE_STATE_FILE = join(DATA_DIR, "announce-state.json");
 

@@ -21,9 +21,9 @@ Próximo passo: procurar no frontend chamadas a "memory/confirm" que não usem c
 
 ```text
 ID: P-02
-Título: Aplicar migration 20260923093000 (avisos globais/histórico/limpeza 30d) na instância Supabase
-Prioridade: Alta (bloqueia os recursos de avisos/limpeza em produção)
-Status: Aguardando ação manual do operador
+Título: Aplicar as migrations 2026-09-23/24 no Supabase
+Prioridade: Alta
+Status: CONCLUÍDO 2026-09-24 — CONFIRMADO pelo npm run doctor: tabelas novas (participant_warnings, value_change_log, admin_notifications, whatsapp_quick_polls, payment_reminders) e RPCs (export_business_backup, mark_purchase_paid, cleanup_old_auctions) todos presentes na instância. Padrão futuro: rodar `npm run doctor` para conferir migrations após aplicar novas.
 Arquivos relacionados: supabase/migrations/20260923093000_global_warnings_value_history.sql
 Descrição: Migration versionada e testada no CI (aplicada em Postgres 17 limpo), mas produção aplica manualmente via SQL Editor (fluxo do projeto).
 O que já foi investigado: bot/site funcionam sem ela (dreno de notificações loga erro até aplicar; limpeza 30d idem).

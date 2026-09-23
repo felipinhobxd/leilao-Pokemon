@@ -158,13 +158,67 @@ async function patchCompanionRegistrationRefresh() {
   return "applied";
 }
 
+// ---------------------------------------------------------------------------
+// libsignal session churn spam (2026-09-24): a sincronização de grupos roda
+// num socket DESCARTÁVEL (sync-groups.mjs). Na volta, o socket principal
+// reconecta e substitui as sessões Signal dos participantes — a cada troca o
+// libsignal imprime a SessionEntry INTEIRA (chains, ratchets, privKey!) com
+// console.info/warn direto no terminal: "Closing session: SessionEntry {...}"
+// repetido dezenas de vezes por reconexão. Ruído assustador e vazamento de
+// chave no log. Estas chamadas viram no-op; os console.error de falha real
+// (decrypt, migração V1) NÃO são tocados.
+const libsignalSrcDir = path.join(path.dirname(require.resolve("libsignal")), "src");
+const spamTargets = [
+  {
+    file: path.join(libsignalSrcDir, "session_record.js"),
+    needles: [
+      'console.warn("Session already closed", session);',
+      'console.info("Closing session:", session);',
+      'console.warn("Session already open");',
+      'console.info("Opening session:", session);',
+      'console.info("Removing old closed session:", oldestSession);',
+    ],
+  },
+  {
+    file: path.join(libsignalSrcDir, "session_builder.js"),
+    needles: ['console.warn("Closing open session in favor of incoming prekey bundle");'],
+  },
+  {
+    file: path.join(libsignalSrcDir, "session_cipher.js"),
+    needles: ['console.warn("Decrypted message with closed session.");'],
+  },
+];
+
+async function patchLibsignalSessionSpam() {
+  let applied = 0;
+  for (const target of spamTargets) {
+    let source = await readFile(target.file, "utf8");
+    let changed = false;
+    for (const needle of target.needles) {
+      if (!source.includes(needle)) continue;
+      if (checkOnly) throw new Error(`libsignal session spam patch is missing (${path.basename(target.file)}).`);
+      const found = occurrences(source, needle);
+      if (found !== 1) {
+        throw new Error(`Expected exactly one libsignal console spam site in ${path.basename(target.file)}, found ${found}. Refusing to patch an unknown build.`);
+      }
+      source = source.replace(needle, "void 0; /* leilao-pokemon: sem dump de SessionEntry (privKeys) no terminal */");
+      changed = true;
+      applied += 1;
+    }
+    if (changed) await writeFile(target.file, source, "utf8");
+  }
+  return applied === 0 ? "already" : `applied (${applied} sites)`;
+}
+
 const ackResult = await patchPreLoginAck();
 const refreshResult = await patchCompanionRegistrationRefresh();
+const spamResult = await patchLibsignalSessionSpam();
 
 if (checkOnly) {
-  console.log("Baileys QR pairing patches verified. Poll votes are handled by the bot without patching process-message.js.");
+  console.log("Baileys QR pairing + libsignal spam patches verified. Poll votes are handled by the bot without patching process-message.js.");
 } else {
   console.log(`Baileys pre-login ACK patch: ${ackResult}.`);
   console.log(`Baileys companion_reg_refresh patch: ${refreshResult}.`);
+  console.log(`Baileys libsignal session spam patch: ${spamResult}.`);
   console.log("Baileys poll vote patch: not needed (raw pollUpdate handled by bot)." );
 }

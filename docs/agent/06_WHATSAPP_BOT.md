@@ -68,7 +68,7 @@
 
 - **Supabase** (direto, sem API HTTP): dispatches, comandos, votos, workers, notificações, limpeza.
 - **Painel**: só indiretamente (painel escreve comandos; bot publica estado que o painel lê).
-- **Baileys 7.0.0-rc14** + `patch-baileys.mjs` (pinned; upgrade = risco de protocolo).
+- **Baileys 7.0.0-rc14** + `patch-baileys.mjs` (pinned; upgrade = risco de protocolo). Patches: pre-login ACK `creds.me?.id`, rotação do adv secret (`companion_reg_refresh` re-renderiza o QR) e **silenciamento do spam de churn de sessão do libsignal** (2026-09-24): a sync de grupos roda num socket descartável (`sync-groups.mjs`); na volta, o socket principal substitui as sessões Signal dos participantes e o libsignal imprimia a SessionEntry INTEIRA (chains/ratchets/**privKey**) via `console.info` a cada troca — dezenas de "Closing session:" por reconexão. 7 call sites viraram `void 0` em `session_record.js`/`session_builder.js`/`session_cipher.js`; `console.error` de falhas reais (decrypt, migração) permanece. O close é só marcação `indexInfo.closed = Date.now()` — nada é apagado do disco (esperado em troca de sessão, NÃO é logout).
 
 ## Riscos / atenção especial
 

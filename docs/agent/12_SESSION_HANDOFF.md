@@ -1,10 +1,14 @@
 # SESSION HANDOFF
 
 ## Última atualização
-2026-09-24 (fim da sessão: rascunhos do wizard em lote — salvar/abrir/excluir, migration 20260924150000)
+2026-09-24 (fim da sessão: rascunhos do wizard em lote — salvar/abrir/excluir, migration 20260924150000) + hotfix do spam "Closing session" no console do bot
 
 ## Sessão atual
-Pedido do operador: "quando estou programando o leilão, ter uma opção de salvar um rascunho para editar depois". Decisões confirmadas pelo operador: (1) armazenar no SUPABASE (não localStorage), (2) só o wizard em lote, (3) rascunho apaga sozinho ao publicar.
+1. Rascunhos do wizard em lote (concluído, CI verde em 529c0f9d).
+2. Incidente do operador no `npm run start`: "Falha na sincronização automática de grupos: Tempo esgotado" + reconexão + enxurrada de "Closing session: SessionEntry {...}" no terminal (+ privKeys vazando no log) → operador deu SIGINT por susto. Diagnóstico: ENCHENTE era ruído bruto de `console.info` dentro do libsignal (`session_record.js`), disparado pelo ciclo stop-bot → sync-groups (socket descartável) → restart do bot. Sem dano: o "close" só marca `indexInfo.closed`; creds/sessão intactas (bot\sessao: 2193 arquivos, creds.json presente).
+
+## O que foi concluído
+8. **Hotfix libsignal spam**: `bot/patch-baileys.mjs` ganhou `patchLibsignalSessionSpam()` — 7 call sites (`Closing/Opening session`, `Session already closed/open`, `Removing old closed session`, pré-key churn em session_builder, "Decrypted message with closed session") viraram `void 0` com comentário explicativo. `console.error` de falhas REAIS (decrypt, migração V1) permanece. Aplicado na máquina do operador na hora + postinstall/CI cobertos (`patch-baileys.mjs --check` roda no `npm --prefix bot run check`).
 
 ## O que foi concluído
 1. **Rascunhos end-to-end**: botão "💾 Salvar rascunho" no topbar do wizard (todas as etapas); painel "Rascunhos salvos" na etapa 1 (sem cartas); Abrir/Excluir; publicar apaga o rascunho (fire-and-forget). As FOTOS sobem ao Storage no momento do salvar (`uploadImages(true)` mantém os `File`s em memória — reconhecimento/re-upload seguem na sessão); o payload guarda só URLs HTTPS + campos (≤512KB, 1..200 cartas, título 1..120).

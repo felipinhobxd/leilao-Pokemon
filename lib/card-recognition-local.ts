@@ -191,6 +191,9 @@ export type LocalRecognitionResult = RecognitionResult & {
     routeB?: boolean;
     orientation?: string;
     languageStatus?: "confirmed" | "uncertain" | "conflict" | "pt-br-pre-2011";
+    // Qualidade do enquadramento da foto (quad/Hough): abaixo de ~0.5 o warp
+    // degrada embedding + OCR — o wizard mostra dica de "tire outra foto".
+    normalization?: { method?: string; confidence?: number };
     evidence?: string[];
     timings?: Record<string, number>;
     queueMs?: number;

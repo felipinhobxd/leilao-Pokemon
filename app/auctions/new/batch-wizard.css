@@ -124,3 +124,7 @@
 .extra-thumb img{width:100%;height:100%;object-fit:cover;display:block}
 .extra-thumb button{position:absolute;top:2px;right:2px;width:18px;height:18px;border:none;border-radius:50%;background:#c0392b;color:#fff;font-size:12px;line-height:18px;padding:0;cursor:pointer}
 .extra-thumb button:hover{background:#a93226}
+
+/* Holdout real (2026-09-24): fotos com warp fraco (<0.5) recebem a dica de
+   retake direto na caixa de reconhecimento. */
+.retake-hint{display:block;margin-top:6px;color:#8a5b00;font-size:12px}

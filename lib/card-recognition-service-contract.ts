@@ -166,20 +166,23 @@ export function mapServiceHints(service: ServiceResult): OcrHints {
 export function mapServiceResult(service: ServiceResult, serviceBase: string): RecognitionResult & {
   decisionStatus?: "IDENTIFICADA" | "PROVÁVEL" | "REVISAR" | "SEM RESULTADO";
   confidenceKind?: "evidence-score-not-calibrated-probability";
-  localPipeline?: {
-    backend: "local-service";
-    embedding?: string;
-    matcher?: string;
-    routeA?: boolean;
-    routeB?: boolean;
-    orientation?: string;
-    languageStatus?: "confirmed" | "uncertain" | "conflict" | "pt-br-pre-2011";
-    evidence?: string[];
-    timings?: Record<string, number>;
-    queueMs?: number;
-    executionMs?: number;
-    verification?: ServiceCandidate["verification"];
-  };
+    localPipeline?: {
+      backend: "local-service";
+      embedding?: string;
+      matcher?: string;
+      routeA?: boolean;
+      routeB?: boolean;
+      orientation?: string;
+      languageStatus?: "confirmed" | "uncertain" | "conflict" | "pt-br-pre-2011";
+      evidence?: string[];
+      timings?: Record<string, number>;
+      queueMs?: number;
+      executionMs?: number;
+      verification?: ServiceCandidate["verification"];
+    };
+    // Qualidade do enquadramento (quad/Hough): abaixo de ~0.5 o warp degrada
+    // embedding + OCR — o wizard usa para a dica "tire outra foto".
+    normalization?: { method?: string; confidence?: number };
 } {
   const candidates = (service.candidates ?? []).map(candidate => mapServiceCandidate(candidate, serviceBase));
   const best = service.best ? mapServiceCandidate(service.best, serviceBase) : candidates[0];
@@ -198,12 +201,18 @@ export function mapServiceResult(service: ServiceResult, serviceBase: string): R
       routeB?: boolean;
       orientation?: string;
       languageStatus?: "confirmed" | "uncertain" | "conflict" | "pt-br-pre-2011";
+      // Qualidade do enquadramento (quad/Hough): abaixo de ~0.5 o warp
+      // degrada embedding + OCR - o wizard mostra dica de "tire outra foto".
+      normalization?: { method?: string; confidence?: number };
       evidence?: string[];
       timings?: Record<string, number>;
       queueMs?: number;
       executionMs?: number;
       verification?: ServiceCandidate["verification"];
     };
+    // Qualidade do enquadramento (quad/Hough): abaixo de ~0.5 o warp
+    // degrada embedding + OCR - o wizard mostra dica de "tire outra foto".
+    normalization?: { method?: string; confidence?: number };
   } = {
     confidence: service.decision === "IDENTIFICADO" ? 90 : service.decision === "PROVAVEL" ? 70 : 0,
     level,
@@ -218,12 +227,14 @@ export function mapServiceResult(service: ServiceResult, serviceBase: string): R
     visualCandidateCount: candidates.length,
     decisionStatus,
     confidenceKind: "evidence-score-not-calibrated-probability",
+    normalization: service.normalization,
     localPipeline: {
       backend: "local-service",
       routeA: service.routeA,
       routeB: service.routeB,
       orientation: service.orientation,
       languageStatus: service.languageStatus,
+      normalization: service.normalization,
       evidence: service.evidence,
       timings: service.timings,
       queueMs: service.queueMs,

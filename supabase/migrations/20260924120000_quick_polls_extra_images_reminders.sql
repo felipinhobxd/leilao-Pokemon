@@ -83,6 +83,7 @@ declare
   purchase public.purchases;
   payment public.payments;
   delivery public.deliveries;
+  delivery_found boolean:=false;
   already_paid boolean:=false;
 begin
   if not exists(select 1 from public.admin_profiles where user_id=p_admin_user_id and active and role in ('admin','operator')) then raise exception 'forbidden'; end if;
@@ -92,7 +93,7 @@ begin
   if purchase.status <> 'confirmed' then raise exception 'purchase_not_confirmable'; end if;
 
   select * into payment from public.payments where purchase_id=p_purchase_id for update;
-  if payment is null then
+  if not found then
     insert into public.payments(purchase_id,amount,status,method,paid_at,reference)
     values(p_purchase_id,purchase.amount,'paid'::public.payment_status,nullif(trim(coalesce(p_method,'')),''),clock_timestamp(),nullif(trim(coalesce(p_reference,'')),''))
     returning * into payment;
@@ -105,8 +106,12 @@ begin
     where id=payment.id returning * into payment;
   end if;
 
+  -- NOTA: `delivery is not null` em tipo composto só é true com TODOS os
+  -- campos não-nulos (tracking_code etc. são NULL) — o FOUND é o único
+  -- teste correto de "linha existe" em plpgsql.
   select * into delivery from public.deliveries where purchase_id=p_purchase_id for update;
-  if delivery is not null and delivery.status='waiting_payment'::public.delivery_status then
+  delivery_found:=found;
+  if delivery_found and delivery.status='waiting_payment'::public.delivery_status then
     update public.deliveries set status='ready'::public.delivery_status, updated_at=clock_timestamp() where id=delivery.id returning * into delivery;
   end if;
 
@@ -116,7 +121,7 @@ begin
            jsonb_build_object('purchase_id',p_purchase_id,'amount',payment.amount,'paid_at',payment.paid_at));
   end if;
 
-  return jsonb_build_object('purchase',to_jsonb(purchase),'payment',to_jsonb(payment),'delivery',case when delivery is null then null else to_jsonb(delivery) end,'already_paid',already_paid);
+  return jsonb_build_object('purchase',to_jsonb(purchase),'payment',to_jsonb(payment),'delivery',case when delivery_found then to_jsonb(delivery) else null end,'already_paid',already_paid);
 end $$;
 revoke execute on function public.mark_purchase_paid(uuid,uuid,text,text) from public,anon,authenticated;
 grant execute on function public.mark_purchase_paid(uuid,uuid,text,text) to service_role;

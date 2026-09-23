@@ -2,7 +2,7 @@
 
 > Área: Banco de dados
 > Escopo: Tabelas, RPCs, triggers, RLS, estados, idempotência, perigos
-> Última atualização: 2026-09-23
+> Última atualização: 2026-09-24
 > Fonte principal: `supabase/schema.sql`, `supabase/operations.sql`, `supabase/whatsapp_bridge.sql`, `supabase/migrations/*.sql` (todas), `lib/backend.ts`, `app/api/**`, `bot/**`
 
 ## Como o schema chega ao banco
@@ -26,6 +26,7 @@ Ordem de aplicação (confirmada no CI `ci.yml`): `tests/bootstrap.sql` → `sup
 | `admin_notifications` | DM pendente aos admins (idem) | `participant_id, kind, payload jsonb, external_event_id UNIQUE, sent_at` | bot drena |
 | `whatsapp_quick_polls` | brindes: enquete livre agendada (20260924120000) | `group_id FK, title, options jsonb, scheduled_at, sent_at, poll_message_id UNIQUE, external_event_id UNIQUE, created_by` | bot publica (P-07) |
 | `payment_reminders` | ciclo de lembretes de pagamento (idem) | `purchase_id UNIQUE FK CASCADE, participant_id, reminded_count, last_reminded_at` | bot drena (P-09) |
+| `auction_drafts` | rascunhos do wizard em lote (20260924150000): snapshot serializável para continuar a programação depois | `id uuid PK (client-generated), title 1..120, payload jsonb (≤512KB, cards 1..200), created_by, created_at, updated_at` | API drafts, purge/backup |
 | `cards.extra_images` | coluna jsonb: até 4 URLs HTTPS de fotos de detalhe (idem) | `default '[]'` | wizard + bot envia em sequência (P-08) |
 | `auction_events` | auditoria append-only | `auction_id, participant_id, admin_user_id, event_type, external_event_id, payload` | export/auditoria |
 | `processed_commands` | cache de idempotência | `external_event_id, request, result` | TODOS os eventos |
@@ -54,7 +55,9 @@ Ordem de aplicação (confirmada no CI `ci.yml`): `tests/bootstrap.sql` → `sup
 - `resolve_whatsapp_participant(...)` — LID/telefone → participante (merge de identidades; conflito → evento auditado).
 - `read_auction_snapshot()` / `read_dashboard_snapshot()` — export/dashboard; a 20260923093000 adiciona as 3 tabelas novas ao auction snapshot.
 - `purge_all_business_data(p_confirm)` — exclusão total com frase `quero excluir mesmo` (validação tripla UI→API→DB), ordem FK-safe, SECURITY DEFINER, reseta sequences.
-- `export_business_backup()` (20260923120000) — snapshot JSON de TODAS as tabelas de negócio; consumido pelo bot (cópia diária 4h30 em `bot/backups/`) e por `GET /api/admin/backup`.
+- `export_business_backup()` (20260923120000; corpo substituído na 20260924140000 e na 20260924150000 — cobre TODAS as tabelas de negócio, inclusive `auction_drafts` limit 50) — snapshot JSON; consumido pelo bot (cópia diária 4h30 em `bot/backups/`) e por `GET /api/admin/backup`.
+- `upsert_auction_draft(p_payload, p_admin_user_id)` / `delete_auction_draft(p_draft_id, p_admin_user_id)` (20260924150000) — salvar/excluir rascunho do wizard. Upsert idempotente por PK (id gerado no cliente, SEM processed_commands); guards espelham a rota (título 1..120, cards 1..200, ≤512KB); propriedade: rascunho alheio vira `draft_not_found`; delete idempotente por estado.
+- `purge_all_business_data(p_confirm)` — corpo MAIS RECENTE agora é o da 20260924150000 (adicionou `auction_drafts` à cadeia de deletes e ao `deleted` do retorno).
 - `mark_purchase_paid(p_purchase_id, p_admin_user_id, p_method, p_reference)` (20260924120000) — baixa de pagamento idempotente por estado: payments → `paid`, delivery → `ready`, audita UMA vez; para os lembretes DM do bot.
 - `cleanup_old_auctions(p_days=30)` — limpeza horária de lotes terminais mais velhos que o corte; levanta/restaura `immutable_audit`; avisos globais sobrevivem (FK SET NULL + contexto denormalizado em `participant_warnings`).
 

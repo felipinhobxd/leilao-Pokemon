@@ -128,3 +128,12 @@
 /* Holdout real (2026-09-24): fotos com warp fraco (<0.5) recebem a dica de
    retake direto na caixa de reconhecimento. */
 .retake-hint{display:block;margin-top:6px;color:#8a5b00;font-size:12px}
+
+/* Rascunhos do wizard em lote (2026-09-24): salvar/abrir programação depois. */
+.topbar-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+.drafts-panel .draft-list{gap:8px}
+.draft-row{display:flex;align-items:center;gap:10px;justify-content:space-between;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:var(--surface-soft)}
+.draft-row-info{display:grid;gap:3px;min-width:0}
+.draft-row-info strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.draft-row-info span{font-size:.85rem;color:var(--muted)}
+.draft-row .actions{display:flex;gap:8px;flex:0 0 auto}

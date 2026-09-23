@@ -2,8 +2,8 @@
 
 > Área: API HTTP do painel
 > Escopo: Rotas, contratos, autenticação, idempotência
-> Última atualização: 2026-09-23
-> Fonte principal: `app/api/**/route.ts`, `lib/backend.ts`, `lib/purge.ts`, `lib/card-recognition-token.mjs`, `lib/card-catalog.ts`, `lib/rate-limit.ts`
+> Última atualização: 2026-09-24
+> Fonte principal: `app/api/**/route.ts`, `lib/backend.ts`, `lib/purge.ts`, `lib/card-recognition-token.mjs`, `lib/card-catalog.ts`, `lib/rate-limit.ts`, `lib/auction-draft.ts`
 
 ## Padrão comum (confirmado em todas as rotas)
 
@@ -25,6 +25,12 @@
 - Body: `eventId`, `queue{group_id, starts_at, interval_seconds}`, `items[1..100]{card, auction}` — cada item aceita `pricing_mode/custom_values/custom_buyout_last` (espelha a rota única; `poll_options` gravadas por item).
 - Valida: lotes únicos e >0, duração 1s–604800s, intervalo 1–86400s.
 - Cria TUDO via `create_auction_publish_queue`; erros mapeados (409 lote duplicado/grupo indisponível/evento conflitante).
+
+### `/api/auctions/drafts` — rascunhos do wizard em lote (2026-09-24)
+- `GET` sem parâmetros → lista do operador (`id, title, updated_at`, máx 50, payloads ficam no banco); `GET ?draftId=` → rascunho completo (payload incluso). Filtro `created_by = user.id`.
+- `POST` → salvar/atualizar: body `{draftId (uuid client-generated), title 1..120, state}`; `state` validado em JS + RPC (objeto, cards 1..200, ≤512KB). Escreve via RPC `upsert_auction_draft` (idempotente por PK; MESMO input duas vezes = mesma linha).
+- `DELETE ?draftId=` → descartar (RPC `delete_auction_draft`, idempotente por estado). O wizard chama automaticamente após publicar a fila (rascunho virou leilão).
+- Erros: 400 validações, 404 `draft_not_found` (não existe OU é de outro admin — existência nunca vaza), 409 `draft_save_conflict` (duas abas salvaram juntas).
 
 ### `/api/auctions/queue` — fila em execução (tela pós-publicação do wizard em lote)
 - Métodos conforme implementação (pause/resume/cancel/status/consultas de itens) — o wizard usa para **Pausar/Continuar/Cancelar** a fila e acompanhar `summary` (total/publicados/falhos/pendentes/próximo). Estado `paused` é persistente: retomar continua exatamente do próximo dispatch pendente, sem duplicação (claim idempotente por dispatch).
@@ -63,6 +69,7 @@
 |---|---|---|
 | auctions/new | `eventId` no RPC | 400/409/503 |
 | auctions/batch | `eventId` no RPC | 400/409 |
+| auctions/drafts | upsert por PK (draftId client-generated) | 400/404/409 |
 | commands | comando com id próprio (claim único) | 409 conflito |
 | card-recognition/token | — (mint por sessão, cache 60s no cliente) | 401, 503 segredo ausente |
 | admin/purge | frase-trava | 400/503 |

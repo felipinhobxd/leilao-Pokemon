@@ -3,7 +3,7 @@
 > Área: Mapa geral da documentação de agente
 > Escopo: Navegação e recuperação de contexto entre sessões
 > Última atualização: 2026-09-24
-> Fonte principal: Análise completa do código (commits até `6b9e8a6e`)
+> Fonte principal: Análise completa do código (commits até `6b9e8a6e`) + sessões de 2026-09-24
 
 ## Objetivo
 
@@ -48,15 +48,15 @@ Com isso um agente deve conseguir trabalhar em ~2-5 minutos de leitura.
 
 ## Estado atual resumido por área
 
-- **Site/API (app/, lib/)** — funcional. Cadastro em lote com valores personalizados + automático; exportação Excel com TOTAL e aba de alterações; janela do dashboard 30 dias.
-- **Banco (supabase/)** — migration de avisos globais + histórico de valores + limpeza 30d (`20260923093000`) **escrita e versionada, mas NÃO aplicada na instância Supabase** (aplicação manual via SQL Editor é o fluxo estabelecido do projeto — ver `11_PENDING_WORK.md` item P-02).
+- **Site/API (app/, lib/)** — funcional. Cadastro em lote com valores personalizados + automático; exportação Excel com TOTAL e aba de alterações; janela do dashboard 30 dias; **rascunhos do wizard em lote (2026-09-24): salvar/abrir/excluir, fotos no Storage, apaga ao publicar**.
+- **Banco (supabase/)** — migration de avisos + histórico + limpeza 30d e a de brindes/lembretes/fotos extra ESTÃO aplicadas em produção (doctor confirma). ⚠️ Migration de rascunhos (`20260924150000`) versionada e testada no CI, mas NÃO aplicada na instância — aplicação manual via SQL Editor é o fluxo do projeto (item P-13 de `11_PENDING_WORK.md`).
 - **Bot (bot/)** — funcional; supervisor com restart noturno, teto de heap 384 MB, dreno de notificações de avisos globais.
-- **Reconhecimento (recognition/)** — funcional e reforçado (pré-2011 + Devir + anti-ruído); carga lazy + descarga por inatividade; ~13.271 cartas `es` fora do índice visual (build pendente, intencionalmente adiado pelo operador).
-- **CI (.github/workflows/ci.yml)** — verde: Postgres 17 real + todas as migrations + SQL tests + bot + python + build + smoke.
+- **Reconhecimento (recognition/)** — funcional e reforçado (pré-2011 + Devir + anti-ruído com density gate); carga lazy + descarga por inatividade; ~13.271 cartas `es` fora do índice visual (decisão: espanhol cancelado do produto).
+- **CI (.github/workflows/ci.yml)** — verde: Postgres 17 real + todas as migrations + SQL tests (inclui rascunhos e a primeira cobertura do purge) + bot + python + build + smoke.
 
 ## Próxima área recomendada
 
-Ver **`11_PENDING_WORK.md`** (backlog priorizado) e **`12_SESSION_HANDOFF.md`** (checkpoint). A área mais provável do próximo trabalho funcional: **reconhecimento** (bug do `/memory/confirm` 401, item P-01) ou **banco** (aplicação/validação da migration, item P-02).
+Ver **`11_PENDING_WORK.md`** (backlog priorizado) e **`12_SESSION_HANDOFF.md`** (checkpoint). Trabalho imediato: **P-13** (operador aplicar a migration de rascunhos no SQL Editor + smoke). Backlog grande: **P-04** (SigLIP2 quantizado, exige re-gerar índice ~6-8h CPU) e **P-11** (env Vercel — 2 min do operador).
 
 ## Comandos oficiais (referência rápida — detalhes em `09_TESTS_AND_VALIDATION.md`)
 

@@ -2,7 +2,7 @@
 
 > Área: Backlog
 > Escopo: Bugs, melhorias, features pedidas pelo operador, dívidas, testes faltantes
-> Última atualização: 2026-09-23
+> Última atualização: 2026-09-24
 > Fonte principal: pedidos explícitos do operador nas sessões de trabalho + diagnóstico das sessões (logs citados abaixo)
 
 ## Bugs
@@ -117,11 +117,19 @@ O que falta: aplicação da migration em produção (P-02 consolidado) e smoke a
 ID: P-10
 Título: Suíte SQL para a migration de avisos (20260923093000)
 Prioridade: Média
-Status: Não iniciado
-Arquivos relacionados: tests/*.sql (padrão do CI), supabase/migrations/20260923093000_*.sql
-Descrição: os SQL tests do CI cobrem as migrations anteriores; a de avisos não tem arquivo dedicado (validada só por aplicação limpa no CI + revisão).
-O que falta: tests/auction-warnings.sql com: subida de valor sem aviso, mesmo valor sem aviso, redução = 1 aviso, 3 reduções = 1 notificação, evento repetido = idempotente, limpeza 30d preserva participant_warnings.
-Próximo passo: escrever o SQL test seguindo o padrão de tests/auction.sql.
+Status: CONCLUÍDO — `tests/auction-warnings.sql` existe e roda no CI (ci.yml), cobrindo exatamente o checklist: subida de valor sem aviso, mesmo valor sem aviso, redução = 1 aviso, 3 reduções = 1 notificação, replay sem duplicar, limpeza 30d preserva participant_warnings. A anotação anterior de "não iniciado" era drift de documentação (2026-09-24).
+Arquivos relacionados: tests/auction-warnings.sql, supabase/migrations/20260923093000_*.sql
+Próximo passo: nenhum.
+```
+
+```text
+ID: P-13
+Título: Aplicar a migration de rascunhos (20260924150000) no Supabase + smoke do fluxo
+Prioridade: Alta (o botão "Salvar rascunho" só funciona após aplicar)
+Status: Aberto — ação do OPERADOR (SQL Editor), código e CI prontos
+Arquivos relacionados: supabase/migrations/20260924150000_auction_drafts.sql (tabela auction_drafts + RPCs upsert/delete + purge/backup atualizados), scripts/doctor.mjs (checa tabela e RPCs), app/api/auctions/drafts/route.ts, app/auctions/new/bulk-wizard.tsx, lib/auction-draft.ts
+Descrição: rascunhos do wizard em lote salvos no Supabase (fotos sobem ao Storage no salvar). Sem a migration aplicada, salvar devolve 503/erro de função ausente (o botão aparece mas falha com mensagem).
+Próximo passo: operador colar o arquivo no SQL Editor → `npm run doctor` (deve mostrar tabela + RPCs de rascunho) → smoke: salvar rascunho com 2 cartas, fechar o navegador, reabrir /auctions/new, Abrir o rascunho (fotos voltam por URL), publicar fila de teste e conferir que o rascunho sumiu da lista.
 ```
 
 ```text

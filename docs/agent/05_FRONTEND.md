@@ -2,8 +2,8 @@
 
 > Área: Frontend Next.js
 > Escopo: Páginas, fluxos, estados, integrações
-> Última atualização: 2026-09-23
-> Fonte principal: `app/layout.tsx`, `app/page.tsx`, `app/dashboard.tsx`, `app/auctions/new/**`, `app/whatsapp/**`, `lib/card-recognition-local.ts`
+> Última atualização: 2026-09-24
+> Fonte principal: `app/layout.tsx`, `app/page.tsx`, `app/dashboard.tsx`, `app/auctions/new/**`, `app/whatsapp/**`, `lib/card-recognition-local.ts`, `lib/auction-draft.ts`
 
 ## Mapa real (arquivo → funcionalidade)
 
@@ -24,6 +24,14 @@
 2. **Valores**: por carta `Automático` (inicial/incremento/ARREMATE/opções) **ou** `Personalizado` (valores vírgula, decimal pt-BR ok, primeiro = lance inicial, checkbox "Maior valor = ARREMATE"); barra "Valores personalizados p/ todas"; duração individual por carta; preview mini da enquete (`poll-mini`).
 3. **Publicação**: grupo, intervalo entre publicações (1s–24h), agora vs agendar (horário de Brasília).
 4. **Revisar**: resumo + lista com imagem/valores/horários → `POST /api/auctions/batch` → tela da **fila** com Pausar/Continuar/Cancelar e progresso (`queueId`, `QueueView`).
+
+### Rascunhos (2026-09-24, migration `20260924150000`)
+
+- **Salvar**: botão "💾 Salvar rascunho" no topbar (todas as etapas). As FOTOS sobem ao Storage no salvar (`uploadImages(true)` mantém os `File`s em memória — reconhecimento/re-upload continuam na sessão); o payload guarda só URLs HTTPS + campos do wizard (`lib/auction-draft.ts` — whitelist, `buildDraftState`/`restoreDraftState`, guards 1..200 cartas / ≤512KB). Título automático: "Rascunho de dd/mm/aaaa hh:mm · N cartas".
+- **Abrir**: painel "Rascunhos salvos" na etapa 1 (sem cartas na tela) → `GET ?draftId=` → restaura cartas com `file:null` (thumbnail usa a URL), valores/lotes/idiomas/agendamento/etapa; reconhecimento só em estágios TERMINAIS (identified/review/not-found) e os CANDIDATOS vêm preservados (a caixa "Possíveis resultados" aparece mesmo sem File — dá para escolher à mão; o botão "Reconhecer novamente" exige File e fica oculto).
+- **Ciclo**: publicar a fila apaga o rascunho sozinho (fire-and-forget); "Excluir" na lista descarta; salvar de novo no mesmo rascunho = update do mesmo id (`activeDraftId`).
+- **Tela da fila** ganhou "＋ Novo leilão" (volta ao wizard com fila ativa — antes não havia caminho de retorno).
+- **Correções colaterais**: teto de 4 fotos de detalhe agora conta `extraFiles + extraImages` (evitava 400 na publicação quando extras já tinham subido ao salvar rascunho); payload de publicação faz merge+dedup de `extraImages` (antes: extras adicionadas após um upload parcial eram silenciosamente descartadas).
 
 Estados por carta: `recognitionStage: idle|queued|analyzing|identified|review|not-found|error|unavailable` com rótulos humanizados em `recognitionLabel()` (inclui caso Devir: `languageStatus === "pt-br-pre-2011"` → "impressão pt-BR pré-2011 (catálogo tem a versão EN)").
 

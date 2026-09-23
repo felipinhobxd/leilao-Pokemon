@@ -7,6 +7,7 @@ import type { Session } from "@supabase/supabase-js";
 import { buildCustomValuesPlan, buildPollPlan, cardConditions, cardLanguages, DEFAULT_POLL_OPTIONS, MAX_POLL_OPTIONS, parseCustomValues } from "@/lib/auction-wizard";
 import { brasiliaInputToIso, formatBrasiliaDateTime, formatBrasiliaTime, toBrasiliaInput } from "@/lib/brasilia-time";
 import { uploadCardImageBatch, type CardImageStage, type CardImageUploadFailure } from "@/lib/card-image";
+import { AUCTION_DRAFT_MAX_BYTES, auctionDraftJson, buildDraftState, buildDraftTitle, restoreDraftState, type AuctionDraftCandidate } from "@/lib/auction-draft";
 import { mergeRecognitionFields, type ManualFieldMap, type RecognitionCandidate, type RecognitionResult, type RecognizableField } from "@/lib/card-recognition-core";
 import { confirmRecognitionMemory, recognizePokemonCard, shutdownCardRecognition, imageRecognitionEnabled, imageRecognitionPreferenceEvent } from "@/lib/card-recognition-local";
 import { createPublicSupabaseClient } from "@/lib/supabase";
@@ -32,6 +33,8 @@ type QueueView = {
     card: { id: string; name: string; image_url: string | null } | null;
   }>;
 };
+
+type DraftSummary = { id: string; title: string; updated_at: string };
 
 const variants = ["Normal", "Holo", "Reverse Holo", "Full Art", "Illustration Rare", "Secret Rare", "Promo"];
 // Idioma aceito pelo dropdown do wizard (cardLanguages é a fonte da API):
@@ -103,6 +106,18 @@ function recognitionLabel(card: Draft) {
   return card.recognitionMessage;
 }
 
+// Rascunho restaurado não tem o File local: os candidatos vêm pelo payload —
+// normalizados de volta para a forma completa de RecognitionCandidate
+// (hp/image são metadados de exibição que os botões de candidato não usam).
+function draftCandidates(list: AuctionDraftCandidate[]): RecognitionCandidate[] {
+  return list.map(candidate => ({
+    id: candidate.id, name: candidate.name, collection: candidate.collection, cardNumber: candidate.cardNumber,
+    localId: candidate.localId, denominator: candidate.denominator,
+    language: candidate.language as RecognitionCandidate["language"],
+    hp: null, image: null, variant: candidate.variant ?? undefined, score: candidate.score,
+  }));
+}
+
 export default function BulkAuctionWizard() {
   const [db] = useState(createPublicSupabaseClient);
   const [ready, setReady] = useState(false);
@@ -129,6 +144,10 @@ export default function BulkAuctionWizard() {
   const [bulkIncrement, setBulkIncrement] = useState("1");
   const [bulkDuration, setBulkDuration] = useState("2");
   const [bulkCustomValues, setBulkCustomValues] = useState("");
+  const [drafts, setDrafts] = useState<DraftSummary[]>([]);
+  const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
+  const [draftBusy, setDraftBusy] = useState(false);
+  const [draftNotice, setDraftNotice] = useState("");
   const previewUrls = useRef(new Set<string>());
   const recognitionInFlight = useRef(new Set<string>());
   const submission = useRef<{ fingerprint: string; eventId: string } | null>(null);
@@ -152,6 +171,16 @@ export default function BulkAuctionWizard() {
       const lot = Number(body.suggestedLotNumber ?? 1);
       setSuggestedLot(lot); setFirstLot(String(lot)); setGroups(body.groups ?? []);
       setGroupId(body.defaultGroupId ?? body.groups?.[0]?.id ?? "");
+      // Rascunhos carregam ANTES do possível redirecionamento para a fila —
+      // o painel "Rascunhos salvos" precisa existir mesmo com fila ativa (o
+      // botão "Novo leilão" da tela da fila volta para este wizard).
+      try {
+        const draftsResponse = await authFetch("/api/auctions/drafts");
+        if (draftsResponse.ok) {
+          const draftsBody = await draftsResponse.json();
+          if (Array.isArray(draftsBody.drafts)) setDrafts(draftsBody.drafts);
+        }
+      } catch { /* rascunhos são complemento: nunca bloqueiam o boot */ }
       const explicit = new URLSearchParams(window.location.search).get("queue");
       if (explicit) { setQueueId(explicit); return; }
       const latestResponse = await authFetch("/api/auctions/queue?latest=1");
@@ -439,7 +468,11 @@ export default function BulkAuctionWizard() {
     setError(""); setStep(nextStep);
   }
 
-  async function uploadImages() {
+  // keepFiles=false (publicação): o File é descartado ao subir — a URL assume.
+  // keepFiles=true (salvar rascunho): o File continua em memória, então a
+  // sessão atual mantém reconhecimento/re-upload; o rascunho no servidor
+  // guarda a URL.
+  async function uploadImages(keepFiles = false) {
     const urls = new Map<string, string>();
     // P-08: a foto principal E as de detalhe (até 4) sobem no mesmo lote
     // incremental; extras usam id composto `${cardId}#e${n}`. As URLs voltam
@@ -448,10 +481,12 @@ export default function BulkAuctionWizard() {
     const extraUrls = new Map<string, string[]>();
     const pending: Array<{ id: string; file: File }> = [];
     for (const card of cards) {
-      if (card.file) pending.push({ id: card.id, file: card.file });
+      // Foto principal já no Storage (ex.: salva num rascunho antes): reusar
+      // a URL evita re-hash/re-upload — o dedup devolveria a mesma de todo jeito.
+      if (card.file && !card.imageUrl) pending.push({ id: card.id, file: card.file });
       card.extraFiles.forEach((file, index) => pending.push({ id: `${card.id}#e${index}`, file }));
     }
-    for (const card of cards) if (!card.file) urls.set(card.id, card.imageUrl.trim());
+    for (const card of cards) if (!card.file || card.imageUrl) urls.set(card.id, card.imageUrl.trim());
     if (!pending.length) return { urls, extraUrls, failures: [] as CardImageUploadFailure[] };
 
     const completed = new Set<string>();
@@ -485,7 +520,7 @@ export default function BulkAuctionWizard() {
             return { ...card, extraFiles, extraImages, imageStage: "done" as const, imageMessage: card.imageMessage || "Concluída" };
           }
           if (card.id !== id) return card;
-          return { ...card, file: null, imageUrl: result.url, imageStage: "done" as const, imageMessage: card.imageMessage || "Concluída" };
+          return { ...card, file: keepFiles ? card.file : null, imageUrl: result.url, imageStage: "done" as const, imageMessage: card.imageMessage || "Concluída" };
         }));
       },
     });
@@ -498,6 +533,109 @@ export default function BulkAuctionWizard() {
       }
     }
     return { urls, extraUrls, failures };
+  }
+
+  async function refreshDrafts() {
+    try {
+      const response = await authFetch("/api/auctions/drafts");
+      if (!response.ok) return;
+      const body = await response.json();
+      if (Array.isArray(body.drafts)) setDrafts(body.drafts);
+    } catch { /* lista desatualizada não é erro para o operador */ }
+  }
+
+  async function saveDraft() {
+    if (draftBusy || busy) return;
+    if (!cards.length) { setError("Adicione pelo menos uma carta antes de salvar o rascunho."); return; }
+    setDraftBusy(true); setError(""); setDraftNotice("");
+    try {
+      // As fotos SOBEM no salvar — é isso que torna o rascunho restaurável em
+      // qualquer navegador; a sessão atual mantém os Files (uploadImages(true)).
+      const { urls, extraUrls, failures } = await uploadImages(true);
+      if (failures.length) {
+        const firstReason = failures[0].message;
+        const proceed = window.confirm(`${failures.length} imagem(ns) falharam e não ficam salvas no rascunho (elas continuam nesta sessão — salvar de novo reenvia só as que falharam).\n\nSalvar o rascunho sem essas imagens?`);
+        if (!proceed) {
+          setError(`${failures.length} imagem(ns) falharam (ex.: ${firstReason}). Tente salvar de novo para reenviar somente as que falharam.`);
+          return;
+        }
+      }
+      const state = buildDraftState({
+        step, firstLot, groupId, intervalValue, intervalUnit, publication, scheduledInput,
+        cards: cards.map(card => ({
+          ...card,
+          imageUrl: urls.get(card.id) ?? card.imageUrl,
+          extraImages: card.extraImages.length ? card.extraImages : (extraUrls.get(card.id) ?? []),
+        })),
+      });
+      if (auctionDraftJson(state).length > AUCTION_DRAFT_MAX_BYTES) throw new Error("Rascunho muito grande — reduza o número de cartas.");
+      const draftId = activeDraftId ?? crypto.randomUUID();
+      const response = await authFetch("/api/auctions/drafts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ draftId, title: buildDraftTitle(new Date(), state.cards.length), state }) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? "Não foi possível salvar o rascunho.");
+      setActiveDraftId(draftId);
+      setDraftNotice(`Rascunho salvo às ${formatBrasiliaTime(new Date(), false)} — dá para fechar e continuar depois.`);
+      await refreshDrafts();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Falha ao salvar o rascunho."); }
+    finally { setDraftBusy(false); }
+  }
+
+  async function openDraft(id: string) {
+    if (draftBusy || busy) return;
+    if (cards.length && !window.confirm("Abrir o rascunho substitui as cartas que você está editando agora (alterações não salvas serão perdidas). Continuar?")) return;
+    setDraftBusy(true); setError("");
+    try {
+      const response = await authFetch(`/api/auctions/drafts?draftId=${encodeURIComponent(id)}`);
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? "Não foi possível abrir o rascunho.");
+      const state = restoreDraftState((body.draft as { payload?: unknown } | null)?.payload);
+      for (const card of cards) {
+        if (card.preview && previewUrls.current.has(card.preview)) { URL.revokeObjectURL(card.preview); previewUrls.current.delete(card.preview); }
+        for (const url of card.extraPreviews) URL.revokeObjectURL(url);
+      }
+      // Restaurado: file=null + preview="" — o thumbnail usa a URL do Storage.
+      // Lotes/valores/idiomas vêm do payload; recognition só nos estágios
+      // terminais (identified/review/not-found) com os candidatos preservados.
+      setCards(state.cards.map((card, index) => ({
+        ...draftFor(null, "", Number(card.lotNumber) || index + 1, index === 0),
+        imageUrl: card.imageUrl, extraImages: card.extraImages,
+        name: card.name, collection: card.collection, cardNumber: card.cardNumber,
+        variant: card.variant, condition: card.condition, language: card.language,
+        pricingMode: card.pricingMode, customValues: card.customValues, customBuyoutLast: card.customBuyoutLast,
+        lotNumber: card.lotNumber, startingPrice: card.startingPrice, increment: card.increment, buyout: card.buyout,
+        durationMinutes: card.durationMinutes, optionCount: card.optionCount,
+        recognitionStage: card.recognitionStage, recognitionMessage: card.recognitionMessage,
+        recognitionCandidates: draftCandidates(card.recognitionCandidates),
+        manualFields: card.manualFields,
+        imageStage: card.imageUrl ? ("done" as const) : ("idle" as const),
+        imageMessage: "",
+      })));
+      setFirstLot(state.firstLot);
+      setGroupId(groups.some(group => group.id === state.groupId) ? state.groupId : "");
+      setIntervalValue(state.intervalValue);
+      setIntervalUnit(state.intervalUnit);
+      setPublication(state.publication);
+      setScheduledInput(state.scheduledInput || defaultSchedule());
+      setStep(state.step);
+      setActiveDraftId(id);
+      submission.current = null;
+      setDraftNotice("Rascunho aberto — salve de novo antes de fechar para não perder edições.");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Falha ao abrir o rascunho."); }
+    finally { setDraftBusy(false); }
+  }
+
+  async function discardDraft(id: string) {
+    if (draftBusy) return;
+    setDraftBusy(true); setError("");
+    try {
+      const response = await authFetch(`/api/auctions/drafts?draftId=${encodeURIComponent(id)}`, { method: "DELETE" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? "Não foi possível excluir o rascunho.");
+      setDrafts(current => current.filter(draft => draft.id !== id));
+      if (activeDraftId === id) setActiveDraftId(null);
+      setDraftNotice("Rascunho excluído.");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Falha ao excluir o rascunho."); }
+    finally { setDraftBusy(false); }
   }
 
   async function startQueue() {
@@ -530,7 +668,7 @@ export default function BulkAuctionWizard() {
         items: cards.map(card => {
           const pricing = pricingOf(card);
           return {
-            card: { name: card.name, collection: card.collection, card_number: card.cardNumber, variant: card.variant, condition: card.condition, language: card.language, image_url: imageUrls.get(card.id) || null, extra_images: card.extraImages.length ? card.extraImages : (extraUrls.get(card.id) ?? []) },
+            card: { name: card.name, collection: card.collection, card_number: card.cardNumber, variant: card.variant, condition: card.condition, language: card.language, image_url: imageUrls.get(card.id) || null, extra_images: [...card.extraImages, ...(extraUrls.get(card.id) ?? [])].filter((url, index, all) => all.indexOf(url) === index).slice(0, 4) },
             auction: pricing.mode === "custom"
               ? { lot_number: Number(card.lotNumber), starting_price: pricing.startingPrice, bid_increment: pricing.bidIncrement ?? 0.01, buyout_price: pricing.buyoutPrice, duration_seconds: Math.round(Number(card.durationMinutes) * 60), option_count: pricing.options.length, pricing_mode: "custom", custom_values: pricing.values, custom_buyout_last: card.customBuyoutLast }
               : { lot_number: Number(card.lotNumber), starting_price: Number(card.startingPrice), bid_increment: Number(card.increment), buyout_price: card.buyout.trim() ? Number(card.buyout) : null, duration_seconds: Math.round(Number(card.durationMinutes) * 60), option_count: Number(card.optionCount || DEFAULT_POLL_OPTIONS), pricing_mode: "increment" },
@@ -543,6 +681,16 @@ export default function BulkAuctionWizard() {
       const body = await response.json(); if (!response.ok) throw new Error(body.error ?? "Não foi possível criar a fila.");
       const id = String(body.data?.queue?.id ?? ""); if (!id) throw new Error("Fila criada sem identificador.");
       setQueueId(id); setUploadProgress(""); window.history.replaceState(null, "", `/auctions/new?queue=${encodeURIComponent(id)}`);
+      // Publicou = o rascunho virou leilão de verdade: apaga sozinho
+      // (decisão do operador). Fire-and-forget — falha só deixa um rascunho
+      // para trás que a própria lista permite excluir.
+      if (activeDraftId) {
+        const publishedDraftId = activeDraftId;
+        setActiveDraftId(null);
+        void authFetch(`/api/auctions/drafts?draftId=${encodeURIComponent(publishedDraftId)}`, { method: "DELETE" })
+          .then(() => setDrafts(current => current.filter(draft => draft.id !== publishedDraftId)))
+          .catch(() => undefined);
+      }
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Falha ao iniciar a fila."); }
     finally { setBusy(false); }
   }
@@ -565,7 +713,7 @@ export default function BulkAuctionWizard() {
     const status = queueView?.queue.status ?? "scheduled";
     const firstWaiting = queueView?.items.findIndex(item => item.dispatch.status === "scheduled") ?? -1;
     return <main className="shell batch-shell">
-      <header className="topbar"><div><p className="eyebrow">FILA DE PUBLICAÇÃO</p><h1>{queueView?.summary.published ?? 0} de {queueView?.summary.total ?? 0} publicados</h1><p className="muted">A fila fica no servidor e continua mesmo com o navegador fechado.</p></div><Link href="/">← Painel</Link></header>
+      <header className="topbar"><div><p className="eyebrow">FILA DE PUBLICAÇÃO</p><h1>{queueView?.summary.published ?? 0} de {queueView?.summary.total ?? 0} publicados</h1><p className="muted">A fila fica no servidor e continua mesmo com o navegador fechado.</p></div><div className="topbar-actions"><button className="secondary" onClick={() => { setQueueId(null); setQueueView(null); window.history.replaceState(null, "", "/auctions/new"); }}>＋ Novo leilão</button><Link href="/">← Painel</Link></div></header>
       {error && <p className="alert" role="alert">{error}</p>}
       <section className="panel queue-summary"><div><span>Status</span><strong>{status === "paused" ? "⏸ Pausada" : status === "cancelled" ? "⛔ Cancelada" : status === "completed" ? "✅ Concluída" : "🟢 Em execução"}</strong></div><div><span>Próxima publicação</span><strong>{queueView?.summary.nextScheduledAt ? formatBrasiliaTime(queueView.summary.nextScheduledAt) : "—"}</strong></div><div><span>Intervalo</span><strong>{queueView ? `${queueView.queue.interval_seconds}s` : "—"}</strong></div><div><span>Grupo</span><strong>{queueView?.group?.name ?? "—"}</strong></div></section>
       <section className="panel"><div className="panel-title"><div><h2>Fila</h2><p className="muted">Horários em America/Sao_Paulo.</p></div><div className="actions">{["scheduled", "running"].includes(status) && <button disabled={busy} onClick={() => void control("pause")}>Pausar fila</button>}{status === "paused" && <button disabled={busy} onClick={() => void control("resume")}>Continuar fila</button>}{!["completed", "cancelled"].includes(status) && <button className="secondary" disabled={busy} onClick={() => void control("cancel")}>Cancelar fila</button>}</div></div>
@@ -575,13 +723,15 @@ export default function BulkAuctionWizard() {
   }
 
   return <main className="shell batch-shell">
-    <header className="topbar"><div><p className="eyebrow">NOVOS LEILÕES</p><h1>Cadastro em lote</h1><p className="muted">Adicione várias cartas, defina a ordem e deixe o bot publicar sozinho.</p></div><Link href="/">← Cancelar</Link></header>
+    <header className="topbar"><div><p className="eyebrow">NOVOS LEILÕES</p><h1>Cadastro em lote</h1><p className="muted">Adicione várias cartas, defina a ordem e deixe o bot publicar sozinho.</p></div><div className="topbar-actions"><button className="secondary" disabled={draftBusy || busy || !cards.length} onClick={() => void saveDraft()}>{draftBusy ? "Salvando…" : "💾 Salvar rascunho"}</button><Link href="/">← Cancelar</Link></div></header>
     <nav className="batch-steps">{["Cartas", "Valores", "Publicação", "Revisar"].map((label, index) => <button key={label} className={step === index + 1 ? "active" : step > index + 1 ? "done" : ""} onClick={() => index + 1 < step && setStep(index + 1)}>{index + 1}. {label}</button>)}</nav>
     {error && <p className="alert" role="alert">{error}</p>}
+    {draftNotice && <p className="notice">{draftNotice}</p>}
 
     {step === 1 && <><section className="panel drop-panel" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); void addFiles(event.dataTransfer.files); }}><p className="eyebrow">ETAPA 1</p><h2>Adicionar cartas</h2><p className="muted">Arraste 1, 20, 50 ou mais imagens. O reconhecimento roda localmente antes do upload; você pode editar enquanto a fila continua.</p><div className="actions"><label className="button-like">＋ Selecionar imagens<input hidden type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={event => { if (event.target.files) void addFiles(event.target.files); event.currentTarget.value = ""; }} /></label><button className="secondary" type="button" onClick={addEmpty}>Adicionar sem imagem</button></div></section>
+      {!cards.length && drafts.length > 0 && <section className="panel drafts-panel"><div className="panel-title"><div><h2>Rascunhos salvos</h2><p className="muted">Continue de onde parou — as fotos já estão no servidor. Publicar a fila apaga o rascunho automaticamente.</p></div></div><div className="draft-list">{drafts.map(draft => <article className="draft-row" key={draft.id}><div className="draft-row-info"><strong>{draft.title}</strong><span>Salvo em {formatBrasiliaDateTime(draft.updated_at, false)}</span></div><div className="actions"><button disabled={draftBusy} onClick={() => void openDraft(draft.id)}>Abrir</button><button className="danger-link" disabled={draftBusy} onClick={() => { if (window.confirm("Excluir este rascunho?")) void discardDraft(draft.id); }}>Excluir</button></div></article>)}</div></section>}
       {!!cards.length && <section className="panel"><div className="panel-title"><div><h2>{cards.length} carta(s)</h2><p className="muted">A ordem é a ordem de publicação. OCR e catálogo são auxiliares: suas correções manuais nunca são sobrescritas automaticamente.</p></div></div><div className="bulk-bar"><label>Idioma para todas<select value={bulkLanguage} onChange={e => setBulkLanguage(e.target.value)}>{cardLanguages.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label><button onClick={() => applyAll("language", bulkLanguage)}>Aplicar</button><label>Condição para todas<select value={bulkCondition} onChange={e => setBulkCondition(e.target.value)}>{cardConditions.map(item => <option key={item}>{item}</option>)}</select></label><button onClick={() => applyAll("condition", bulkCondition)}>Aplicar</button></div>
-        <div className="draft-list">{cards.map((card, index) => <article key={card.id} className="draft-card" draggable onDragStart={() => setDragging(index)} onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); if (dragging != null) moveCard(dragging, index); setDragging(null); }}><div className="draft-head"><span className="drag-handle">☰</span><div className="draft-thumb">{card.preview || card.imageUrl ? <img src={card.preview || card.imageUrl} alt="" loading="lazy" decoding="async" /> : <span>🃏</span>}</div><div className="draft-title"><strong>{index + 1}. {card.name || "Carta sem nome"}</strong><span>{card.cardNumber || "Sem número"}</span>{card.recognitionMessage && <span className={`recognition-inline ${card.recognitionStage}`}>{recognitionLabel(card)}</span>}{card.imageMessage && card.imageStage !== "idle" && <span className={card.imageStage === "error" ? "alert" : "muted"}>Imagem: {card.imageMessage}</span>}</div><div className="draft-actions"><button className="secondary" onClick={() => moveCard(index, index - 1)} disabled={index === 0}>↑</button><button className="secondary" onClick={() => moveCard(index, index + 1)} disabled={index === cards.length - 1}>↓</button><button className="secondary" onClick={() => mutateCard(card.id, { expanded: !card.expanded }, false)}>{card.expanded ? "Fechar" : "Editar"}</button><button className="danger-link" onClick={() => removeCard(index)}>Remover</button></div></div>{card.expanded && <div className="draft-fields">{card.file && <div className={`recognition-box wide ${card.recognitionStage}`}><div><strong>{recognitionLabel(card)}</strong><small>{card.recognitionMessage}</small>{((card.recognitionResult as { normalization?: { confidence?: number } } | undefined)?.normalization?.confidence ?? 1) < 0.5 && card.recognitionStage !== "identified" && <small className="retake-hint">📸 Foto escura/torta (enquadramento fraco) — se puder, tire outra e substitua o arquivo; o reconhecimento melhora muito</small>}</div><button className="secondary" type="button" disabled={card.recognitionStage === "queued" || card.recognitionStage === "analyzing"} onClick={() => void identifyCard(card.id, card.file!, false, true)}>✨ {card.recognitionStage === "idle" ? "Identificar carta" : "Reconhecer novamente"}</button>{card.recognitionCandidates.length > 1 && card.recognitionStage !== "identified" && <div className="recognition-candidates"><span>Possíveis resultados:</span>{card.recognitionCandidates.slice(0, 3).map(candidate => <button type="button" className="secondary" key={`${candidate.language}-${candidate.id}`} onClick={() => useCandidate(card.id, candidate)}><strong>{candidate.name}</strong><small>{candidate.collection} · {candidate.cardNumber} · {candidate.language} · {candidate.score}%</small></button>)}</div>}</div>}{card.file && <RecognitionDebug file={card.file} result={card.recognitionResult} busy={card.recognitionStage === "queued" || card.recognitionStage === "analyzing"} />}<label>Nome<input value={card.name} onChange={e => mutateCard(card.id, { name: e.target.value })} /></label><label>Número da carta<input placeholder="35/64" value={card.cardNumber} onChange={e => mutateCard(card.id, { cardNumber: e.target.value })} /></label><div className="draft-fields-extra wide"><span className="extra-label">Fotos de detalhe ({card.extraFiles.length}/4){card.extraFiles.length ? <span className="extra-thumbs">{card.extraPreviews.map((url, index) => <span className="extra-thumb" key={url}><img src={url} alt="" loading="lazy" decoding="async" /><button type="button" title="Remover" onClick={() => mutateCard(card.id, { extraFiles: card.extraFiles.filter((_, i) => i !== index), extraPreviews: card.extraPreviews.filter((_, i) => i !== index) })}>×</button></span>)}</span> : null}</span><label className="button-like">＋ Detalhes{card.extraFiles.length < 4 ? <input hidden type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={event => { const room = 4 - card.extraFiles.length; const files = Array.from(event.target.files ?? []).slice(0, room); if (files.length) mutateCard(card.id, { extraFiles: [...card.extraFiles, ...files], extraPreviews: [...card.extraPreviews, ...files.map(file => URL.createObjectURL(file))] }); event.currentTarget.value = ""; }} /> : null}</label></div><label>Variante<input list={`variants-${card.id}`} value={card.variant} onChange={e => mutateCard(card.id, { variant: e.target.value })} /><datalist id={`variants-${card.id}`}>{variants.map(item => <option key={item} value={item} />)}</datalist></label><label>Condição<select value={card.condition} onChange={e => mutateCard(card.id, { condition: e.target.value })}>{cardConditions.map(item => <option key={item}>{item}</option>)}</select></label><label>Idioma<select value={card.language} onChange={e => mutateCard(card.id, { language: e.target.value })}>{cardLanguages.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>{!card.file && <label className="wide">URL HTTPS da imagem<input value={card.imageUrl} onChange={e => mutateCard(card.id, { imageUrl: e.target.value })} /></label>}{index > 0 && <button className="secondary wide" onClick={() => copyPrevious(index)}>Copiar configurações da carta anterior</button>}</div>}</article>)}</div></section>}
+        <div className="draft-list">{cards.map((card, index) => <article key={card.id} className="draft-card" draggable onDragStart={() => setDragging(index)} onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); if (dragging != null) moveCard(dragging, index); setDragging(null); }}><div className="draft-head"><span className="drag-handle">☰</span><div className="draft-thumb">{card.preview || card.imageUrl ? <img src={card.preview || card.imageUrl} alt="" loading="lazy" decoding="async" /> : <span>🃏</span>}</div><div className="draft-title"><strong>{index + 1}. {card.name || "Carta sem nome"}</strong><span>{card.cardNumber || "Sem número"}</span>{card.recognitionMessage && <span className={`recognition-inline ${card.recognitionStage}`}>{recognitionLabel(card)}</span>}{card.imageMessage && card.imageStage !== "idle" && <span className={card.imageStage === "error" ? "alert" : "muted"}>Imagem: {card.imageMessage}</span>}</div><div className="draft-actions"><button className="secondary" onClick={() => moveCard(index, index - 1)} disabled={index === 0}>↑</button><button className="secondary" onClick={() => moveCard(index, index + 1)} disabled={index === cards.length - 1}>↓</button><button className="secondary" onClick={() => mutateCard(card.id, { expanded: !card.expanded }, false)}>{card.expanded ? "Fechar" : "Editar"}</button><button className="danger-link" onClick={() => removeCard(index)}>Remover</button></div></div>{card.expanded && <div className="draft-fields">{(card.file || (card.recognitionCandidates.length > 1 && card.recognitionStage !== "identified")) && <div className={`recognition-box wide ${card.recognitionStage}`}><div><strong>{recognitionLabel(card)}</strong><small>{card.recognitionMessage}</small>{card.file && (((card.recognitionResult as { normalization?: { confidence?: number } } | undefined)?.normalization?.confidence ?? 1) < 0.5 && card.recognitionStage !== "identified") && <small className="retake-hint">📸 Foto escura/torta (enquadramento fraco) — se puder, tire outra e substitua o arquivo; o reconhecimento melhora muito</small>}</div>{card.file && <button className="secondary" type="button" disabled={card.recognitionStage === "queued" || card.recognitionStage === "analyzing"} onClick={() => void identifyCard(card.id, card.file!, false, true)}>✨ {card.recognitionStage === "idle" ? "Identificar carta" : "Reconhecer novamente"}</button>}{card.recognitionCandidates.length > 1 && card.recognitionStage !== "identified" && <div className="recognition-candidates"><span>Possíveis resultados:</span>{card.recognitionCandidates.slice(0, 3).map(candidate => <button type="button" className="secondary" key={`${candidate.language}-${candidate.id}`} onClick={() => useCandidate(card.id, candidate)}><strong>{candidate.name}</strong><small>{candidate.collection} · {candidate.cardNumber} · {candidate.language} · {candidate.score}%</small></button>)}</div>}</div>}{card.file && <RecognitionDebug file={card.file} result={card.recognitionResult} busy={card.recognitionStage === "queued" || card.recognitionStage === "analyzing"} />}<label>Nome<input value={card.name} onChange={e => mutateCard(card.id, { name: e.target.value })} /></label><label>Número da carta<input placeholder="35/64" value={card.cardNumber} onChange={e => mutateCard(card.id, { cardNumber: e.target.value })} /></label><div className="draft-fields-extra wide"><span className="extra-label">Fotos de detalhe ({card.extraFiles.length + card.extraImages.length}/4){card.extraFiles.length ? <span className="extra-thumbs">{card.extraPreviews.map((url, index) => <span className="extra-thumb" key={url}><img src={url} alt="" loading="lazy" decoding="async" /><button type="button" title="Remover" onClick={() => mutateCard(card.id, { extraFiles: card.extraFiles.filter((_, i) => i !== index), extraPreviews: card.extraPreviews.filter((_, i) => i !== index) })}>×</button></span>)}</span> : null}</span><label className="button-like">＋ Detalhes{card.extraFiles.length + card.extraImages.length < 4 ? <input hidden type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={event => { const room = 4 - card.extraFiles.length - card.extraImages.length; const files = Array.from(event.target.files ?? []).slice(0, room); if (files.length) mutateCard(card.id, { extraFiles: [...card.extraFiles, ...files], extraPreviews: [...card.extraPreviews, ...files.map(file => URL.createObjectURL(file))] }); event.currentTarget.value = ""; }} /> : null}</label></div><label>Variante<input list={`variants-${card.id}`} value={card.variant} onChange={e => mutateCard(card.id, { variant: e.target.value })} /><datalist id={`variants-${card.id}`}>{variants.map(item => <option key={item} value={item} />)}</datalist></label><label>Condição<select value={card.condition} onChange={e => mutateCard(card.id, { condition: e.target.value })}>{cardConditions.map(item => <option key={item}>{item}</option>)}</select></label><label>Idioma<select value={card.language} onChange={e => mutateCard(card.id, { language: e.target.value })}>{cardLanguages.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>{!card.file && <label className="wide">URL HTTPS da imagem<input value={card.imageUrl} onChange={e => mutateCard(card.id, { imageUrl: e.target.value })} /></label>}{index > 0 && <button className="secondary wide" onClick={() => copyPrevious(index)}>Copiar configurações da carta anterior</button>}</div>}</article>)}</div></section>}
       <div className="wizard-footer"><Link href="/">Cancelar</Link><button onClick={() => go(2)}>Continuar para valores →</button></div></>}
 
     {step === 2 && <><section className="panel"><p className="eyebrow">ETAPA 2</p><h2>Valores</h2><p className="muted">Gere a enquete por incremento ou escolha Personalizado e digite os valores exatos (ex.: 1, 2, 5, 10 — o maior pode ser ARREMATE).</p><div className="bulk-bar values"><label>Primeiro lote<input type="number" min="1" value={firstLot} onChange={e => setFirstLot(e.target.value)} /></label><button onClick={sequentialLots}>Numerar lotes</button><label>Lance inicial para todas<input type="number" min="0" step="0.01" value={bulkStart} onChange={e => setBulkStart(e.target.value)} /></label><button onClick={() => applyAll("startingPrice", bulkStart)}>Aplicar</button><label>Incremento para todas<input type="number" min="0.01" step="0.01" value={bulkIncrement} onChange={e => setBulkIncrement(e.target.value)} /></label><button onClick={() => applyAll("increment", bulkIncrement)}>Aplicar</button><label>Valores personalizados p/ todas<input inputMode="decimal" placeholder="Ex.: 1, 2, 5, 10" value={bulkCustomValues} onChange={e => setBulkCustomValues(e.target.value)} /></label><button onClick={() => { setCards(current => current.map(card => ({ ...card, pricingMode: "custom" as const, customValues: bulkCustomValues }))); submission.current = null; }}>Aplicar personalizados</button><label>Duração para todas (min)<input type="number" min="0.1" step="0.1" value={bulkDuration} onChange={e => setBulkDuration(e.target.value)} /></label><button onClick={() => applyAll("durationMinutes", bulkDuration)}>Aplicar</button></div>

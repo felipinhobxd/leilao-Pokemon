@@ -2,7 +2,7 @@
 
 > Área: Testes
 > Escopo: Suítes, comandos, cobertura, lacunas
-> Última atualização: 2026-09-23
+> Última atualização: 2026-09-24
 > Fonte principal: `package.json`, `bot/package.json`, `.github/workflows/ci.yml`, `tests/**`, `bot/*.test.mjs`, `recognition/tests/**`, `benchmarks/`, `docs/card-recognition.md`
 
 ## Comandos oficiais
@@ -11,7 +11,7 @@
 # Site (raiz)
 npm ci
 npm run typecheck      # tsc --noEmit
-npm test               # node --test tests/*.test.mjs  (155 testes)
+npm test               # node --test tests/*.test.mjs  (166 testes)
 node --test bot/*.test.mjs    # 31 testes do bot (payment-reminder, announce-sticker, warning-notify, poll-votes, queue-worker...)
 npm run doctor         # check-up pré-leilão: migrations, bot, reconhecimento, backup, figurinha
 npm run build           # next build
@@ -19,10 +19,10 @@ npm run build           # next build
 # Bot
 npm --prefix bot ci
 npm --prefix bot run check   # node --check em todos os .mjs + patch-baileys --check + node --test poll-votes/queue-worker
-node --test bot/*.test.mjs    # suíte completa do bot (20 testes: poll-votes, queue-worker, poll-identities, poll-store, group-participants, warning-notify, bot-reconnect...)
+node --test bot/*.test.mjs    # suíte completa do bot (31 testes: poll-votes, queue-worker, poll-identities, poll-store, group-participants, warning-notify, bot-reconnect...)
 
 # Reconhecimento (Windows, a partir de recognition/)
-.venv\Scripts\python.exe -m unittest discover -s tests   # 248 testes (leves, sem modelos)
+.venv\Scripts\python.exe -m unittest discover -s tests   # 252 testes (leves, sem modelos)
 # benchmarks pesados (modelos 1,6 GB + catálogo): scripts/benchmark.py etc — manuais, ver recognition/README.md
 
 # Smoke autenticado (contra build local rodando)
@@ -31,18 +31,18 @@ node tests/smoke.mjs
 
 ## Suítes por grupo
 
-### 1. Site/lib — `node --test tests/*.test.mjs` (155)
-- O que valida: formatos de leilão (`auction-format.test.mjs` — inclui valores personalizados), contrato do serviço de reconhecimento (`card-recognition-*.test.mjs` — 10 arquivos: contract, evidence, fusion, local, runtime, stability, toggle, v10), rate limit, purge, comandos, dispatch-id, identidades de enquete, store de votos, grupos, contraste de UI (WCAG), tempo de Brasília, status WhatsApp, lifecycle do start-all (`start-all.test.mjs`), card-image.
-- Riscos cobertos: contratos TS↔Python, anti-congelamento de UI, idempotência de formatos.
+### 1. Site/lib — `node --test tests/*.test.mjs` (166)
+- O que valida: formatos de leilão (`auction-format.test.mjs` — inclui valores personalizados), rascunhos do wizard (`auction-draft.test.mjs` — serialize/restore, guards de tamanho/contagem, clamp de etapa, whitelist de candidatos), contrato do serviço de reconhecimento (`card-recognition-*.test.mjs` — 10 arquivos: contract, evidence, fusion, local, runtime, stability, toggle, v10), rate limit, purge, comandos, dispatch-id, identidades de enquete, store de votos, grupos, contraste de UI (WCAG), tempo de Brasília, status WhatsApp, lifecycle do start-all (`start-all.test.mjs`), card-image.
+- Riscos cobertos: contratos TS↔Python, anti-congelamento de UI, idempotência de formatos, round-trip estável do rascunho (restore∘build = identidade).
 - Lacunas: sem testes de rotas HTTP reais (só `smoke.mjs` pós-build); export Excel sem teste unitário (validado por build + revisão).
 
 ### 2. Banco — SQL executado no CI (Postgres 17 real)
-- Como: `ci.yml` aplica `tests/bootstrap.sql` + `supabase/schema.sql` + `supabase/whatsapp_bridge.sql` + **todas as migrations em ordem** + `tests/*.sql` (participant-identities, auction, auction-wizard, auction-queue, auction-queue-runtime, auction-queue-scale, dashboard-snapshot) via `psql -v ON_ERROR_STOP`.
-- O que valida: schema aplicável, RPCs, wizard, fila, runtime/escala da fila, snapshots.
+- Como: `ci.yml` aplica `tests/bootstrap.sql` + `supabase/schema.sql` + `supabase/whatsapp_bridge.sql` + **todas as migrations em ordem** + `tests/*.sql` (participant-identities, auction, auction-warnings, quick-polls-reminders, auction-drafts, auction-wizard, auction-queue, auction-queue-runtime, auction-queue-scale, dashboard-snapshot) via `psql -v ON_ERROR_STOP`.
+- O que valida: schema aplicável, RPCs, wizard, fila, runtime/escala da fila, snapshots, avisos globais, brindes/lembretes e rascunhos (`auction-drafts.sql`: upsert idempotente, guards, propriedade, delete idempotente, backup, **primeira cobertura SQL do purge**, RLS).
 - `tests/concurrency.py` (Python): buyouts concorrentes e eventos duplicados.
-- ⚠️ Localmente exige Postgres + psql; a validação local usual é confiar no CI. NÃO existe suíte SQL da migration de avisos (20260923093000) — **lacuna real** (ver 11_PENDING_WORK).
+- ⚠️ Localmente exige Postgres + psql; a validação local usual é confiar no CI.
 
-### 3. Bot — `node --test bot/*.test.mjs` (20)
+### 3. Bot — `node --test bot/*.test.mjs` (31)
 - poll-votes (decriptografia com pares LID/telefone), queue-worker (claim/lock/heartbeat/retry), poll-identities, poll-store, group-participants, bot-reconnect, warning-notify (formatador BRL/nbsp, entrega, retry parcial sem duplicar, sem socket).
 - Lacunas: sem teste de sessão real Baileys (impossível offline), sem teste do restart noturno/limpeza 30d (lógica fina, revisada).
 

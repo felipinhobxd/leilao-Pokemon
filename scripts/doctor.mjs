@@ -65,8 +65,8 @@ if (!supabaseUrl || !serviceKey) {
   check("Conexão com o Supabase", false, { fix: "Confira NEXT_PUBLIC_SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY no .env.local" });
 } else {
   const headers = { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` };
-  // Tabelas da rodada de avisos (20260923093000) e brindes/lembretes (20260924120000).
-  const expectedTables = ["participant_warnings", "value_change_log", "admin_notifications", "whatsapp_quick_polls", "payment_reminders"];
+  // Tabelas da rodada de avisos (20260923093000), brindes/lembretes (20260924120000) e rascunhos (20260924150000).
+  const expectedTables = ["participant_warnings", "value_change_log", "admin_notifications", "whatsapp_quick_polls", "payment_reminders", "auction_drafts"];
   const missingTables = [];
   for (const table of expectedTables) {
     try {
@@ -85,22 +85,23 @@ if (!supabaseUrl || !serviceKey) {
       admin_notifications: "20260923093000_global_warnings_value_history.sql",
       whatsapp_quick_polls: "20260924120000_quick_polls_extra_images_reminders.sql",
       payment_reminders: "20260924120000_quick_polls_extra_images_reminders.sql",
+      auction_drafts: "20260924150000_auction_drafts.sql",
     };
     const files = [...new Set(missingTables.map(table => known[table]))];
     check("Migrations aplicadas (tabelas novas)", false,
       { detail: `faltando: ${missingTables.join(", ")}`, fix: `Abra o SQL Editor do Supabase e cole, na ordem: ${files.map(file => `supabase/migrations/${file}`).join(" → ")}` });
   }
-  // RPCs das rodadas 23120000 (backup) e 24120000 (baixa de pagamento).
+  // RPCs das rodadas 23120000 (backup), 24120000 (baixa de pagamento) e 24150000 (rascunhos).
   try {
     const specResponse = await fetchWithTimeout(`${supabaseUrl}/rest/v1/`, 6000, { headers: { ...headers, Accept: "application/openapi+json" } });
     const spec = await specResponse.json();
     const paths = Object.keys(spec?.paths ?? {});
-    const expectedRpcs = ["/rpc/export_business_backup", "/rpc/mark_purchase_paid", "/rpc/cleanup_old_auctions"];
+    const expectedRpcs = ["/rpc/export_business_backup", "/rpc/mark_purchase_paid", "/rpc/cleanup_old_auctions", "/rpc/upsert_auction_draft", "/rpc/delete_auction_draft"];
     const missingRpcs = expectedRpcs.filter(rpc => !paths.includes(rpc));
-    check("Migrations aplicadas (RPCs: backup, baixa de pagamento, limpeza 30d)", missingRpcs.length === 0,
-      { warn: false, detail: missingRpcs.length ? `faltando: ${missingRpcs.join(", ")}` : "", fix: missingRpcs.length ? `Aplique no SQL Editor: supabase/migrations/20260923120000_business_backup.sql → 20260924120000_quick_polls_extra_images_reminders.sql → 20260924140000_backup_covers_new_tables.sql` : "" });
+    check("Migrations aplicadas (RPCs: backup, baixa de pagamento, limpeza 30d, rascunhos)", missingRpcs.length === 0,
+      { warn: false, detail: missingRpcs.length ? `faltando: ${missingRpcs.join(", ")}` : "", fix: missingRpcs.length ? `Aplique no SQL Editor: supabase/migrations/20260923120000_business_backup.sql → 20260924120000_quick_polls_extra_images_reminders.sql → 20260924140000_backup_covers_new_tables.sql → 20260924150000_auction_drafts.sql` : "" });
   } catch {
-    check("Migrations aplicadas (RPCs: backup, baixa de pagamento, limpeza 30d)", false, { fix: "Sem resposta do Supabase ao listar RPCs — confira a URL/chave no .env.local" });
+    check("Migrations aplicadas (RPCs: backup, baixa de pagamento, limpeza 30d, rascunhos)", false, { fix: "Sem resposta do Supabase ao listar RPCs — confira a URL/chave no .env.local" });
   }
   // Heartbeat do bot.
   try {

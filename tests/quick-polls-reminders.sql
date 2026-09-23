@@ -72,14 +72,14 @@ begin
   perform pg_temp.cmd(jsonb_build_object('type','AUCTION_OPEN','eventId','x-open','auctionId',wizard->'auction'->>'id'));
   perform pg_temp.cmd(jsonb_build_object('type','BUYOUT_CONFIRMED','eventId','x-buyout','auctionId',wizard->'auction'->>'id','participantId',p));
   select id into purchase_id from public.purchases where auction_id=(wizard->'auction'->>'id')::uuid;
-  perform pg_temp.check_that((select status='waiting_payment' from public.deliveries where purchase_id=purchase_id),'delivery starts waiting_payment');
+  perform pg_temp.check_that((select status='waiting_payment' from public.deliveries deliv where deliv.purchase_id=purchase_id),'delivery starts waiting_payment');
 
   result:=public.mark_purchase_paid(purchase_id,'00000000-0000-0000-0000-000000000011','pix');
   perform pg_temp.check_that((result->>'already_paid')='false','first mark is a transition');
-  perform pg_temp.check_that((select status='paid' from public.payments where purchase_id=purchase_id),'payment marked paid');
-  perform pg_temp.check_that((select amount=10 from public.payments where purchase_id=purchase_id),'payment carries the purchase amount');
-  perform pg_temp.check_that((select method='pix' from public.payments where purchase_id=purchase_id),'payment keeps the method');
-  perform pg_temp.check_that((select status='ready' from public.deliveries where purchase_id=purchase_id),'delivery leaves waiting_payment');
+  perform pg_temp.check_that((select status='paid' from public.payments pay where pay.purchase_id=purchase_id),'payment marked paid');
+  perform pg_temp.check_that((select amount=10 from public.payments pay where pay.purchase_id=purchase_id),'payment carries the purchase amount');
+  perform pg_temp.check_that((select method='pix' from public.payments pay where pay.purchase_id=purchase_id),'payment keeps the method');
+  perform pg_temp.check_that((select status='ready' from public.deliveries deliv where deliv.purchase_id=purchase_id),'delivery leaves waiting_payment');
   perform pg_temp.check_that((select count(*)=1 from public.auction_events where event_type='PURCHASE_PAID' and payload->>'purchase_id'=purchase_id::text),'exactly one audit event');
 
   result:=public.mark_purchase_paid(purchase_id,'00000000-0000-0000-0000-000000000011');
@@ -91,11 +91,11 @@ begin
   -- ------------------------------------------------------------------
   insert into public.payment_reminders(purchase_id,participant_id,reminded_count,last_reminded_at)
   values(purchase_id,(select participant_id from public.purchases where id=purchase_id),1,now());
-  perform pg_temp.check_that((select count(*)=1 from public.payment_reminders where purchase_id=purchase_id),'reminder row created');
-  delete from public.payments where purchase_id=purchase_id;
-  delete from public.deliveries where purchase_id=purchase_id;
+  perform pg_temp.check_that((select count(*)=1 from public.payment_reminders rem where rem.purchase_id=purchase_id),'reminder row created');
+  delete from public.payments pay where pay.purchase_id=purchase_id;
+  delete from public.deliveries deliv where deliv.purchase_id=purchase_id;
   delete from public.purchases where id=purchase_id;
-  perform pg_temp.check_that((select count(*)=0 from public.payment_reminders where purchase_id=purchase_id),'reminders cascade with purchase');
+  perform pg_temp.check_that((select count(*)=0 from public.payment_reminders rem where rem.purchase_id=purchase_id),'reminders cascade with purchase');
 
   -- ------------------------------------------------------------------
   -- 4) whatsapp_quick_polls: inserção + duplicado de evento rejeitado.

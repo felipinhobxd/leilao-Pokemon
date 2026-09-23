@@ -176,6 +176,18 @@ class OrtSession:
     def input_names(self):
         return self._session.get_inputs()
 
+    def close(self) -> None:
+        """Drop the native session so its weights leave RAM.
+
+        ORT's InferenceSession frees the (hundreds of MB of) model weights
+        when the Python object is garbage-collected; a live reference was
+        exactly what kept the models resident after the service's idle
+        unload (measured 2026-09-24: only ~170 MB freed of ~1.1 GB because
+        module-level roots kept the sessions). The next request must
+        re-create the OrtSession."""
+        self._session = None
+        self._run_lock = None
+
     def get_providers(self):
         return self._session.get_providers()
 

@@ -110,6 +110,21 @@ class EmbeddingModel:
         can be served without a multi-second first-inference stall."""
         self._ensure()
 
+    def release(self) -> None:
+        """Unload the ONNX session (idle RAM relief).
+
+        The EmbeddingModel instances live in the module-level MODELS dict, so
+        the service's idle unload ALSO has to drop the session here — a live
+        reference kept the ~1.5 GB SigLIP2 weights resident (measured
+        2026-09-24). The next embed() re-creates the session via _ensure()."""
+        with self._lock:
+            if self._session is not None:
+                try:
+                    self._session.close()
+                except Exception:
+                    pass
+            self._session = None
+
     def _ensure(self) -> OrtSession:
         if self._session is not None:
             return self._session

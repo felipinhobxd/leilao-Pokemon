@@ -134,6 +134,26 @@ class PpOcr:
             return ""
         return self._det.provider
 
+    def release(self) -> None:
+        """Unload the ONNX sessions (idle RAM relief).
+
+        The service's idle watchdog drops the whole recognizer; without this,
+        the PpOcr SINGLETON kept det+rec sessions alive (measured 2026-09-24:
+        the unload freed only ~170 MB of ~1.1 GB because module-level roots
+        held the sessions). After release() the next request lazily re-creates
+        them via _ensure()."""
+        with self._lock:
+            # OrtSession exposes close() over the underlying _session; dropping
+            # the reference lets ORT free the native weights (directly or via
+            # gc — both paths covered).
+            for session in (self._det, self._rec):
+                try:
+                    session.close()
+                except Exception:
+                    pass
+            self._det = None
+            self._rec = None
+
     def warm(self) -> None:
         """Load the ONNX sessions eagerly (startup/health readiness)."""
         self._ensure()

@@ -127,8 +127,27 @@ def _touch_last_used() -> None:
 
 def _drop_recognizer_locked() -> None:
     """Release the models (caller holds _lock). The ONNX sessions and the
-    catalog leave the process heap; Python's gc reclaims the ~2 GB."""
+    catalog leave the process heap; Python's gc reclaims the RAM.
+
+    Module-level roots also need explicit release (measured 2026-09-24):
+    dropping only _state kept the module-level MODELS dict and the PpOcr
+    singleton alive, so ~950 MB of ONNX weights stayed resident after the
+    "unload" — the real fix is releasing every root, then gc."""
     import gc
+    recognizer = _state.get("recognizer")
+    if recognizer is not None:
+        # Release the embedding model session held by the module-level
+        # MODELS dict (get_model returns the shared instance).
+        try:
+            from recognizer.embed import get_model
+            get_model(recognizer.embedding_name).release()
+        except Exception:
+            pass
+        # Release the OCR singleton's det+rec sessions.
+        try:
+            recognizer.ocr.release()
+        except Exception:
+            pass
     _state["recognizer"] = None
     _state["store"] = None
     gc.collect()

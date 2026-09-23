@@ -583,3 +583,37 @@ class TestCatalog(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestIdleRelease(unittest.TestCase):
+    """P-05 RAM (2026-09-24): o idle-unload soltava ~170 MB de ~1,1 GB porque
+    raízes em nível de módulo (MODELS do embed, singleton PpOcr) seguravam as
+    sessões ONNX. release() fecha as sessões; o ciclo mediu ao vivo
+    1335 MB -> 184 MB."""
+
+    def test_ocr_release_clears_sessions(self):
+        from recognizer.ocr import PpOcr
+        ocr = PpOcr.__new__(PpOcr)
+        ocr._det = object()
+        ocr._rec = object()
+        ocr._lock = __import__("threading").Lock()
+        ocr.release()
+        self.assertIsNone(ocr._det)
+        self.assertIsNone(ocr._rec)
+
+    def test_ocr_release_tolerates_unloaded(self):
+        from recognizer.ocr import PpOcr
+        ocr = PpOcr.__new__(PpOcr)
+        ocr._det = None
+        ocr._rec = None
+        ocr._lock = __import__("threading").Lock()
+        ocr.release()  # não deve levantar nada
+
+    def test_ort_session_close_drops_reference(self):
+        from recognizer.ort_session import OrtSession
+        session = OrtSession.__new__(OrtSession)
+        session._session = object()
+        session._run_lock = None
+        session.close()
+        self.assertIsNone(session._session)
+        self.assertIsNone(session._run_lock)

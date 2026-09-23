@@ -20,6 +20,15 @@ begin
 exception when others then
   if sqlerrm<>expected then raise exception 'Expected %, got %',expected,sqlerrm; end if;
 end $$;
+-- O argumento de plpgsql é avaliado ANTES do call: um `rejects(create_auction_wizard(...))`
+-- deixaria a exceção escapar. O wrapper chama o wizard DENTRO do handler.
+create function pg_temp.rejects_wizard(p jsonb, expected text) returns void language plpgsql as $$
+begin
+  perform public.create_auction_wizard(p,'00000000-0000-0000-0000-000000000011');
+  raise exception 'EXPECTED_ERROR_NOT_RAISED';
+exception when others then
+  if sqlerrm<>expected then raise exception 'Expected %, got %',expected,sqlerrm; end if;
+end $$;
 set local role service_role;
 do $$
 declare wizard jsonb; card_id uuid; purchase_id uuid; result jsonb; p uuid;
@@ -39,12 +48,12 @@ begin
     'auction',base),'00000000-0000-0000-0000-000000000011');
   perform pg_temp.check_that((select jsonb_array_length(extra_images)=0 from public.cards where id=(wizard->'card'->>'id')::uuid),'wizard defaults extra_images to empty');
 
-  perform pg_temp.rejects(public.create_auction_wizard(jsonb_build_object(
+  perform pg_temp.rejects_wizard(jsonb_build_object(
     'eventId','x-img-2','card',jsonb_build_object('name','Pika','extra_images','["https://a/1","https://a/2","https://a/3","https://a/4","https://a/5"]'::jsonb),
-    'auction',base),'00000000-0000-0000-0000-000000000011'),'invalid_extra_images');
-  perform pg_temp.rejects(public.create_auction_wizard(jsonb_build_object(
+    'auction',base),'invalid_extra_images');
+  perform pg_temp.rejects_wizard(jsonb_build_object(
     'eventId','x-img-3','card',jsonb_build_object('name','Pika','extra_images','["http://inseguro/1"]'::jsonb),
-    'auction',base),'00000000-0000-0000-0000-000000000011'),'invalid_extra_images');
+    'auction',base),'invalid_extra_images');
 
   wizard:=public.create_auction_wizard(jsonb_build_object(
     'eventId','x-img-4',

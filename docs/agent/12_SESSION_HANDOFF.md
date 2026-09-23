@@ -1,80 +1,70 @@
 # SESSION HANDOFF
 
 ## Última atualização
-2026-09-24 (fim da sessão: P-06 + P-07 + P-08 + P-09)
+2026-09-24 (fim da sessão: caça a bugs residuais pós-P-06..P-09)
 
 ## Sessão atual
-Implementar os 4 itens aprovados pelo operador: @menção do arrematante, enquete de brindes, múltiplas fotos por lote e lembrete de pagamento pós-leilão.
+Analisar o código inteiro e corrigir os bugs que ficaram das rodadas anteriores (P-05 explicitamente deixado para depois pelo operador).
 
 ## O que foi concluído
-1. **P-06 — @menção do arrematante**: `bot/participant-contact.mjs` (resolveParticipantJid: `participant_identities` pn > lid > `participants.whatsapp_id`/`phone_e164`; mentionMessage) aplicado nas DUAS mensagens (ARREMATADO e "Leilão encerrado"). Sem JID pn → nome plano (mensagem nunca falha).
-2. **P-07 — Brindes**: decisão do operador = SÓ painel, SÓ publicar. Migration `20260924120000` cria `whatsapp_quick_polls` (RLS padrão); `POST /api/quick-polls` valida (título 1-200, 2-12 opções ≤100, grupo ativo, idempotente por `external_event_id`); `sendDueQuickPolls()` no ciclo de 3s do bot (messageId estável, `sent_at` só após envio, grupo inativo → marcado sem envio); formulário "Enquete rápida de brinde" na Central WhatsApp (título + opções por linha + agendamento).
-3. **P-08 — Fotos de detalhe (até 4)**: `cards.extra_images jsonb`; validação espelhada nos DOIS RPCs (`invalid_extra_images` para >4 ou não-HTTPS) e nas duas rotas; wizard em lote + único com upload incremental (`${cardId}#e${n}`) e thumbnails removíveis; bot envia em SEQUÊNCIA após a foto principal com messageIds estáveis (`extra-1..4`) ANTES de persistir `announcement_sent_at` (crash → reenvio deduplicado); o delay de 5s da enquete conta após a última.
-4. **P-09 — Lembrete de pagamento**: decisão do operador = DM a cada 7 dias, SEM aviso/punição. `payment_reminders` (purchase_id UNIQUE, cascade) + RPC `mark_purchase_paid` (idempotente por estado: payment → paid, delivery → ready, audita 1×; já pago → `already_paid=true` sem reauditar) + `bot/payment-reminder.mjs` (dreno 1x/hora; pula quem tem payment paid; máx `BOT_PAYMENT_REMINDER_MAX`=5, 0=ilimitado; `BOT_PAYMENT_REMINDER_DAYS`=7) + botão "✓ Recebido" na tabela Compras (`POST /api/purchases/paid`) + `read_dashboard_snapshot` agora devolve `payments`/`payment_reminders` REAIS (eram '[]' hardcoded — corpo copiado da versão MAIS RECENTE, a da 20260921130000 com `whatsapp_event_at`).
-5. **Purge estendido**: `purge_all_business_data` copiado da 20260921140000 (SECURITY DEFINER) + deletes de `payment_reminders` e `whatsapp_quick_polls` com contagem.
-6. **Testes**: `bot/payment-reminder.test.mjs` (6: formatter BRT/menção, pendência gera 1 lembrete, janela de 7 dias não reenvia, pago sai do ciclo, limite máximo, sem socket) + `tests/quick-polls-reminders.sql` (extra_images válidas/inválidas, baixa idempotente com 1 audit, cascade de lembretes, brinde + duplicado de evento, RLS staff-only) + wired no `ci.yml`.
+1. **BUG crítico — extras vazios no payload (P-08)**: os DOIS wizards liam card.extraImages/form.extraImages do closure React ANTES do setState do upload chegar -> a API recebia extra_images: [] mesmo com as fotos subidas (funcionava só no re-envio). Corrigido no padrão que a foto principal já usava: upload()/uploadImages() RETORNAM as URLs (Map/array) e os payloads consomem o retorno.
+2. **BUG — backup incompleto**: export_business_backup (20260923120000) não cobria whatsapp_quick_polls/payment_reminders (criadas depois). Nova migration 20260924140000 substitui o RPC com as duas (arquivo SEPARADO — o CI aplica em ordem lexical e LANGUAGE SQL valida as referências no CREATE; editar a 120000 in-place quebraria o pipeline).
+3. **Lacuna de UX — brindes invisíveis**: GET /api/quick-polls + lista "Brindes recentes" (agendado/enviado com horários) na Central WhatsApp, recarregada junto com os polls da página; select de grupo desativado substituído por nota do grupo padrão.
+4. **Planilha**: coluna Pagamento ("Pago (dd/mm)" / "Pendente") na aba Vendas — controle de quem pagou direto no Excel.
+5. Varredura ampla: sem TODO/FIXME no código; "Coleção" restante no dashboard é gestão de cartas (legítimo, não é wizard); purge tests não afetados pelas chaves novas.
+6. **P-12 FECHADO**: os scripts com truth-key inválido eram ad hoc (temp), não versionados; os benchmarks do repo usam fixtures+ground-truth.json.
 
 ## O que está em andamento
-- Aguardando CI do push desta sessão (a suíte SQL nova roda pela 1ª vez).
+- Nada. CI verde em 1887446e.
 
 ## Arquivos modificados
-- `supabase/migrations/20260924120000_quick_polls_extra_images_reminders.sql` (novo, 8 seções)
-- `bot/participant-contact.mjs` (novo), `bot/payment-reminder.mjs` (novo), `bot/payment-reminder.test.mjs` (novo)
-- `bot/index.mjs` (imports, drains, menções, extras, sendDueQuickPolls, scheduler)
-- `app/api/quick-polls/route.ts` (novo), `app/api/purchases/paid/route.ts` (novo)
-- `app/api/auctions/new/route.ts` + `batch/route.ts` (extra_images)
-- `app/auctions/new/bulk-wizard.tsx` + `wizard.tsx` (+ batch-wizard.css + wizard.css: UI das extras)
-- `app/whatsapp/page.tsx` (+ globals.css: formulário de brinde)
-- `app/dashboard.tsx` (função markPurchasePaid + coluna Pagamento)
-- `lib/backend.ts` (Table union + payment_reminders)
-- `tests/quick-polls-reminders.sql` (novo) + `.github/workflows/ci.yml`
-- `docs/agent/03,06,08,11` + este handoff
+- app/auctions/new/bulk-wizard.tsx (uploadImages retorna extraUrls; payload usa retorno)
+- app/auctions/new/wizard.tsx (upload devolve {imageUrl, extraImages}; publish usa retorno; validação de falha do upload corrigida)
+- supabase/migrations/20260924140000_backup_covers_new_tables.sql (novo)
+- app/api/quick-polls/route.ts (GET lista)
+- app/whatsapp/page.tsx (+ globals.css: lista de brindes, nota de grupo)
+- app/api/export/route.ts (coluna Pagamento)
+- docs/agent/11_PENDING_WORK.md (P-12) + este handoff
 
 ## Arquivos analisados
-- Últimas versões das funções substituídas: `create_auction_publish_queue` (20260913202000, nunca substituída), `create_auction_wizard` (20260921120000), `purge_all_business_data` (20260921140000), `read_dashboard_snapshot` (20260921130000 — ATENÇÃO: a 20260921120000 também a define; a da 130000 com `whatsapp_event_at` é a vigente).
-- `bot/index.mjs::sendDispatchInternal` (ordem anúncio→poll e onde as extras entram), `lib/card-image.ts::uploadCardImageBatch`, `bot/dispatch-id.mjs` (ids estáveis), `tests/auction-wizard.sql` (padrão de grupo nos testes SQL).
+- Fluxos completos de upload/publish dos dois wizards, export_business_backup, snapshot do export, purge.test.mjs, grep TODO/FIXME/Coleção em todo app/.
 
 ## Decisões tomadas
-- Brindes em tabela PRÓPRIA (dispatches exige auction_id NOT NULL UNIQUE) — sem FK surgery na tabela mais quente.
-- Extras em SEQUÊNCIA, não álbum (álbum nativo é instável no Baileys 7.0.0-rc14).
-- Lembrete: parada = baixa manual no painel; máximo 5 por segurança (configurável 0 = ilimitado).
-- read_dashboard_snapshot: preciso copiar da 130000 (não da 120000) — a 130000 adicionou whatsapp_event_at para o tie-break.
+- Correção do backup em migration NOVA (não edit in-place) por causa da ordem lexical do CI + validação no CREATE de LANGUAGE SQL.
+- Célula "Pagamento" carrega a data ("Pago (dd/mm)"); "Data da venda" continua sendo o confirmed_at.
 
 ## Problemas encontrados
-- Meu primeiro rascunho da seção 8 da migration copiou read_dashboard_snapshot da 20260921120000 — regrediria o tie-break do dashboard. CORRIGIDO antes do commit (cópia agora da 20260921130000 + ADDITION C).
+- Apenas os corrigidos (bugs 1 e 2 eram reais e teriam sido percebidos em produção: cartas publicadas sem as fotos de detalhe no primeiro envio).
 
 ## Testes executados
-- `node --test bot/payment-reminder.test.mjs`: 6/6.
-- Pendentes no momento deste handoff: suíte raiz, suíte bot completa, typecheck, build → ver Próximo passo.
+- typecheck OK, npm test 155/155 OK, bot 26/26 OK, build OK, CI (Postgres 17 + todas migrations + SQL tests + concorrência + smoke) OK.
 
 ## Resultado dos testes
-- payment-reminder 6/6 ✓; demais a validar no CI/antes do commit.
+- Tudo verde. CI 1887446e success.
 
 ## Ponto EXATO onde paramos
-P-06..P-09 COMPLETOS, commitados e **CI VERDE** (f1df6598, 2026-09-24). A rodada exigiu 5 correções pós-CI (todas documentadas em 03_DATABASE.md → PERIGOS): order-by em coluna não projetada; argumento avaliado antes do helper rejects; ambiguidade da coluna alvo do INSERT; `IS NOT NULL` em record composto (o bug real do mark_purchase_paid — FOUND é o teste correto); claim transacional no RLS test.
+Rodada de correções completa e publicada. Sem trabalho de código em estado parcial.
 
 ## Próximo passo EXATO
-1. Operador aplicar as migrations no SQL Editor NESTA ORDEM: `20260923093000` (avisos) → `20260923120000` (backup) → `20260924120000` (brindes/extras/lembretes).
-2. `npm run start` e smoke ao vivo: (a) arrematar → @menção no grupo; (b) brinde no painel → enquete no grupo; (c) lote com 2+ fotos; (d) arrematar sem marcar pagamento e conferir a DM de lembrete (para testar rápido: `BOT_PAYMENT_REMINDER_DAYS` baixo no `bot/.env`, ex. 0.01), depois "✓ Recebido" no dashboard e confirmar que para.
-3. Backlog restante: P-02 (aplicar), P-03 (índice es), P-04 (quantizado), P-05 (figurinha — bloqueado no operador), P-11 (env Vercel), P-12 (truth-key ptcg).
+1. Operador aplicar as 4 migrations no SQL Editor (ordem lexical): 20260923093000 (avisos) -> 20260923120000 (backup) -> 20260924120000 (brindes/extras/lembretes) -> 20260924140000 (backup completo). Se as duas primeiras já foram aplicadas, aplicar só as que faltam — todas são create-or-replace/aditivas.
+2. npm run start + smoke ao vivo (menções, brinde, fotos extras, lembrete DM + botão de baixa).
+3. Backlog restante: P-02 (aplicar), P-03 (índice es — decidir quando), P-04 (quantizado), P-05 (figurinha — depois, por decisão do operador), P-11 (env Vercel).
 
 ## Arquivo recomendado para continuar
-`docs/agent/11_PENDING_WORK.md` — restam apenas: P-02 (aplicar migrations), P-03 (índice es), P-04 (modelo quantizado), P-05 (figurinha do início — bloqueado no operador), P-10 (suíte SQL de avisos — já escrita em 2026-09-23, CONFIRMAR status), P-11 (env Vercel), P-12 (truth-key ptcg).
+docs/agent/11_PENDING_WORK.md.
 
 ## Arquivos de código prioritários
-- `supabase/migrations/20260924120000_quick_polls_extra_images_reminders.sql`
-- `bot/index.mjs` (sendDispatchInternal, sendDueQuickPolls, finalizeDueAuctions)
-- `tests/quick-polls-reminders.sql`
+- app/auctions/new/bulk-wizard.tsx e app/auctions/new/wizard.tsx (futuras mudanças de upload: sempre consumir o RETORNO, nunca o estado do closure)
+- supabase/migrations/20260924140000_backup_covers_new_tables.sql
 
 ## Comandos úteis
 ```bash
-npm test && npm run typecheck && npm run build
+npm run typecheck && npm test && npm run build
 node --test bot/*.test.mjs
-npm --prefix bot run check
-git add -A && git commit -m "feat: winner mentions, giveaway polls, extra photos, payment reminders (P-06..P-09)" && git push
+git add -A && git commit -m "..." && git push
 ```
 
 ## Atenções
-- NÃO editar `create_auction_publish_queue`/`create_auction_wizard`/`purge_all_business_data`/`read_dashboard_snapshot`/`process_auction_command` sem copiar a versão MAIS RECENTE (ver `03_DATABASE.md` → PERIGOS; a trapalhada da read_dashboard_snapshot desta sessão é o exemplo).
-- O bot só publica brindes/lembretes com o WhatsApp conectado (socket pronto) — drenos silenciosamente não fazem nada offline.
-- Atualizar `11_PENDING_WORK.md` e ESTE arquivo ao concluir qualquer item.
+- Padrão anti-bug para o futuro: em fluxos upload->publish, o payload lê RETORNOS de função, nunca state React do closure.
+- Migrations que referenciam tabelas de migrations posteriores precisam de arquivo próprio com timestamp maior (ordem lexical do CI).
+- Atualizar 11_PENDING_WORK.md e ESTE arquivo ao concluir qualquer item.

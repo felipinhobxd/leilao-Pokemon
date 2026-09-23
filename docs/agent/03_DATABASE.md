@@ -78,6 +78,7 @@ Toda tabela de negócio: `enable row level security` + `revoke from public,anon,
 
 ## PERIGOS DE ALTERAÇÃO
 
+- **Ambiguidade plpgsql (SQLSTATE 42702 em runtime)**: dentro de `process_auction_command` existem variáveis com nomes perigosos (`amount`, `pid`, `aid`, `eid`, `event_at`, `old_amount`...). Qualquer SQL que referencie uma COLUNA com o mesmo nome de variável sem alias levanta `column reference "X" is ambiguous` quando a função RODA (DDL compila, CI de migrations passa, testes falham). Exemplo real: `select amount into old_amount from public.bids` (bids.amount × variável amount — corrigido em 2026-09-23 com alias `prev.amount`). **Regra: sempre qualifique com alias da tabela** (`select prev.amount ... from public.bids prev`).
 - **`process_auction_command`**: só altere reproduzindo o corpo inteiro verbatim + hooks marcados — drift quebra idempotência/tie-break/avisos.
 - **`external_event_id`** é contrato de idempotência em 5 tabelas — nunca mude o formato dos eventIds do bot (`wa-vote:{poll}:{participant}:{ts}:{amount}`, `wa-withdraw:...`) sem tratar replay.
 - **`immutable_audit`**: UPDATE/DELETE em `auction_events` fora das duas funções autorizadas levanta exceção.

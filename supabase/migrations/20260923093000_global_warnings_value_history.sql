@@ -209,7 +209,12 @@ begin
      if k<>'BUYOUT_CONFIRMED' then amount:=(p_command->>'amount')::numeric; end if;
      if amount is null or amount::text in ('NaN','Infinity','-Infinity') or amount<a.starting_price or amount<>round(amount,2) then raise exception 'invalid_bid_amount'; end if;
      if k='BID_CHANGED' and old_bid is not null then
-      select amount into old_amount from public.bids where id=old_bid; -- ADDITION B.1
+      -- ADDITION B.1 — aliased on purpose: a bare `amount` here is ambiguous
+      -- between bids.amount (column) and the plpgsql variable `amount`
+      -- (SQLSTATE 42702 at runtime, raised BEFORE the enforce_bid_increment
+      -- trigger could answer with bid_increment_required — CI failure
+      -- tests/auction.sql "below_increment", fixed 2026-09-23).
+      select prev.amount into old_amount from public.bids prev where prev.id=old_bid;
      end if;
      update public.bids set status='replaced' where id=old_bid;
      insert into public.bids(auction_id,participant_id,amount,kind,whatsapp_event_id,whatsapp_event_at,processed_at)

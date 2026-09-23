@@ -1,69 +1,62 @@
 # SESSION HANDOFF
 
 ## Última atualização
-2026-09-23 (fim da sessão de documentação)
+2026-09-23 (fim da sessão de correção de CI)
 
 ## Sessão atual
-Criar a estrutura de memória persistente para agentes (`docs/agent/00–12`) mapeando TODO o projeto a partir do código real, sem alterar comportamento.
+Corrigir a falha do CI `validate` causada pela migration de avisos (20260923093000).
 
 ## O que foi concluído
-- 13 arquivos `.md` criados em `docs/agent/` (índice, contexto, arquitetura, banco, API, frontend, bot, reconhecimento, domínio, testes, segurança/performance, backlog, handoff).
-- Tudo verificado contra código real: rotas (`app/api/**`), páginas (`app/**`), RPCs/migrations (`supabase/**`), bot (`bot/**`), reconhecimento (`recognition/**`), CI (`.github/workflows/ci.yml`), scripts de package.json (raiz e bot).
-- Backlog real consolidado em `11_PENDING_WORK.md` (P-01..P-12), originado de pedidos explícitos do operador e de diagnósticos das sessões anteriores.
+- Diagnóstico exato: `select amount into old_amount from public.bids` (ADDITION B.1) era ambíguo (bids.amount × variável plpgsql `amount`, SQLSTATE 42702) e estourava ANTES do trigger `enforce_bid_increment` responder `bid_increment_required` (tests/auction.sql "below_increment").
+- Correção: alias `select prev.amount into old_amount from public.bids prev where prev.id=old_bid` na migration 20260923093000.
+- Auditoria dos demais hooks/cleanup da migration: nenhum outro ponto de ambiguidade (todos com alias/VALUES).
+- Registrada a regra (alias obrigatório) em `03_DATABASE.md` → PERIGOS.
 
 ## O que está em andamento
-- Nada de código em andamento. Última entrega funcional foi o commit `6b9e8a6e` (avisos globais + histórico de valores + TOTAL na planilha + limpeza 30d), validada por testes e publicada.
+- Aguardando o CI do push validar a correção (não há Postgres local para rodar `tests/*.sql` — a validação SQL é via CI).
 
 ## Arquivos modificados
-- `docs/agent/00_INDEX.md` … `12_SESSION_HANDOFF.md` (todos novos).
-- Nenhum arquivo de código alterado nesta sessão.
+- `supabase/migrations/20260923093000_global_warnings_value_history.sql` (fix B.1)
+- `docs/agent/03_DATABASE.md` (nova regra de PERIGO)
+- `docs/agent/12_SESSION_HANDOFF.md` (este checkpoint)
 
 ## Arquivos analisados
-- `app/api/**` (18 routes), `app/**` (páginas), `bot/**` (service/index/queue-worker/poll-votes/warning-notify/session-guard + package.json), `supabase/schema.sql`, `operations.sql`, `whatsapp_bridge.sql`, todas `supabase/migrations/*.sql`, `lib/backend.ts`, `lib/auction-wizard.ts`, `lib/purge.ts`, `lib/card-recognition-*.ts`, `recognition/recognition_server.py`, `recognition/recognizer/**`, `recognition/scripts/**`, `recognition/README.md`, `.github/workflows/ci.yml`, `tests/**`, `bot/*.test.mjs`, `docs/card-recognition.md`, `README.md`.
+- `tests/auction.sql` (fluxo BID_CHANGED/bid_increment_required), `supabase/migrations/20260921150000_bid_increment_guard.sql` (guarda vive num TRIGGER, não na função), a própria 20260923093000.
 
 ## Decisões tomadas
-- Documentação vive EXCLUSIVAMENTE em `docs/agent/` (nenhum arquivo na raiz, conforme pedido do operador).
-- Estado do banco marcado como ⚠️ (migration 20260923093000 pendente de aplicação manual) em `00_INDEX.md` e `03_DATABASE.md`.
-- Itens não confirmados marcados explicitamente ("não confirmado no código atual" / "precisa de investigação").
+- A guarda de incremento é trigger (`enforce_bid_increment` BEFORE INSERT em bids) — o corpo da função copiado estava CORRETO; o bug era só a ambiguidade do B.1.
 
 ## Problemas encontrados
-- Nenhum novo. Registrados no backlog os já conhecidos: P-01 (401 no /memory/confirm), P-02 (aplicar migration), P-03 (índice es), P-10 (suíte SQL faltante), P-11 (env Vercel), P-12 (truth-key ptcg em benchmarks).
+- Se o operador JÁ tinha aplicado a 20260923093000 no Supabase (P-02), a função em produção tem o mesmo bug: **todo BID_CHANGED real falharia com 42702**. A correção é `create or replace` — re-aplicar o arquivo atualizado no SQL Editor conserta in-place. Se ainda NÃO aplicou, aplicar a versão nova direto.
 
 ## Testes executados
-- Nesta sessão (documentação): nenhum — sem mudança de código.
-- Última validação completa (sessão `6b9e8a6e`): bot 20/20, raiz 155/155, typecheck, build — tudo verde.
+- Nenhum local (sem Postgres); validação via CI do push.
 
 ## Resultado dos testes
-- Verdes na última rodada funcional; nada pendente de revalidação por causa desta sessão.
+- CI do push anterior: falha em tests/auction.sql (42702). Correção publicada; conferir o run novo.
 
 ## Ponto EXATO onde paramos
-Documentação concluída, commitada e publicada nesta sessão (HEAD = commit desta documentação, imediatamente após `6b9e8a6e`). Nenhuma tarefa de código em estado parcial.
+Migration corrigida e commitada; CI vai revalidar todo o fluxo SQL (migrations + auction.sql + wizard + queue + concurrency).
 
 ## Próximo passo EXATO
-1. Confirmar com o operador: (a) a migration `20260923093000` já foi aplicada no SQL Editor? (b) ele quer que o próximo trabalho seja o bug P-01 (401 no `/memory/confirm`)?
-2. Se P-01: seguir o "Próximo passo" do item P-01 em `11_PENDING_WORK.md` (grep de chamadas a `memory/confirm` fora de `confirmRecognitionMemory` + reprodução com o serviço logando a origem).
+1. Conferir o run do CI do último push (deve ficar verde; se falhar em outro ponto de tests/*.sql com 42702 ou `column reference ... ambiguous`, aplicar a mesma regra de alias no trecho apontado).
+2. Com o operador: confirmar se a 20260923093000 já foi aplicada em produção; se sim, **re-aplicar o arquivo corrigido no SQL Editor** (create or replace) antes de qualquer leilão com troca de lances.
+3. Seguir o backlog: `11_PENDING_WORK.md` (P-01 bug do /memory/confirm 401 é o próximo candidato).
 
 ## Arquivo recomendado para continuar
-`docs/agent/11_PENDING_WORK.md` (backlog priorizado) — depois o arquivo da área da tarefa escolhida (P-01 → `07_CARD_RECOGNITION.md` + `05_FRONTEND.md`).
+`docs/agent/11_PENDING_WORK.md` → depois `03_DATABASE.md` (PERIGOS atualizados).
 
 ## Arquivos de código prioritários
-- `lib/card-recognition-local.ts` (P-01: `confirmRecognitionMemory`)
-- `app/auctions/new/bulk-wizard.tsx` (P-01: chamada de confirmação de memória)
-- `recognition/recognition_server.py` (P-01: `memory_confirm`)
-- `supabase/migrations/20260923093000_global_warnings_value_history.sql` (P-02: conteúdo a aplicar)
+- `supabase/migrations/20260923093000_global_warnings_value_history.sql`
+- `tests/auction.sql` (referência de comportamento esperado)
 
 ## Comandos úteis
 ```bash
-git status && git add docs/agent && git commit -m "docs: add persistent agent memory (docs/agent 00-12)"
-npm test                       # 155 testes raiz
-node --test bot/*.test.mjs     # 20 testes bot
-npm run typecheck
-.venv\Scripts\python.exe -m unittest discover -s tests   # em recognition/ (248)
-npm run build
+git log --oneline -3            # confirmar push do fix
+# CI: .github/workflows/ci.yml job validate (Postgres 17 + psql tests) — sem equivalente local configurado
 ```
 
 ## Atenções
-- Migration `20260923093000` NÃO aplicada em produção até confirmação do operador (P-02) — avisos globais/limpeza 30d ficam inativos e o bot loga erros do dreno até aplicar.
-- `recognition/.env` e `.env.local` são LOCAIS e gitignored — novo agente não os verá no repo; os valores do segredo estão na máquina do operador.
-- Nunca editar `process_auction_command` sem reproduzir o corpo verbatim (ver `03_DATABASE.md` → PERIGOS).
+- NUNCA referenciar coluna sem alias dentro de plpgsql quando existir variável com o mesmo nome (ver 03_DATABASE.md → PERIGOS).
+- Migration 20260923093000 em produção: se aplicada, re-aplicar a versão corrigida (create or replace cura a função).
 - Atualizar `11_PENDING_WORK.md` e ESTE arquivo ao concluir qualquer item.

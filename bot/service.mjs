@@ -33,6 +33,9 @@ let shuttingDown = false;
 let restartTimer = null;
 let heartbeatTimer = null;
 let commandTimer = null;
+let cleanupTimer = null;
+let cleanupBusy = false;
+let lastCleanupAttempt = 0;
 let commandBusy = false;
 let publishBusy = false;
 let automaticSyncBusy = false;
@@ -412,8 +415,35 @@ async function processPendingLogout() {
   return true;
 }
 
-async function pollBotCommands() {
-  if (commandBusy || shuttingDown) return;
+// Rotina de exclusão de leilões antigos: p_days no banco (padrão 30). Roda no
+// máximo 1x/hora; falha só registra aviso (a próxima janela tenta de novo) —
+// a limpeza nunca pode derrubar o supervisor do bot.
+async function cleanupOldAuctions() {
+  if (cleanupBusy || shuttingDown) return;
+  const now = Date.now();
+  if (now - lastCleanupAttempt < 60 * 60_000) return;
+  lastCleanupAttempt = now;
+  cleanupBusy = true;
+  try {
+    const days = Number(process.env.BOT_CLEANUP_DAYS || 30);
+    const { data, error } = await db.rpc("cleanup_old_auctions", { p_days: Number.isFinite(days) && days > 0 ? days : 30 });
+    if (error) {
+      console.warn("Limpeza de leilões antigos falhou:", error?.message || error);
+      return;
+    }
+    const deleted = data?.deleted ?? {};
+    const total = Object.values(deleted).reduce((sum, count) => sum + Number(count ?? 0), 0);
+    if (total > 0) {
+      console.log(`Limpeza de leilões antigos (${data?.cutoff ?? "30d"}): ${total} registro(s) removido(s) —`, JSON.stringify(deleted));
+    }
+  } catch (error) {
+    console.warn("Limpeza de leilões antigos falhou:", error?.message || error);
+  } finally {
+    cleanupBusy = false;
+  }
+}
+
+async function pollBotCommands() {  if (commandBusy || shuttingDown) return;
   commandBusy = true;
   try {
     if (await processPendingLogout()) return;
@@ -443,6 +473,7 @@ async function shutdown(signal) {
   clearTimeout(nightRestartTimer);
   clearInterval(heartbeatTimer);
   clearInterval(commandTimer);
+  clearInterval(cleanupTimer);
   console.log(`Encerrando supervisor (${signal})...`);
   await stopChild();
   runtime.qrPayload = null;
@@ -496,6 +527,12 @@ await loadPreviousWorkerState();
 await publishState({ status: "starting" });
 heartbeatTimer = setInterval(() => void publishState(), HEARTBEAT_MS);
 commandTimer = setInterval(() => void pollBotCommands(), 3_000);
-console.log(`Supervisor iniciado. Worker: ${WORKER_ID} · versão ${BOT_VERSION}`);
+// Limpeza automatica de leiloes antigos (30 dias): o supervisor roda 24h, a
+// rotina e hourly e so remove lotes TERMINAIS (closed/sold/cancelled) mais
+// velhos que o corte — nunca nada aberto/recente (cleanup_old_auctions).
+cleanupTimer = setInterval(() => void cleanupOldAuctions(), 10 * 60_000);
+cleanupTimer.unref?.();
+console.log(`Supervisor iniciado. Worker: ${WORKER_ID} — versao ${BOT_VERSION}`);
 await startChild();
 void pollBotCommands();
+void cleanupOldAuctions();

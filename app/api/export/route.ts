@@ -13,6 +13,8 @@ const sheets: [Table, string, [string, string][]][] = [
   ["payments", "Pagamentos", [["ID","id"],["Compra","purchase_id"],["Valor","amount"],["Status","status"],["Método","method"],["Pago em","paid_at"],["Referência","reference"]]],
   ["deliveries", "Entregas", [["ID","id"],["Compra","purchase_id"],["Status","status"],["Rastreio","tracking_code"],["Enviado em","shipped_at"],["Entregue em","delivered_at"],["Observações","notes"]]],
   ["warnings", "Advertências", [["ID","id"],["Participante","participant_name"],["Leilão","auction_id"],["Tipo","type"],["Motivo","reason"],["Ativa","active"],["Início","starts_at"],["Fim","ends_at"]]],
+  ["value_change_log", "Alterações (bruto)", [["ID","id"],["Leilão","auction_id"],["Participante","participant_id"],["Valor anterior","previous_amount"],["Novo valor","new_amount"],["Diferença","difference"],["Evento externo","external_event_id"],["Quando","occurred_at"]]],
+  ["participant_warnings", "Avisos globais (bruto)", [["ID","id"],["Participante","participant_id"],["Carta","card_name"],["Lote","lot_number"],["Valor anterior","previous_amount"],["Novo valor","new_amount"],["Evento externo","external_event_id"],["Quando","occurred_at"]]],
   ["auction_events", "Auditoria", [["ID","id"],["Leilão","auction_id"],["Participante","participant_name"],["WhatsApp","participant_whatsapp"],["Telefone","participant_phone"],["Administrador","admin_user_id"],["Evento","event_type"],["ID externo","external_event_id"],["Ocorrido em","occurred_at"],["Registrado em","created_at"],["Detalhes","payload"]]],
 ];
 
@@ -87,9 +89,16 @@ export async function GET(request: Request) {
       { header: "Telefone / WhatsApp", key: "phone", width: 22 },
       { header: "Valor", key: "amount", width: 14 },
       { header: "Tipo", key: "winType", width: 16 },
+      { header: "Avisos (global)", key: "globalWarnings", width: 14 },
       { header: "Data da venda", key: "confirmedAt", width: 22 },
       { header: "Observações", key: "notes", width: 34 },
     ];
+
+    const globalWarningCount = new Map<string, number>();
+    for (const warning of data.participant_warnings ?? []) {
+      const key = String(warning.participant_id ?? "");
+      if (key) globalWarningCount.set(key, (globalWarningCount.get(key) ?? 0) + 1);
+    }
 
     for (const purchase of confirmedPurchases) {
       const auction = data.auctions.find(a => a.id === purchase.auction_id);
@@ -104,13 +113,71 @@ export async function GET(request: Request) {
         phone: cleanPhone(person?.phone_e164, person?.whatsapp_id),
         amount: Number(purchase.amount ?? 0),
         winType: winTypeLabel(auction?.win_type),
+        globalWarnings: person ? (globalWarningCount.get(String(person.id)) ?? 0) : 0,
         confirmedAt: excelDateValue(purchase.confirmed_at),
         notes: "",
       });
     }
     sales.getColumn("amount").numFmt = '"R$" #,##0.00';
     sales.getColumn("confirmedAt").numFmt = "dd/mm/yyyy hh:mm:ss";
+    // TOTAL: soma SOMENTE as linhas de valores (a fórmula cobre exatamente as
+    // compras listadas — sem textos nem células soltas) e se atualiza sozinha
+    // no Excel se algum valor for editado.
+    const firstDataRow = 2;
+    const lastDataRow = 1 + confirmedPurchases.length;
+    if (confirmedPurchases.length) {
+      const totalRow = sales.addRow({
+        lot: "TOTAL",
+        amount: { formula: `SUM(G${firstDataRow}:G${lastDataRow})` },
+      });
+      totalRow.font = { bold: true };
+      totalRow.getCell("amount").numFmt = '"R$" #,##0.00';
+      totalRow.getCell("lot").font = { bold: true };
+      totalRow.eachCell({ includeEmpty: true }, cell => { cell.border = { top: { style: "thin", color: { argb: "FF18243D" } } }; });
+    }
     styleSheet(sales);
+
+    // ---------------------------------------------------------------------------
+    // "Alterações de valores": histórico detalhado de cada mudança de lance
+    // (valor anterior, novo valor, diferença, quem, quando) + o total de avisos
+    // GLOBAIS do usuário no momento da exportação.
+    // ---------------------------------------------------------------------------
+    const changes = workbook.addWorksheet("Alterações de valores");
+    changes.columns = [
+      { header: "Lote", key: "lot", width: 8 },
+      { header: "Carta", key: "card", width: 32 },
+      { header: "Participante", key: "buyer", width: 28 },
+      { header: "Valor anterior", key: "previousAmount", width: 16 },
+      { header: "Novo valor", key: "newAmount", width: 16 },
+      { header: "Diferença", key: "difference", width: 14 },
+      { header: "Avisos (global)", key: "globalWarnings", width: 14 },
+      { header: "Redução (aviso)", key: "warning", width: 14 },
+      { header: "Data e horário", key: "occurredAt", width: 22 },
+    ];
+    const changeRows = (data.value_change_log ?? [])
+      .slice()
+      .sort((a, b) => String(b.occurred_at ?? "").localeCompare(String(a.occurred_at ?? "")));
+    for (const change of changeRows) {
+      const auction = data.auctions.find(a => a.id === change.auction_id);
+      const card = auction ? data.cards.find(c => c.id === auction.card_id) : undefined;
+      const person = data.participants.find(p => p.id === change.participant_id);
+      const previous = Number(change.previous_amount ?? 0);
+      const next = Number(change.new_amount ?? 0);
+      changes.addRow({
+        lot: auction?.lot_number ?? "",
+        card: card?.name ?? "",
+        buyer: person?.display_name ?? "",
+        previousAmount: previous,
+        newAmount: next,
+        difference: next - previous,
+        globalWarnings: change.participant_id ? (globalWarningCount.get(String(change.participant_id)) ?? 0) : 0,
+        warning: next < previous ? "SIM" : "",
+        occurredAt: excelDateValue(change.occurred_at),
+      });
+    }
+    for (const key of ["previousAmount", "newAmount", "difference"]) changes.getColumn(key).numFmt = '"R$" #,##0.00';
+    changes.getColumn("occurredAt").numFmt = "dd/mm/yyyy hh:mm:ss";
+    styleSheet(changes);
 
     const totalRevenue = confirmedPurchases.reduce((total, purchase) => total + Number(purchase.amount ?? 0), 0);
     const uniqueBuyers = new Set(confirmedPurchases.map(p => String(p.participant_id ?? "")).filter(Boolean)).size;

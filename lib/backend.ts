@@ -27,7 +27,7 @@ export function failure(error: unknown) {
   return Response.json({ error: unconfigured ? "Supabase ainda não configurado no servidor." : "Não foi possível concluir a operação." }, { status: unconfigured ? 503 : 500 });
 }
 
-export const tables = ["cards", "participants", "auctions", "bids", "auction_events", "purchases", "payments", "deliveries", "warnings"] as const;
+export const tables = ["cards", "participants", "auctions", "bids", "auction_events", "purchases", "payments", "deliveries", "warnings", "value_change_log", "participant_warnings", "admin_notifications"] as const;
 export type Table = typeof tables[number];
 export type Row = Record<string, string | number | boolean | null | Record<string, unknown>>;
 export type Snapshot = Record<Table, Row[]>;

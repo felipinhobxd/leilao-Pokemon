@@ -13,6 +13,7 @@ import { buildAuctionCaption } from "./format.mjs";
 import { phoneFromWhatsAppJid, syncGroupParticipants } from "./group-participants.mjs";
 import { isLidJid, isPhoneJid, normalizeUserJid } from "./poll-identities.mjs";
 import { decryptIncomingPollVote } from "./poll-votes.mjs";
+import { createAdminNotificationDrain, parseAdminJids } from "./warning-notify.mjs";
 import { queueEnabled, startQueueWorker } from "./queue-worker.mjs";
 
 const required = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "BOT_ADMIN_USER_ID"];
@@ -41,6 +42,16 @@ let finalizeBusy = false;
 let socketReady = false;
 let dispatchQueue = null;
 let voteQueue = Promise.resolve();
+// Avisos globais: entrega as notificações de 3 avisos aos administradores
+// (linha criada de forma idempotente pelo RPC process_auction_command).
+const adminNotificationDrain = createAdminNotificationDrain({
+  db,
+  getSocket: () => (socketReady ? sock : null),
+  adminJids: (() => {
+    const jids = parseAdminJids();
+    return jids.length ? jids : undefined;
+  })(),
+});
 const contactNames = new Map();
 const pollMessageCache = new Map();
 const pendingPollVotes = new Map();
@@ -847,7 +858,7 @@ async function connect() {
       console.log(`\n✅ WhatsApp conectado. Worker: ${WORKER_ID}`);
       console.log("Aguardando agendamentos e votos...\n");
       clearInterval(schedulerTimer);
-      schedulerTimer = setInterval(() => { void runScheduler(); void finalizeDueAuctions(); }, 3000);
+      schedulerTimer = setInterval(() => { void runScheduler(); void finalizeDueAuctions(); void adminNotificationDrain.tick(); }, 3000);
       void syncOpenAuctionGroups().catch(error => console.warn("Falha ao sincronizar grupos abertos:", error?.message || error));
       void runScheduler();
       void finalizeDueAuctions();

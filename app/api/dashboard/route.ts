@@ -16,7 +16,10 @@ export async function GET(request: Request) {
   try {
     const { db, profile } = await timing.measure("authorize", () => authorize(request, false, timing));
     const operationsOnly = new URL(request.url).searchParams.get("scope") === "operations";
-    const sevenDaysAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
+    // Janela de envios: 30 dias (era 7) — acompanha a rotina de limpeza de
+    // leilões antigos (cleanup_old_auctions, também 30 dias).
+    const DISPATCH_WINDOW_DAYS = 30;
+    const windowStart = new Date(Date.now() - DISPATCH_WINDOW_DAYS * 86_400_000).toISOString();
     const [data, workerResult, groupResult, ...countResults] = await Promise.all([
       operationsOnly ? null : timing.measure("read_dashboard_snapshot", () => snapshot(db, true)),
       db.from("whatsapp_bot_workers").select("worker_id,status,heartbeat_at,version").order("heartbeat_at", { ascending: false, nullsFirst: false }).limit(1).maybeSingle(),
@@ -28,7 +31,7 @@ export async function GET(request: Request) {
       // updated in 7 days just to count 5 statuses in JS, on every poll.
       ...DISPATCH_STATUSES.map(status =>
         db.from("whatsapp_dispatches").select("status", { count: "exact", head: true })
-          .eq("status", status).gte("updated_at", sevenDaysAgo)),
+          .eq("status", status).gte("updated_at", windowStart)),
     ]);
     if (workerResult.error || groupResult.error) throw new Error("dashboard_operations_read_failed");
     const counts: Record<(typeof DISPATCH_STATUSES)[number], number> = { sent: 0, failed: 0, scheduled: 0, sending: 0, cancelled: 0 };
@@ -51,7 +54,7 @@ export async function GET(request: Request) {
           sent: counts.sent,
           failed: counts.failed,
           pending: counts.scheduled + counts.sending,
-          windowDays: 7,
+          windowDays: DISPATCH_WINDOW_DAYS,
         },
       },
     }, { headers: timing.headers() });

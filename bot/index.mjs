@@ -16,6 +16,7 @@ import { decryptIncomingPollVote } from "./poll-votes.mjs";
 import { createAdminNotificationDrain, parseAdminJids } from "./warning-notify.mjs";
 import { resolveParticipantJid, mentionMessage } from "./participant-contact.mjs";
 import { createPaymentReminderDrain } from "./payment-reminder.mjs";
+import { ANNOUNCE_MINUTES_BEFORE, buildOpeningMessage, loadAnnouncedQueueIds, loadAnnouncementSticker, markQueueAnnounced, saveAnnouncementSticker } from "./announce-sticker.mjs";
 import { queueEnabled, startQueueWorker } from "./queue-worker.mjs";
 
 const required = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "BOT_ADMIN_USER_ID"];
@@ -794,16 +795,107 @@ async function handleIncomingMessages(messages) {
     if (message?.message?.pollUpdateMessage?.pollCreationMessageKey?.id) {
       await processIncomingPollMessage(message);
     } else {
+      // P-05: buffer da última figurinha por chat (o WhatsApp não expõe ID
+      // nenhum ao usuário) + comando !figurinha na MESMA conversa captura.
+      try { await maybeCaptureAnnouncementSticker(message); }
+      catch (error) { console.warn("Falha ao processar figurinha/comando:", error?.message || error); }
       try { await enrichParticipantFromMessage(message); }
       catch (error) { console.warn("Falha ao enriquecer participante por mensagem:", error?.message || error); }
     }
   }
 }
 
+// ---------------------------------------------------------------------------
+// P-05 — captura da figurinha de abertura ("O leilão vai começar!").
+// Fluxo do operador: com o bot rodando, enviar a figurinha em qualquer
+// conversa e digitar `!figurinha` na mesma conversa. O bot responde com a
+// confirmação; a figurinha persiste em bot/data/announcement-sticker.json.
+// ---------------------------------------------------------------------------
+const lastStickerByChat = new Map();
+async function maybeCaptureAnnouncementSticker(message) {
+  const chatJid = message?.key?.remoteJid;
+  if (!chatJid || !message?.message) return;
+  if (message.message.stickerMessage) {
+    lastStickerByChat.set(chatJid, { key: message.key, message: message.message });
+    // Buffer limitado: só interessa a ÚLTIMA figurinha por chat.
+    if (lastStickerByChat.size > 100) {
+      const oldest = lastStickerByChat.keys().next().value;
+      lastStickerByChat.delete(oldest);
+    }
+    return;
+  }
+  const text = String(message.message.conversation ?? message.message.extendedTextMessage?.text ?? "").trim();
+  if (text.toLowerCase() !== "!figurinha") return;
+  const sticker = lastStickerByChat.get(chatJid);
+  if (!sticker) {
+    await sock.sendMessage(chatJid, { text: "❗ Não encontrei figurinha recente nesta conversa. Envie a figurinha e DEPOIS digite !figurinha (a figurinha precisa ser enviada com o bot rodando)." });
+    return;
+  }
+  saveAnnouncementSticker(sticker.key, sticker.message);
+  await sock.sendMessage(chatJid, { text: `✅ Figurinha de abertura salva!\n\nEla será enviada ${ANNOUNCE_MINUTES_BEFORE > 0 ? `${ANNOUNCE_MINUTES_BEFORE} minuto(s) antes` : "junto"} do primeiro lote de cada fila de leilão, seguida da mensagem com @todos.` });
+  console.log(`🖼️  Figurinha de abertura capturada (chat ${chatJid}, msg ${sticker.key.id}).`);
+}
+
 // P-07 — Brindes: publica enquetes rápidas criadas no painel (título e
 // opções livres com emoji, "quem clicar primeiro leva"). Tabela própria
 // (whatsapp_quick_polls) — dispatches exige auction_id. Idempotência:
 // sent_at só depois do envio confirmado; messageId estável por brinde.
+// P-05 — Figurinha de abertura: quando o PRIMEIRO lote de uma fila está a
+// caminho (default 5 min), retransmite a figurinha capturada + @todos no
+// grupo, UMA vez por fila (estado em bot/data/announce-state.json).
+let openingBusy = false;
+async function sendOpeningAnnouncements() {
+  if (!sock || !socketReady || openingBusy) return;
+  const sticker = loadAnnouncementSticker();
+  if (!sticker) return; // nada capturado ainda — o recurso fica desligado
+  openingBusy = true;
+  try {
+    const windowMs = Math.max(0, ANNOUNCE_MINUTES_BEFORE) * 60_000;
+    const horizon = new Date(Date.now() + windowMs).toISOString();
+    // Primeiro lote pendente de cada fila, ainda não enviado, dentro da janela.
+    const { data: firstDispatches, error } = await db.from("whatsapp_dispatches")
+      .select("id,queue_id,group_id,scheduled_at,queue_position")
+      .eq("status", "scheduled")
+      .eq("queue_position", 1)
+      .lte("scheduled_at", horizon)
+      .not("queue_id", "is", null)
+      .order("scheduled_at", { ascending: true })
+      .limit(5);
+    if (error) throw new Error(error.message);
+    const announced = loadAnnouncedQueueIds();
+    for (const dispatch of firstDispatches ?? []) {
+      if (!dispatch.queue_id || announced.has(String(dispatch.queue_id))) continue;
+      // A fila precisa estar viva (scheduled/running) — pausada anuncia depois?
+      // Não: pausa = silêncio; a retomada reavalia a janela naturalmente.
+      const { data: queue } = await db.from("auction_publish_queues")
+        .select("status,group_id").eq("id", dispatch.queue_id).maybeSingle();
+      if (!queue || !["scheduled", "running"].includes(queue.status)) continue;
+      const { data: group } = await db.from("whatsapp_groups").select("group_jid,active").eq("id", dispatch.group_id).maybeSingle();
+      if (!group?.active) continue;
+      try {
+        await sock.sendMessage(group.group_jid, { forward: sticker });
+        let mentions = [];
+        try {
+          const metadata = await sock.groupMetadata(group.group_jid);
+          mentions = (metadata?.participants ?? []).map(participant => participant.id).filter(Boolean);
+        } catch { /* sem metadata: mensagem sai sem menções */ }
+        const opening = buildOpeningMessage(mentions);
+        await sock.sendMessage(group.group_jid, { text: opening.text, mentions: opening.mentions });
+        markQueueAnnounced(dispatch.queue_id, announced);
+        console.log(`📣 Figurinha de abertura enviada (fila ${dispatch.queue_id}, ${mentions.length} menção(ões)).`);
+      } catch (error) {
+        // Sem marcar como anunciado: o próximo tick tenta de novo (a janela
+        // ainda está aberta até o lote 1 vencer).
+        console.error(`Falha ao enviar figurinha de abertura (fila ${dispatch.queue_id}):`, error?.message || error);
+      }
+    }
+  } catch (error) {
+    console.error("Abertura de leilão: falha no ciclo:", error?.message || error);
+  } finally {
+    openingBusy = false;
+  }
+}
+
 let quickPollsBusy = false;
 async function sendDueQuickPolls() {
   if (!sock || quickPollsBusy) return;
@@ -929,7 +1021,7 @@ async function connect() {
       console.log(`\n✅ WhatsApp conectado. Worker: ${WORKER_ID}`);
       console.log("Aguardando agendamentos e votos...\n");
       clearInterval(schedulerTimer);
-      schedulerTimer = setInterval(() => { void runScheduler(); void finalizeDueAuctions(); void adminNotificationDrain.tick(); void sendDueQuickPolls(); void paymentReminderDrain.tick(); }, 3000);
+      schedulerTimer = setInterval(() => { void runScheduler(); void finalizeDueAuctions(); void adminNotificationDrain.tick(); void sendDueQuickPolls(); void paymentReminderDrain.tick(); void sendOpeningAnnouncements(); }, 3000);
       void syncOpenAuctionGroups().catch(error => console.warn("Falha ao sincronizar grupos abertos:", error?.message || error));
       void runScheduler();
       void finalizeDueAuctions();

@@ -17,3 +17,5 @@ recognition/models/
 recognition/data/
 recognition/.venv/
 recognition/**/__pycache__/
+
+bot/data/

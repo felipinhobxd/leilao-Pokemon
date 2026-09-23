@@ -135,6 +135,20 @@ export default function Dashboard() {
       const url = URL.createObjectURL(await response.blob()); const a = document.createElement("a"); a.href = url; a.download = "leilao-pokemon.xlsx"; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (e) { setError(e instanceof Error ? e.message : "Falha na exportação."); } finally { setBusy(false); }
   }
+  // Backup completo em JSON (mesma fonte da cópia diária automática do bot):
+  // o download exige Authorization, então é fetch+blob e não um <a> direto.
+  async function downloadBackup() {
+    setBusy(true); setError("");
+    try {
+      const response = await request("/api/admin/backup"); if (!response.ok) throw new Error((await response.json()).error);
+      const blob = await response.blob();
+      const now = new Date(); const pad = (v: number) => String(v).padStart(2, "0");
+      const url = URL.createObjectURL(blob); const a = document.createElement("a");
+      a.href = url; a.download = `leilao-backup-${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.json`; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setNotice("Backup completo baixado em JSON.");
+    } catch (e) { setError(e instanceof Error ? e.message : "Falha no backup."); } finally { setBusy(false); }
+  }
   async function purgeEverything() {
     if (mutationLock.current) return;
     mutationLock.current = true; setBusy(true); setError(""); setNotice("");
@@ -181,7 +195,7 @@ export default function Dashboard() {
     return <label key={name}>{label}<input name={name} type={type} required={required} defaultValue={value} maxLength={name === "notes" ? 2000 : 200} {...(type === "number" ? { min: 0, max: 9999999999.99, step: "0.01" } : {})} /></label>;
   }
   return <main className="shell">
-    <header className="topbar"><div><p className="eyebrow">CENTRAL DE LEILÕES</p><h1>Leilão Pokémon</h1><p className="muted">Cartas, participantes e disputas em um só lugar.</p></div>{session && <div className="actions"><span className="status-pill">{realtime}</span><button disabled={busy} onClick={exportExcel}>Exportar Excel</button><button disabled={busy} onClick={() => void db.auth.signOut()}>Sair</button></div>}</header>
+    <header className="topbar"><div><p className="eyebrow">CENTRAL DE LEILÕES</p><h1>Leilão Pokémon</h1><p className="muted">Cartas, participantes e disputas em um só lugar.</p></div>{session && <div className="actions"><span className="status-pill">{realtime}</span><button disabled={busy} onClick={downloadBackup}>Baixar backup</button><button disabled={busy} onClick={exportExcel}>Exportar Excel</button><button disabled={busy} onClick={() => void db.auth.signOut()}>Sair</button></div>}</header>
     {error && <p role="alert" className="alert">{error}</p>}{notice && <p role="status" className="notice">{notice}</p>}
     {retry && <button disabled={busy} onClick={() => void execute(retry)}>Reenviar a mesma operação</button>}
     {!ready ? <p>Carregando sessão…</p> : !session ? <form className="panel login form-grid" onSubmit={login}><h2>Acesso administrativo</h2><label>E-mail<input name="email" type="email" autoComplete="username" required /></label><label>Senha<input name="password" type="password" autoComplete="current-password" required /></label><button disabled={busy}>Entrar</button></form> : !data ? <section className="panel"><p>Carregando dados do banco…</p><button onClick={() => void refresh()}>Tentar novamente</button></section> : <>

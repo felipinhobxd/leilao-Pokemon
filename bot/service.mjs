@@ -1,3 +1,4 @@
+import "./file-logger.mjs";
 import "./session-guard.mjs";
 import { spawn } from "node:child_process";
 import { readFile, rm } from "node:fs/promises";
@@ -5,6 +6,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createClient } from "@supabase/supabase-js";
+import { runBusinessBackup } from "./backup.mjs";
 
 const required = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "BOT_ADMIN_USER_ID"];
 for (const key of required) {
@@ -34,6 +36,9 @@ let restartTimer = null;
 let heartbeatTimer = null;
 let commandTimer = null;
 let cleanupTimer = null;
+let backupTimer = null;
+let lastBackupDay = "";
+let backupBusy = false;
 let cleanupBusy = false;
 let lastCleanupAttempt = 0;
 let commandBusy = false;
@@ -415,11 +420,33 @@ async function processPendingLogout() {
   return true;
 }
 
+// Backup diário dos dados de leilão (uma vez por dia, BOT_BACKUP_HOUR padrão
+// 4h30). Falha apenas registra — o seguro de vida não pode derrubar o bot.
+async function dailyBackup() {
+  if (backupBusy || shuttingDown) return;
+  const hour = Number(process.env.BOT_BACKUP_HOUR ?? 4.5);
+  if (!Number.isFinite(hour) || hour < 0) return;
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  if (lastBackupDay === today) return;
+  if (now.getHours() + now.getMinutes() / 60 < hour) return;
+  lastBackupDay = today;
+  backupBusy = true;
+  try {
+    const result = await runBusinessBackup(db, now);
+    console.log(`Backup dos dados gravado: ${result.path} (${(result.bytes / 1024).toFixed(1)} KB, mantendo ${result.kept})`);
+  } catch (error) {
+    lastBackupDay = ""; // retry na próxima janela de 10 min
+    console.error("Backup diário falhou:", error?.message || error);
+  } finally {
+    backupBusy = false;
+  }
+}
+
 // Rotina de exclusão de leilões antigos: p_days no banco (padrão 30). Roda no
 // máximo 1x/hora; falha só registra aviso (a próxima janela tenta de novo) —
 // a limpeza nunca pode derrubar o supervisor do bot.
-async function cleanupOldAuctions() {
-  if (cleanupBusy || shuttingDown) return;
+async function cleanupOldAuctions() {  if (cleanupBusy || shuttingDown) return;
   const now = Date.now();
   if (now - lastCleanupAttempt < 60 * 60_000) return;
   lastCleanupAttempt = now;
@@ -474,6 +501,7 @@ async function shutdown(signal) {
   clearInterval(heartbeatTimer);
   clearInterval(commandTimer);
   clearInterval(cleanupTimer);
+  clearInterval(backupTimer);
   console.log(`Encerrando supervisor (${signal})...`);
   await stopChild();
   runtime.qrPayload = null;
@@ -532,7 +560,14 @@ commandTimer = setInterval(() => void pollBotCommands(), 3_000);
 // velhos que o corte — nunca nada aberto/recente (cleanup_old_auctions).
 cleanupTimer = setInterval(() => void cleanupOldAuctions(), 10 * 60_000);
 cleanupTimer.unref?.();
+// Backup diário dos dados de leilão (bot/backups/backup-YYYYMMDD-HHmm.json):
+// o supervisor roda 24h e é o único processo com disco + service_role — a
+// janela padrão (4h30) fica depois do restart noturno (4h05) para copiar o
+// estado já com a RAM zerada. BOT_BACKUP_HOUR=-1 desativa.
+backupTimer = setInterval(() => void dailyBackup(), 10 * 60_000);
+backupTimer.unref?.();
 console.log(`Supervisor iniciado. Worker: ${WORKER_ID} — versao ${BOT_VERSION}`);
 await startChild();
 void pollBotCommands();
 void cleanupOldAuctions();
+void dailyBackup();

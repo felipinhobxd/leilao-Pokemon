@@ -51,6 +51,7 @@ Ordem de aplicação (confirmada no CI `ci.yml`): `tests/bootstrap.sql` → `sup
 - `resolve_whatsapp_participant(...)` — LID/telefone → participante (merge de identidades; conflito → evento auditado).
 - `read_auction_snapshot()` / `read_dashboard_snapshot()` — export/dashboard; a 20260923093000 adiciona as 3 tabelas novas ao auction snapshot.
 - `purge_all_business_data(p_confirm)` — exclusão total com frase `quero excluir mesmo` (validação tripla UI→API→DB), ordem FK-safe, SECURITY DEFINER, reseta sequences.
+- `export_business_backup()` (20260923120000) — snapshot JSON de TODAS as tabelas de negócio; consumido pelo bot (cópia diária 4h30 em `bot/backups/`) e por `GET /api/admin/backup`.
 - `cleanup_old_auctions(p_days=30)` — limpeza horária de lotes terminais mais velhos que o corte; levanta/restaura `immutable_audit`; avisos globais sobrevivem (FK SET NULL + contexto denormalizado em `participant_warnings`).
 
 ## Triggers

@@ -57,4 +57,4 @@ Duas rotas independentes + fusão + decisão honesta (`IDENTIFICADO | PROVAVEL |
 - Índice e catálogo são LOCAIS: outra máquina precisa rodar `npm run recognition:install`.
 - `es` fora do índice visual: cartas em espanhol caem para OCR/texto.
 - Upload grande: limite 25 MB / 12.000 px (413).
-- **Bug aberto**: `/memory/confirm` às vezes recebe chamada SEM o header Authorization → 401 "Token do reconhecimento local ausente" (ver `11_PENDING_WORK.md` P-01).
+- P-01 CORRIGIDO (2026-09-23): os endpoints de memória/catálogo usavam `verify_service_token` cru → `ServiceAuthError` não é `HTTPException`, o FastAPI devolvia **500 + traceback** para chamadas sem token (bundle antigo da Vercel). Agora usam `require_service_auth` (401/503 limpos).

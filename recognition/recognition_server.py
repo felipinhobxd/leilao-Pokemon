@@ -376,7 +376,11 @@ async def recognize(request: Request, file: UploadFile = File(...)):
 
 @app.get("/catalog/exists")
 def catalog_exists(request: Request, language: str, set: str, number: str):
-    verify_service_token(request)
+    # require_service_auth converts ServiceAuthError into a clean HTTP 401/503 -
+    # the raw verify_service_token call made FastAPI return 500 + full ASGI
+    # traceback in the console for every unauthenticated probe (noise reported
+    # by the operator 2026-09-22).
+    require_service_auth(request)
     """Fase 4.3 — ghost-lot guard for the auction wizard: does this
     (language, set, collector number) exist in the local recognition
     catalog? Lightweight BY DESIGN: queries the SQLite catalog directly —
@@ -432,7 +436,7 @@ def scan(language: str, card_id: str):
 
 @app.post("/memory/confirm")
 async def memory_confirm(request: Request, file: UploadFile = File(...), card: str = Form(...)):
-    verify_service_token(request)
+    require_service_auth(request)
     """Store a USER-CONFIRMED example (ground truth). Never called automatically.
 
     Hardened like /recognize: upload size limit (413), real image validation
@@ -481,13 +485,13 @@ async def memory_confirm(request: Request, file: UploadFile = File(...), card: s
 
 @app.get("/memory")
 def memory_list(request: Request):
-    verify_service_token(request)
+    require_service_auth(request)
     return {"examples": [e.to_dict() for e in memory_module.load_examples()]}
 
 
 @app.delete("/memory/{example_id}")
 def memory_delete(request: Request, example_id: str):
-    verify_service_token(request)
+    require_service_auth(request)
     """Remove an example consistently from memory.json, memory-embeddings.npz
     AND memory-images/ under the same write lock used by confirm (atomic
     saves; concurrent confirm/delete pairs can never leave a half-removed or
@@ -501,7 +505,7 @@ def memory_delete(request: Request, example_id: str):
 
 @app.post("/reload-index")
 def reload_index(request: Request):
-    verify_service_token(request)
+    require_service_auth(request)
     global _state
     with _lock:
         _state["recognizer"] = None

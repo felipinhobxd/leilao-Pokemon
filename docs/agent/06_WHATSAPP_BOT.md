@@ -38,6 +38,8 @@
   - novo voto → `BID_PLACED`; troca → `BID_CHANGED` (eventId `wa-vote:{poll}:{participant}:{ts}:{amount}`); remoção → `BID_WITHDRAWN` (`wa-withdraw:...`); ARREMATE → `BUYOUT_CONFIRMED` (mensagem "ARREMATADO!" no grupo com nome da carta/vencedor/valor).
   - Erros esperados (`auction_not_open`, `deadline_expired`, `stale_event`, `participant_not_eligible`, `bid_increment_required`) → evento de auditoria (`auditLateVote`), sem crash.
 - Tie-break no banco usa `whatsapp_event_at` (horário real do voto), não a hora do processamento.
+- **Fechamento por tempo ANUNCIA no grupo** (`finalizeDueAuctions`): mensagem de vencedor com nota de empate ("venceu quem deu o lance primeiro") e aviso de encerrado sem lances — CONFIRMADO 2026-09-23.
+- **Supervisor mantém** (2026-09-23): backup diário 4h30 (`bot/backup.mjs` → `bot/backups/`), limpeza 30d, restart noturno e tee de log em `bot/logs/bot-YYYY-MM-DD.log` (`bot/file-logger.mjs`, retenção 14 dias).
 
 ## Avisos globais (warning-notify.mjs — commit 6b9e8a6e)
 

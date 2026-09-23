@@ -24,6 +24,9 @@ Ordem de aplicação (confirmada no CI `ci.yml`): `tests/bootstrap.sql` → `sup
 | `value_change_log` | histórico de alterações de valor (migration 20260923093000) | `auction_id, participant_id, previous_amount, new_amount, difference, external_event_id UNIQUE, occurred_at` | export, avisos |
 | `participant_warnings` | contador GLOBAL de avisos por usuário (idem) | `participant_id, auction_id (ON DELETE SET NULL), card_name, lot_number, previous_amount, new_amount, external_event_id UNIQUE, occurred_at` | bot (DM), export |
 | `admin_notifications` | DM pendente aos admins (idem) | `participant_id, kind, payload jsonb, external_event_id UNIQUE, sent_at` | bot drena |
+| `whatsapp_quick_polls` | brindes: enquete livre agendada (20260924120000) | `group_id FK, title, options jsonb, scheduled_at, sent_at, poll_message_id UNIQUE, external_event_id UNIQUE, created_by` | bot publica (P-07) |
+| `payment_reminders` | ciclo de lembretes de pagamento (idem) | `purchase_id UNIQUE FK CASCADE, participant_id, reminded_count, last_reminded_at` | bot drena (P-09) |
+| `cards.extra_images` | coluna jsonb: até 4 URLs HTTPS de fotos de detalhe (idem) | `default '[]'` | wizard + bot envia em sequência (P-08) |
 | `auction_events` | auditoria append-only | `auction_id, participant_id, admin_user_id, event_type, external_event_id, payload` | export/auditoria |
 | `processed_commands` | cache de idempotência | `external_event_id, request, result` | TODOS os eventos |
 
@@ -52,6 +55,7 @@ Ordem de aplicação (confirmada no CI `ci.yml`): `tests/bootstrap.sql` → `sup
 - `read_auction_snapshot()` / `read_dashboard_snapshot()` — export/dashboard; a 20260923093000 adiciona as 3 tabelas novas ao auction snapshot.
 - `purge_all_business_data(p_confirm)` — exclusão total com frase `quero excluir mesmo` (validação tripla UI→API→DB), ordem FK-safe, SECURITY DEFINER, reseta sequences.
 - `export_business_backup()` (20260923120000) — snapshot JSON de TODAS as tabelas de negócio; consumido pelo bot (cópia diária 4h30 em `bot/backups/`) e por `GET /api/admin/backup`.
+- `mark_purchase_paid(p_purchase_id, p_admin_user_id, p_method, p_reference)` (20260924120000) — baixa de pagamento idempotente por estado: payments → `paid`, delivery → `ready`, audita UMA vez; para os lembretes DM do bot.
 - `cleanup_old_auctions(p_days=30)` — limpeza horária de lotes terminais mais velhos que o corte; levanta/restaura `immutable_audit`; avisos globais sobrevivem (FK SET NULL + contexto denormalizado em `participant_warnings`).
 
 ## Triggers

@@ -46,6 +46,11 @@ export async function POST(request: Request) {
       if (!(cardConditions as readonly string[]).includes(condition)) throw new HttpError(400, `${label}: condição inválida.`);
       if (!cardLanguages.some(item => item.value === language)) throw new HttpError(400, `${label}: idioma inválido.`);
       if (imageUrl && !/^https:\/\//i.test(imageUrl)) throw new HttpError(400, `${label}: imagem inválida.`);
+      // P-08: fotos de detalhe (até 4, HTTPS) — validação espelha o RPC.
+      const rawExtras: unknown[] = Array.isArray(card.extra_images) ? card.extra_images : [];
+      const extraImages: string[] = rawExtras.map(value => String(value ?? "").trim()).filter(Boolean);
+      if (extraImages.length > 4) throw new HttpError(400, `${label}: máximo de 4 fotos de detalhe.`);
+      if (extraImages.some(url => !/^https:\/\//i.test(url) || url.length > 500)) throw new HttpError(400, `${label}: fotos de detalhe inválidas.`);
 
       const startingPrice = Number(auction.starting_price);
       const increment = Number(auction.bid_increment);
@@ -105,6 +110,7 @@ export async function POST(request: Request) {
           condition,
           language,
           image_url: imageUrl || null,
+          extra_images: extraImages,
         },
         auction: {
           lot_number: lotNumber,

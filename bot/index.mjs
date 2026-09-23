@@ -14,6 +14,8 @@ import { phoneFromWhatsAppJid, syncGroupParticipants } from "./group-participant
 import { isLidJid, isPhoneJid, normalizeUserJid } from "./poll-identities.mjs";
 import { decryptIncomingPollVote } from "./poll-votes.mjs";
 import { createAdminNotificationDrain, parseAdminJids } from "./warning-notify.mjs";
+import { resolveParticipantJid, mentionMessage } from "./participant-contact.mjs";
+import { createPaymentReminderDrain } from "./payment-reminder.mjs";
 import { queueEnabled, startQueueWorker } from "./queue-worker.mjs";
 
 const required = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "BOT_ADMIN_USER_ID"];
@@ -51,6 +53,14 @@ const adminNotificationDrain = createAdminNotificationDrain({
     const jids = parseAdminJids();
     return jids.length ? jids : undefined;
   })(),
+});
+// Lembretes de pagamento: DM a cada 7 dias (BOT_PAYMENT_REMINDER_DAYS) para
+// arrematantes sem baixa de pagamento; sem aviso/punição; para quando o
+// painel marca "Pagamento recebido".
+const paymentReminderDrain = createPaymentReminderDrain({
+  db,
+  getSocket: () => (socketReady ? sock : null),
+  resolveJid: participantId => resolveParticipantJid(db, participantId),
 });
 const contactNames = new Map();
 const pollMessageCache = new Map();
@@ -420,6 +430,17 @@ async function sendDispatchInternal(claimedDispatch) {
       ? await sock.sendMessage(group.group_jid, { image: { url: card.image_url }, caption }, { messageId: dispatch.announcement_message_id })
       : await sock.sendMessage(group.group_jid, { text: caption }, { messageId: dispatch.announcement_message_id });
     if (!announcement?.key?.id) throw new Error("announcement_send_failed");
+    // P-08: fotos de detalhe (até 4) em sequência logo após a principal,
+    // ANTES de persistir announcement_sent_at — um crash no meio reenvia
+    // anúncio+extras com os MESMOS messageIds estáveis (WhatsApp deduplica).
+    // Álbuns nativos são instáveis no Baileys; sequência é 100% confiável.
+    const extraImages = Array.isArray(card.extra_images)
+      ? card.extra_images.filter(url => typeof url === "string" && /^https:\/\//.test(url)).slice(0, 4)
+      : [];
+    for (let index = 0; index < extraImages.length; index++) {
+      const extra = await sock.sendMessage(group.group_jid, { image: { url: extraImages[index] } }, { messageId: dispatchMessageId(dispatch.id, `extra-${index + 1}`) });
+      if (!extra?.key?.id) throw new Error("extra_image_send_failed");
+    }
     const sentAt = new Date().toISOString();
     const remoteMessageId = String(announcement.key.id);
     const { error } = await db.from("whatsapp_dispatches").update({
@@ -665,9 +686,13 @@ async function handlePollVote(dispatch, pollUpdate, originalMessageOverride) {
     await saveVoteState(previous, { auction_id: dispatch.auction_id, voter_jid: voterJid, participant_id: participant.id, option_label: selected.label, amount, is_buyout: isBuyout, active: true, last_event_id: eventId, last_event_at: occurredAt });
     const contact = participant.phone_e164 ? ` (${participant.phone_e164})` : "";
     if (isBuyout) {
-      console.log(`🔥 ARREMATE: ${participant.display_name}${contact} → ${brl(result?.auction?.final_price ?? amount)}`);
+      console.log(`🏆 ARREMATE: ${participant.display_name}${contact} → ${brl(result?.auction?.final_price ?? amount)}`);
       const { group, card } = await fetchAuctionContext(dispatch);
-      await sock.sendMessage(group.group_jid, { text: `🏆 *ARREMATADO!*\n\n🃏 ${card.name}\n👤 ${participant.display_name}\n💰 ${brl(result?.auction?.final_price ?? amount)}` });
+      // P-06: @menção real ao arrematante (JID de telefone); sem JID resolvido
+      // a mensagem sai com o nome em texto plano — nunca deixa de ser enviada.
+      const winnerJid = await resolveParticipantJid(db, participant.id);
+      const winnerMention = mentionMessage(participant.display_name, participant.id, winnerJid, who => who);
+      await sock.sendMessage(group.group_jid, { text: `🏆 *ARREMATADO!*\n\n🃏 ${card.name}\n👤 ${winnerMention.text}\n💰 ${brl(result?.auction?.final_price ?? amount)}`, mentions: winnerMention.mentions });
     } else if (previous?.active) {
       console.log(`🔄 Voto alterado: ${participant.display_name}${contact} → ${brl(previous.amount)} → ${brl(amount)}`);
       await logCurrentLeader(dispatch.auction_id);
@@ -775,6 +800,49 @@ async function handleIncomingMessages(messages) {
   }
 }
 
+// P-07 — Brindes: publica enquetes rápidas criadas no painel (título e
+// opções livres com emoji, "quem clicar primeiro leva"). Tabela própria
+// (whatsapp_quick_polls) — dispatches exige auction_id. Idempotência:
+// sent_at só depois do envio confirmado; messageId estável por brinde.
+let quickPollsBusy = false;
+async function sendDueQuickPolls() {
+  if (!sock || quickPollsBusy) return;
+  quickPollsBusy = true;
+  try {
+    const nowIso = new Date().toISOString();
+    const { data: pending, error } = await db.from("whatsapp_quick_polls")
+      .select("id,group_id,title,options,scheduled_at")
+      .is("sent_at", null)
+      .lte("scheduled_at", nowIso)
+      .order("scheduled_at", { ascending: true })
+      .limit(2);
+    if (error) throw new Error(error.message);
+    for (const poll of pending ?? []) {
+      const { data: group } = await db.from("whatsapp_groups").select("group_jid,active").eq("id", poll.group_id).maybeSingle();
+      const values = Array.isArray(poll.options) ? poll.options.map(value => String(value)).filter(Boolean).slice(0, 12) : [];
+      if (!group?.active || values.length < 2) {
+        // Grupo desativado ou opções inválidas: marca como enviado para não
+        // travar a fila para sempre (decisão visível no banco).
+        await db.from("whatsapp_quick_polls").update({ sent_at: new Date().toISOString() }).eq("id", poll.id);
+        console.warn(`🎁 Brinde ${poll.id} marcado sem envio (grupo inativo ou opções inválidas).`);
+        continue;
+      }
+      const message = await sock.sendMessage(group.group_jid, {
+        poll: { name: String(poll.title), values, selectableCount: 1, messageSecret: dispatchPollSecret(`quick-${poll.id}`) },
+      }, { messageId: dispatchMessageId(poll.id, "quick-poll") });
+      if (!message?.key?.id) throw new Error("quick_poll_send_failed");
+      await db.from("whatsapp_quick_polls")
+        .update({ sent_at: new Date().toISOString(), poll_message_id: String(message.key.id) })
+        .eq("id", poll.id);
+      console.log(`🎁 Brinde publicado: "${poll.title}" (${values.length} opções).`);
+    }
+  } catch (error) {
+    console.error("Brinde: falha ao publicar:", error?.message || error);
+  } finally {
+    quickPollsBusy = false;
+  }
+}
+
 async function finalizeDueAuctions() {
   if (!sock || finalizeBusy) return;
   finalizeBusy = true;
@@ -802,7 +870,10 @@ async function finalizeDueAuctions() {
             ? "\n⚖️ Empate no valor: venceu quem deu o lance primeiro."
             : "";
           console.log(`⏰ Leilão encerrado: ${winner?.display_name ?? "Participante"} venceu por ${brl(finalAuction.final_price)}${(tiedAtPrice ?? 0) > 1 ? " (empate: lance mais antigo)" : ""}`);
-          await sock.sendMessage(auction.whatsapp_group_id, { text: `🏁 *Leilão encerrado!*\n\n🃏 ${card?.name ?? "Carta"}\n👤 Vencedor: ${winner?.display_name ?? "Participante"}\n💰 ${brl(finalAuction.final_price)}${tieNote}` });
+          // P-06: @menção real ao vencedor (mesma resolução do ARREMATADO).
+          const winnerJid = await resolveParticipantJid(db, finalAuction.winner_participant_id);
+          const winnerMention = mentionMessage(winner?.display_name ?? "Participante", finalAuction.winner_participant_id, winnerJid, who => who);
+          await sock.sendMessage(auction.whatsapp_group_id, { text: `🏁 *Leilão encerrado!*\n\n🃏 ${card?.name ?? "Carta"}\n👤 Vencedor: ${winnerMention.text}\n💰 ${brl(finalAuction.final_price)}${tieNote}`, mentions: winnerMention.mentions });
         } else {
           console.log("⏰ Leilão encerrado: sem comprador");
           await sock.sendMessage(auction.whatsapp_group_id, { text: `🏁 Leilão de *${card?.name ?? "carta"}* encerrado sem lances válidos.` });
@@ -858,7 +929,7 @@ async function connect() {
       console.log(`\n✅ WhatsApp conectado. Worker: ${WORKER_ID}`);
       console.log("Aguardando agendamentos e votos...\n");
       clearInterval(schedulerTimer);
-      schedulerTimer = setInterval(() => { void runScheduler(); void finalizeDueAuctions(); void adminNotificationDrain.tick(); }, 3000);
+      schedulerTimer = setInterval(() => { void runScheduler(); void finalizeDueAuctions(); void adminNotificationDrain.tick(); void sendDueQuickPolls(); void paymentReminderDrain.tick(); }, 3000);
       void syncOpenAuctionGroups().catch(error => console.warn("Falha ao sincronizar grupos abertos:", error?.message || error));
       void runScheduler();
       void finalizeDueAuctions();

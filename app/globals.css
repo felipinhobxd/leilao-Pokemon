@@ -190,3 +190,10 @@ dialog::backdrop{background:#000b}
   .panel-title select{max-width:100%}
   td .actions{min-width:160px}
 }
+
+/* P-07: formulário de brinde rápido (Central WhatsApp). */
+.giveaway-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:10px}
+.giveaway-form .wide{grid-column:1/-1}
+.giveaway-form textarea{width:100%;padding:9px 12px;border:1px solid #d9dee7;border-radius:8px;font:inherit;resize:vertical}
+.giveaway-form button{align-self:end}
+@media(max-width:720px){.giveaway-form{grid-template-columns:1fr}}

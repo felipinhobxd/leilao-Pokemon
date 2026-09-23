@@ -40,6 +40,10 @@
 - Tie-break no banco usa `whatsapp_event_at` (horário real do voto), não a hora do processamento.
 - **Fechamento por tempo ANUNCIA no grupo** (`finalizeDueAuctions`): mensagem de vencedor com nota de empate ("venceu quem deu o lance primeiro") e aviso de encerrado sem lances — CONFIRMADO 2026-09-23.
 - **Supervisor mantém** (2026-09-23): backup diário 4h30 (`bot/backup.mjs` → `bot/backups/`), limpeza 30d, restart noturno e tee de log em `bot/logs/bot-YYYY-MM-DD.log` (`bot/file-logger.mjs`, retenção 14 dias).
+- **P-06 (2026-09-24)**: ARREMATADO e Leilão encerrado fazem **@menção real** ao vencedor — JID de telefone resolvido por `bot/participant-contact.mjs` (pn > lid > fallback); sem JID, mensagem sai com nome plano.
+- **P-07 (2026-09-24)**: `sendDueQuickPolls()` no ciclo de 3s publica brindes agendados pelo painel (`whatsapp_quick_polls`); idempotente por `sent_at` + messageId estável; grupo inativo/opções ruins → marcado sem envio.
+- **P-08 (2026-09-24)**: fotos de detalhe (`cards.extra_images`, até 4) saem em sequência após a foto principal, ANTES de persistir `announcement_sent_at` (crash → reenvio com os MESMOS messageIds estáveis `extra-1..4`).
+- **P-09 (2026-09-24)**: `bot/payment-reminder.mjs` — DM ao arrematante a cada 7 dias (`BOT_PAYMENT_REMINDER_DAYS`) enquanto a entrega estiver `waiting_payment` sem payment `paid`; sem aviso/punição; máx. 5 por padrão (`BOT_PAYMENT_REMINDER_MAX`, 0 = ilimitado); idempotente por `payment_reminders.purchase_id` UNIQUE.
 
 ## Avisos globais (warning-notify.mjs — commit 6b9e8a6e)
 

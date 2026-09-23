@@ -74,44 +74,40 @@ Próximo passo: pedir a figurinha ao operador e definir o momento do disparo.
 ID: P-06
 Título: @mencionar o arrematante no fechamento do lote (em vez de só texto)
 Prioridade: Média
-Status: Não iniciado
+Status: CONCLUÍDO 2026-09-24 — `bot/participant-contact.mjs` (resolveParticipantJid: pn > lid > whatsapp_id/phone_e164; mentionMessage) aplicado no ARREMATADO e no "Leilão encerrado". Sem JID pn resolvível, a mensagem sai com nome plano (nunca deixa de enviar).
 Arquivos relacionados: bot/index.mjs (BUYOUT_CONFIRMED / AUCTION_FINALIZE announcements), participant_identities (JID do vencedor)
 Descrição: mensagem de fechamento com mentionedJid real do vencedor.
-O que falta: garantir JID resolvível (LID vs telefone) no momento do anúncio; texto/formato.
-Próximo passo: implementar no handler de ARREMATADO/finalização usando o JID já resolvido do participante.
+O que falta: nada — validado por `node --check` + suíte do bot.
 ```
 
 ```text
 ID: P-07
 Título: Enquete rápida de brindes (texto livre/emojis, "quem clicar primeiro leva")
 Prioridade: Média
-Status: Não iniciado
-Arquivos relacionados: novo tipo de item na fila (app/api/auctions/batch + wizard) OU comando de bot direto; bot/format.mjs
+Status: CONCLUÍDO 2026-09-24 — decisão do operador: SÓ painel, SÓ publicar (votos visíveis na própria enquete do WhatsApp; sem rastrear vencedor). Tabela `whatsapp_quick_polls` + `POST /api/quick-polls` (valida título 1-200, 2-12 opções ≤100 chars, grupo ativo, idempotente por external_event_id) + dreno `sendDueQuickPolls()` no ciclo de 3s do bot (messageId estável, sent_at só após envio) + formulário "Enquete rápida de brinde" na Central WhatsApp.
+Arquivos relacionados: app/api/quick-polls/route.ts, bot/index.mjs::sendDueQuickPolls, app/whatsapp/page.tsx
 Descrição: enquete com título/opções livres, sem carta/lance; publicada no grupo.
-O que falta: decidir se vive na mesma fila de publicação (novo payload kind) ou em fluxo próprio.
-Próximo passo: propor modelo de payload ao operador antes de implementar.
+O que falta: nada.
 ```
 
 ```text
 ID: P-08
 Título: Múltiplas fotos por lote (detalhes/estado/avarias)
 Prioridade: Média (maior esforço da lista)
-Status: Não iniciado
-Arquivos relacionados: cards/auctions schema (imagens extras), bulk-wizard (multi-upload por carta), card-image.ts, bot (álbum antes da enquete), export?
-Descrição: mais de uma foto por carta; o bot publica como álbum/sequência antes da enquete.
-O que falta: schema (imagens extras por carta), wizard multi-arquivo por Draft, publicação em álbum no Baileys.
-Próximo passo: desenhar o schema (coluna jsonb de urls) e validar álbum no Baileys antes de mexer no wizard.
+Status: CONCLUÍDO 2026-09-24 — `cards.extra_images jsonb` (≤4 URLs HTTPS) via migration 20260924120000; validação nos DOIS RPCs (create_auction_wizard + create_auction_publish_queue) e nas duas rotas; wizard em lote + wizard único com upload incremental (`${cardId}#e${n}`) e thumbnails removíveis; bot publica em SEQUÊNCIA após a foto principal (álbum nativo é instável no Baileys — decisão técnica), com messageIds estáveis `extra-1..4` ANTES de persistir announcement_sent_at (crash → reenvio deduplicado); delay de 5s da enquete conta após a última.
+Arquivos relacionados: supabase/migrations/20260924120000, app/auctions/new/{bulk-wizard,wizard}.tsx, app/api/auctions/{new,batch}/route.ts, bot/index.mjs::sendDispatchInternal
+Descrição: mais de uma foto por carta; o bot publica como sequência antes da enquete.
+O que falta: nada.
 ```
 
 ```text
 ID: P-09
 Título: Cobrança automática pós-leilão (lembrete de pagamento após prazo)
-Prioridade: Baixa (explícitamente "pro futuro" pelo operador; depende de número dedicado)
-Status: Adiado
-Arquivos relacionados: purchases/payments (prazos), bot (mensagens 1:1), participants
+Prioridade: Baixa
+Status: CONCLUÍDO 2026-09-24 — decisão do operador: DM a cada 7 dias, SEM aviso/punição, até marcar pago. `payment_reminders` (purchase_id UNIQUE, cascade) + `mark_purchase_paid` RPC (idempotente por estado, audita 1×, delivery → ready) + `bot/payment-reminder.mjs` (dreno com in-flight/throttle 1h; pula quem já tem payment paid; limite máx `BOT_PAYMENT_REMINDER_MAX`=5, 0=ilimitado) + botão "✓ Recebido" na tabela Compras do dashboard (`POST /api/purchases/paid`) + snapshot do dashboard agora traz payments/payment_reminders reais (era '[]' hardcoded).
+Arquivos relacionados: bot/payment-reminder.mjs, app/api/purchases/paid/route.ts, app/dashboard.tsx, supabase/migrations/20260924120000
 Descrição: lembrete automático a arrematantes sem baixa de pagamento em N dias.
-O que falta: número dedicado, política de prazo, opt-in dos usuários (evitar spam).
-Próximo passo: não iniciar sem decisão do operador.
+O que falta: aplicação da migration em produção (P-02 consolidado) e smoke ao vivo (arrematar, esperar/forçar cutoff, conferir DM e o botão de baixa).
 ```
 
 ## Dívidas técnicas / testes faltantes

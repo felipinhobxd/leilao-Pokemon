@@ -126,6 +126,13 @@ export async function POST(request: Request) {
       console.warn(`[auctions/new] catálogo de reconhecimento não consultável (${catalogCheck.unreachable ?? "motivo desconhecido"}); lote criado sem validação de catálogo.`);
     }
 
+    // P-08: fotos de detalhe (até 4, HTTPS). Validação espelha o RPC — o
+    // wizard em lote/único manda card.extra_images.
+    const rawExtras: unknown[] = Array.isArray(card.extra_images) ? card.extra_images : [];
+    const extraImages: string[] = rawExtras.map(value => String(value ?? "").trim()).filter(Boolean);
+    if (extraImages.length > 4) throw new HttpError(400, "Máximo de 4 fotos de detalhe.");
+    if (extraImages.some(url => !/^https:\/\//i.test(url) || url.length > 500)) throw new HttpError(400, "Fotos de detalhe inválidas.");
+
     const payload = {
       eventId,
       card: {
@@ -136,6 +143,7 @@ export async function POST(request: Request) {
         condition,
         language,
         image_url: imageUrl || null,
+        extra_images: extraImages,
       },
       auction: {
         lot_number: lotNumber,

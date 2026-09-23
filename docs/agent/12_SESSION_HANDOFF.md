@@ -51,13 +51,12 @@ Implementar os 4 itens aprovados pelo operador: @menção do arrematante, enquet
 - payment-reminder 6/6 ✓; demais a validar no CI/antes do commit.
 
 ## Ponto EXATO onde paramos
-Código + testes + docs completos. Falta: rodar a validação local completa (npm test, bot tests, typecheck, build), commit, push e conferir o CI (a suíte `tests/quick-polls-reminders.sql` roda pela primeira vez — se falhar, ler o erro do psql; suspeitos prováveis: ordem de colunas/CTEs e o `begin...exception` do duplicado).
+P-06..P-09 COMPLETOS, commitados e **CI VERDE** (f1df6598, 2026-09-24). A rodada exigiu 5 correções pós-CI (todas documentadas em 03_DATABASE.md → PERIGOS): order-by em coluna não projetada; argumento avaliado antes do helper rejects; ambiguidade da coluna alvo do INSERT; `IS NOT NULL` em record composto (o bug real do mark_purchase_paid — FOUND é o teste correto); claim transacional no RLS test.
 
 ## Próximo passo EXATO
-1. Rodar local: `npm test`, `node --test bot/*.test.mjs`, `npm run typecheck`, `npm run build`.
-2. Commit + push; acompanhar CI (API: `actions/runs`).
-3. Se verde: lembrar o operador que as migrations `20260923093000` (avisos), `20260923120000` (backup) E `20260924120000` (esta) precisam ser aplicadas no SQL Editor, nesta ordem.
-4. Smoke ao vivo sugerido: (a) arrematar um lote → conferir @menção; (b) criar brinde no painel → enquete no grupo; (c) lote com 2+ fotos de detalhe; (d) arrematar, NÃO marcar pagamento, setar `BOT_PAYMENT_REMINDER_DAYS` baixo (ex.: 0.001) temporariamente no `bot/.env` para ver a DM chegar, depois marcar "✓ Recebido" e confirmar que para.
+1. Operador aplicar as migrations no SQL Editor NESTA ORDEM: `20260923093000` (avisos) → `20260923120000` (backup) → `20260924120000` (brindes/extras/lembretes).
+2. `npm run start` e smoke ao vivo: (a) arrematar → @menção no grupo; (b) brinde no painel → enquete no grupo; (c) lote com 2+ fotos; (d) arrematar sem marcar pagamento e conferir a DM de lembrete (para testar rápido: `BOT_PAYMENT_REMINDER_DAYS` baixo no `bot/.env`, ex. 0.01), depois "✓ Recebido" no dashboard e confirmar que para.
+3. Backlog restante: P-02 (aplicar), P-03 (índice es), P-04 (quantizado), P-05 (figurinha — bloqueado no operador), P-11 (env Vercel), P-12 (truth-key ptcg).
 
 ## Arquivo recomendado para continuar
 `docs/agent/11_PENDING_WORK.md` — restam apenas: P-02 (aplicar migrations), P-03 (índice es), P-04 (modelo quantizado), P-05 (figurinha do início — bloqueado no operador), P-10 (suíte SQL de avisos — já escrita em 2026-09-23, CONFIRMAR status), P-11 (env Vercel), P-12 (truth-key ptcg).

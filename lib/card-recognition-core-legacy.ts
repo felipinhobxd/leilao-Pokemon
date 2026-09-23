@@ -1,4 +1,4 @@
-export type RecognitionLanguage = "pt-BR" | "en" | "es" | "ja";
+export type RecognitionLanguage = "pt-BR" | "en" | "es" | "ja" | "other";
 export type RecognitionLevel = "high" | "medium" | "low";
 export type RecognizableField = "name" | "collection" | "cardNumber" | "language" | "variant";
 
@@ -91,7 +91,7 @@ const stopNameLines = [
   "etapa", "entrenador", "energía", "estágio", "estagio",
 ];
 
-const languageWords: Record<Exclude<RecognitionLanguage, "ja">, Array<[string, number]>> = {
+const languageWords: Record<Exclude<RecognitionLanguage, "ja" | "other">, Array<[string, number]>> = {
   "pt-BR": [
     ["fraqueza", 6], ["recuo", 6], ["baralho", 6], ["procure", 5], ["jogue", 4],
     ["resistência", 3], ["básico", 2], ["altura", 2], ["peso", 2], ["seu", 3], ["sua", 3],
@@ -290,7 +290,7 @@ export function detectRecognitionLanguage(text: string): { language: Recognition
   }
 
   const normalized = ` ${normalizeForCompare(raw)} `;
-  const scores = (Object.entries(languageWords) as Array<[Exclude<RecognitionLanguage, "ja">, Array<[string, number]>]>).map(([language, words]) => {
+  const scores = (Object.entries(languageWords) as Array<[Exclude<RecognitionLanguage, "ja" | "other">, Array<[string, number]>]>).map(([language, words]) => {
     let score = 0;
     let hits = 0;
     for (const [word, weight] of words) {

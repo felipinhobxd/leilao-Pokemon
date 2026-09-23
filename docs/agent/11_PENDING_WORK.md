@@ -35,14 +35,15 @@ Próximo passo: confirmar com o operador se já aplicou; se sim, rodar o smoke d
 
 ```text
 ID: P-03
-Título: Completar índice visual do idioma es (13.271 cartas com scan fora do índice)
-Prioridade: Média
-Status: Adiado pelo operador (pedido explícito: "não precisa fazer o index")
-Arquivos relacionados: scripts/recognition-shared.mjs (comando recognition:index, CPU-forçado), recognition/scripts/build_index.py
-Descrição: builds de índice de 18/09 morreram 3× com NaN do DirectML; pt-BR/en/ja estão 100% no índice (37.917 linhas); es ficou de fora. Fotos do operador são pt-BR (não afeta o uso atual).
-O que já foi investigado: causa raiz (DML NaN) mitigada com RECOGNITION_PROVIDERS=cpu no build.
-O que falta: rodar `npm run recognition:index` (~2–3 h CPU) quando o operador quiser es.
-Próximo passo: perguntar ao operador; se autorizar, rodar em background e validar `/health` indexSize ≈ 51k.
+Título: Índice visual do idioma es
+Prioridade: —
+Status: CANCELADO pelo operador (2026-09-24: "espanhol não quero no código/bot"). O índice permanece com 0 linhas es (confirmado ao vivo: npz tem 0 chaves es). Análise de segurança feita na mesma data:
+  - fotos es caem para a rota de TEXTO (catálogo mantém 15.510 cartas es — identificação honesta via OCR, custo zero) ou em REVISAR com languageStatus=conflict — sem crash em nenhum caminho;
+  - detect_language mantém es (empates pt/es resolvem para pt-BR via max() de tuplas);
+  - "Espanhol" foi REMOVIDO do dropdown de idiomas (cardLanguages) → a API rejeita lotes es novos (400 idioma inválido); dados legados com es renderizam normalmente;
+  - BUG ENCONTRADO E CORRIGIDO na análise: candidatos es do reconhecimento deixavam o select do wizard em branco e o lote era rejeitado NA PUBLICAÇÃO — agora mapLanguage mapeia es→"other" e o wizard guarda wizardLanguage() nos dois pontos de aplicação (useCandidate + merge de preenchimento automático). Suíte 155/155 verde.
+Arquivos relacionados: lib/auction-wizard.ts, lib/card-recognition-service-contract.ts, lib/card-recognition-core-legacy.ts (tipo + Record), app/auctions/new/bulk-wizard.tsx
+Próximo passo: nenhum — decisão final do operador.
 ```
 
 ```text

@@ -12,11 +12,13 @@ export const cardConditions = [
   "DMG — Danificada",
 ] as const;
 
+// Idiomas de operação do leilão (decisão do operador 2026-09-24: espanhol
+// NÃO faz parte — sem ele no dropdown a API rejeita lotes es novos; dados
+// legados com es continuam renderizando via mapLanguage/languageFlag).
 export const cardLanguages = [
   { value: "pt-BR", label: "Português 🇧🇷", flag: "🇧🇷" },
   { value: "en", label: "Inglês 🇺🇸", flag: "🇺🇸" },
   { value: "ja", label: "Japonês 🇯🇵", flag: "🇯🇵" },
-  { value: "es", label: "Espanhol 🇪🇸", flag: "🇪🇸" },
   { value: "other", label: "Outro 🌐", flag: "🌐" },
 ] as const;
 

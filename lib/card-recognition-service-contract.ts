@@ -91,7 +91,13 @@ export function parseDenominatorFromCardNumber(cardNumber: string | null | undef
 }
 
 export function mapLanguage(value: string | undefined): RecognitionLanguage {
-  if (value === "pt-BR" || value === "en" || value === "es" || value === "ja") return value;
+  if (value === "pt-BR" || value === "en" || value === "ja") return value;
+  // Espanhol saiu dos idiomas de operação (decisão do operador 2026-09-24):
+  // candidatos es do catálogo de texto viram "Outro" em vez de quebrar o
+  // dropdown (sem a opção, o select ficava em branco e a API rejeitava o
+  // lote com "idioma inválido" na hora de publicar). Demais valores
+  // desconhecidos seguem o padrão histórico pt-BR.
+  if (value === "es") return "other";
   return "pt-BR";
 }
 

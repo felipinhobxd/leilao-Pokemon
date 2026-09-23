@@ -34,6 +34,10 @@ type QueueView = {
 };
 
 const variants = ["Normal", "Holo", "Reverse Holo", "Full Art", "Illustration Rare", "Secret Rare", "Promo"];
+// Idioma aceito pelo dropdown do wizard (cardLanguages é a fonte da API):
+// qualquer outro valor (ex.: "es" do catálogo de texto) vira "Outro".
+const wizardLanguage = (value: string | undefined) =>
+  cardLanguages.some(item => item.value === value) ? (value as Draft["language"]) : "other";
 const recognizableFields = new Set<RecognizableField>(["name", "collection", "cardNumber", "language", "variant"]);
 const money = (value: number | null) => value == null || !Number.isFinite(value) ? "—" : new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
 const defaultSchedule = () => toBrasiliaInput(new Date(Date.now() + 5 * 60_000));
@@ -237,6 +241,8 @@ export default function BulkAuctionWizard() {
       setCards(current => current.map(card => {
         if (card.id !== id) return card;
         const recognized = mergeRecognitionFields(card as unknown as Record<string, unknown>, card.manualFields, result, force) as Partial<Draft>;
+        // Preenchimento automático respeita os idiomas do dropdown (es → Outro).
+        if (recognized.language) recognized.language = wizardLanguage(recognized.language);
         const recognitionStage: RecognitionStage = result.level === "high" ? "identified" : result.level === "medium" ? "review" : "not-found";
         return {
           ...card,
@@ -264,7 +270,10 @@ export default function BulkAuctionWizard() {
       name: candidate.name,
       collection: candidate.collection,
       cardNumber: candidate.cardNumber,
-      language: candidate.language,
+      // Espanhol saiu dos idiomas de operação: candidato es (catálogo de
+      // texto/browser ainda o devolve) vira "Outro" — sem isso o select fica
+      // em branco e a API rejeita o lote na publicação.
+      language: wizardLanguage(candidate.language),
       variant: candidate.variant ?? card.variant,
       manualFields: { ...card.manualFields, name: true, collection: true, cardNumber: true, language: true, ...(candidate.variant ? { variant: true } : {}) },
       recognitionStage: "identified",

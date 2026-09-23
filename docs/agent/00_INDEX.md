@@ -2,7 +2,7 @@
 
 > Área: Mapa geral da documentação de agente
 > Escopo: Navegação e recuperação de contexto entre sessões
-> Última atualização: 2026-09-23
+> Última atualização: 2026-09-24
 > Fonte principal: Análise completa do código (commits até `6b9e8a6e`)
 
 ## Objetivo

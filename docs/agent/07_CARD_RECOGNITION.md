@@ -51,6 +51,12 @@ Duas rotas independentes + fusão + decisão honesta (`IDENTIFICADO | PROVAVEL |
 - Referência de qualidade: `recognition/README.md` (Top-3 98,1% sintético; 7/7 fotos reais pt-BR; pré-2011: identidade correta 22/22 com N/M lendo em resolução realista).
 - Benchmarks do site: `benchmarks/` (Node) + `lib/card-recognition-benchmark.ts`.
 
+- **RAM idle-unload completo (2026-09-24)**: o watchdog soltava só ~170 MB de ~1,1 GB porque raízes de módulo (mbed.MODELS, singleton PpOcr) seguravam as sessões ONNX. elease() agora fecha as sessões em cada raiz antes do gc; medido ao vivo: carregado 1335 MB → ocioso **184 MB**, com rewarm automático no próximo probe e E2E verde.
+- **Retake hint (2026-09-24)**: mapServiceResult propaga 
+ormalization.confidence; o wizard em lote mostra dica de tirar outra foto quando o enquadramento <0,5 e a carta não foi identificada — os NAO_IDENTIFICADO dos holdouts reais eram TODOS foto escura/torta (brilho ~100–114, warp 0,36–0,67, carta verdadeira fora do top-50).
+- **Holdout real (96 fotos do operador, 2026-09-24)**: lote 1 (53): 15 IDENTIFICADO / 35 PROVAVEL / 0 REVISAR / 3 NAO (todos foto ruim ou impressão fora do catálogo — Numel 56/106 não existe; ex9-56 é Mudkip). Lote 2 zap (43, fotos melhores): **21 IDENTIFICADO (49%)** / 19 PROVAVEL / 1 REVISAR / 2 NAO. A qualidade da foto é O fator (28% → 49%).
+- **RAM medido (2026-09-24)**: ocioso com tudo ligado ~900 MB–1 GB (IA ociosa 184 MB, site ~300, bot 400–600 com heap cap 384); IA carregada ~1,1–1,5 GB; reconhecimento ~3–9 s/foto quente.
+
 ## Riscos
 
 - DirectML (RX 570) pode produzir NaN — pipeline tem validação por request (fail-safe rota A) + demotion automático p/ CPU após 2 outputs inválidos; builds de índice FORÇAM CPU no Windows.

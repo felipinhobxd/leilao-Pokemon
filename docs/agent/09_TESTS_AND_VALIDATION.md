@@ -12,6 +12,8 @@
 npm ci
 npm run typecheck      # tsc --noEmit
 npm test               # node --test tests/*.test.mjs  (155 testes)
+node --test bot/*.test.mjs    # 31 testes do bot (payment-reminder, announce-sticker, warning-notify, poll-votes, queue-worker...)
+npm run doctor         # check-up pré-leilão: migrations, bot, reconhecimento, backup, figurinha
 npm run build           # next build
 
 # Bot
@@ -44,7 +46,7 @@ node tests/smoke.mjs
 - poll-votes (decriptografia com pares LID/telefone), queue-worker (claim/lock/heartbeat/retry), poll-identities, poll-store, group-participants, bot-reconnect, warning-notify (formatador BRL/nbsp, entrega, retry parcial sem duplicar, sem socket).
 - Lacunas: sem teste de sessão real Baileys (impossível offline), sem teste do restart noturno/limpeza 30d (lógica fina, revisada).
 
-### 4. Reconhecimento — Python unittest (248)
+### 4. Reconhecimento — Python unittest (252; +3 release, +1 density gate real-foto; rodar: ecognition\\.venv\\Scripts\\python.exe -m unittest discover -s tests a partir de recognition/)
 - `test_units.py` (normalização, OCR hints, linguagem, auth HMAC, loader de .env), `test_postmerge.py` (gêmeas de idioma, denominador/corroboração/misread, memória, Devir pré-2011), `test_stability_round.py`, `test_perf_round.py`, `test_catalog_round.py` (41: sync incremental, resume, gaps, reconcile, find_catalog_card).
 - Sem modelos pesados por design (CI leve); E2E com modelos é manual (`scripts/benchmark.py`, `stress_service.py`).
 - Lacunas: holdout cego de fotos reais (reconhecimento/README pede 30–100 fotos — nunca montado).

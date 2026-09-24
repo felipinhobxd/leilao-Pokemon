@@ -137,3 +137,9 @@
 .draft-row-info strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .draft-row-info span{font-size:.85rem;color:var(--muted)}
 .draft-row .actions{display:flex;gap:8px;flex:0 0 auto}
+
+/* Brinde por carta (2026-09-24): a carta vira enquete de brinde. */
+.brinde-inline{color:var(--success-text);font-weight:700}
+.value-row .wide{grid-column:1/-1}
+.draft-fields textarea,.value-row textarea{width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:8px;font:inherit;resize:vertical;background:var(--surface-raised)}
+.giveaway-options small{color:var(--muted);line-height:1.35}

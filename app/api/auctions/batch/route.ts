@@ -36,6 +36,23 @@ export async function POST(request: Request) {
       const card = source?.card ?? {};
       const auction = source?.auction ?? {};
       const label = `Carta ${index + 1}`;
+      // Brinde (2026-09-24): a carta marcada como brinde NÃO vira leilão —
+      // foto + enquete livre no lugar do lote ("quem clicar primeiro leva").
+      // A posição segue contando: o próximo leilão é agendado depois do brinde.
+      if (source.giveaway) {
+        const name = text(card.name, true);
+        const imageUrl = text(card.image_url);
+        if (imageUrl && !/^https:\/\//i.test(imageUrl)) throw new HttpError(400, `${label}: imagem inválida.`);
+        const rawPollOptions: unknown[] = Array.isArray(source.giveaway?.options) ? source.giveaway.options : [];
+        const pollOptions = rawPollOptions.map(value => String(value ?? "").trim()).filter(Boolean);
+        if (pollOptions.length < 2 || pollOptions.length > 12) throw new HttpError(400, `${label}: a enquete de brinde precisa de 2 a 12 opções.`);
+        if (pollOptions.some(option => option.length > 100)) throw new HttpError(400, `${label}: cada opção do brinde precisa ter até 100 caracteres.`);
+        return {
+          card: { name, image_url: imageUrl || null },
+          auction: {},
+          giveaway: { options: pollOptions },
+        };
+      }
       const name = text(card.name, true);
       const collection = text(card.collection);
       const cardNumber = text(card.card_number);

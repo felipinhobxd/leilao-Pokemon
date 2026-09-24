@@ -127,3 +127,27 @@ test('buildDraftTitle: data de Brasília + contagem de cartas', () => {
   assert.equal(buildDraftTitle(when, 12), 'Rascunho de 23/09/2026 14:32 · 12 cartas');
   assert.equal(buildDraftTitle(when, 1), 'Rascunho de 23/09/2026 14:32 · 1 carta');
 });
+
+test('giveaway: a carta de brinde serializa flag e opções (pré-preenchidas por padrão)', () => {
+  const state = buildDraftState(baseInput([baseCard({ giveaway: true, giveawayOptions: 'Quero!\nBora!' })]));
+  assert.equal(state.cards[0].giveaway, true);
+  assert.deepEqual(state.cards[0].giveawayOptions, 'Quero!\nBora!');
+  const plain = buildDraftState(baseInput([baseCard()]));
+  assert.equal(plain.cards[0].giveaway, false);
+  assert.ok(plain.cards[0].giveawayOptions.includes('Quero!'), 'opções de brinde vêm pré-preenchidas');
+});
+
+test('giveaway round trip: brinde sobrevive ao save/restore', () => {
+  const state = buildDraftState(baseInput([baseCard({ giveaway: true, giveawayOptions: 'Quero!\nBora!' }), baseCard()]));
+  const restored = restoreDraftState(JSON.parse(JSON.stringify(state)));
+  assert.deepEqual(restored, state);
+});
+
+test('giveaway sem opções no payload volta com as opções pré-preenchidas', () => {
+  const state = buildDraftState(baseInput([baseCard({ giveaway: true })]));
+  const raw = JSON.parse(JSON.stringify(state));
+  delete raw.cards[0].giveawayOptions;
+  const restored = restoreDraftState(raw);
+  assert.equal(restored.cards[0].giveaway, true);
+  assert.ok(restored.cards[0].giveawayOptions.includes('Tô dentro'), 'default pré-preenchido volta');
+});

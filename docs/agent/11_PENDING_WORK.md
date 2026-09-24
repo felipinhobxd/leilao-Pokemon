@@ -85,10 +85,10 @@ O que falta: nada — validado por `node --check` + suíte do bot.
 ID: P-07
 Título: Enquete rápida de brindes (texto livre/emojis, "quem clicar primeiro leva")
 Prioridade: Média
-Status: CONCLUÍDO 2026-09-24 — decisão do operador: SÓ painel, SÓ publicar (votos visíveis na própria enquete do WhatsApp; sem rastrear vencedor). Tabela `whatsapp_quick_polls` + `POST /api/quick-polls` (valida título 1-200, 2-12 opções ≤100 chars, grupo ativo, idempotente por external_event_id) + dreno `sendDueQuickPolls()` no ciclo de 3s do bot (messageId estável, sent_at só após envio). ATUALIZAÇÃO 2026-09-24: o formulário foi MOVIDO da Central WhatsApp para `/auctions/brinde` (decisão do operador: brinde pertence à área de leilões; botão "🎁 Brinde" no topbar do wizard em lote; a página escolhe o grupo via /api/whatsapp/groups em vez de depender do grupo padrão da Central).
-Arquivos relacionados: app/api/quick-polls/route.ts, bot/index.mjs::sendDueQuickPolls, app/auctions/brinde/page.tsx
-Descrição: enquete com título/opções livres, sem carta/lance; publicada no grupo.
-O que falta: nada.
+Status: CONCLUÍDO 2026-09-24 — decisão do operador: SÓ painel, SÓ publicar (votos visíveis na própria enquete do WhatsApp; sem rastrear vencedor). Tabela `whatsapp_quick_polls` + `POST /api/quick-polls` (valida título 1-200, 2-12 opções ≤100 chars, grupo ativo, idempotente por external_event_id) + dreno `sendDueQuickPolls()` no ciclo de 3s do bot (messageId estável, sent_at só após envio). ATUALIZAÇÃO 2026-09-24 (rodada 2): formulário movido para `/auctions/brinde` (botão "🎁 Brinde" no topbar do wizard). ATUALIZAÇÃO 2026-09-24 (rodada 3): **BRINDE POR CARTA** (decisão do operador: "o brinde é uma opção nas cartas") — botão "🎁 Brinde" na EDIÇÃO da carta marca a carta como brinde: NÃO vira leilão, o bot publica FOTO + enquete livre (opções pré-preenchidas `GIVEAWAY_DEFAULT_OPTIONS`, editáveis) na posição do lote (migration 20260924160000: quick_polls ganha image_url/queue_id/queue_position; RPC da fila com branch de brinde; resume/cancel/conclusão cientes de brindes). A fila mostra brindes entre os leilões. Erros novos: invalid_giveaway_options/invalid_giveaway_image.
+Arquivos relacionados: app/api/quick-polls/route.ts, bot/index.mjs::sendDueQuickPolls, app/auctions/brinde/page.tsx, app/auctions/new/bulk-wizard.tsx (botão na edição da carta), supabase/migrations/20260924160000, tests/giveaway-queue.sql
+Descrição: enquete com título/opções livres, sem carta/lance; publicada no grupo. Brinde por carta: foto + enquete no lugar do leilão.
+O que falta: aplicação das migrations 20260924150000+20260924160000 em produção (P-13) e smoke ao vivo.
 ```
 
 ```text
@@ -124,12 +124,12 @@ Próximo passo: nenhum.
 
 ```text
 ID: P-13
-Título: Aplicar a migration de rascunhos (20260924150000) no Supabase + smoke do fluxo
-Prioridade: Alta (o botão "Salvar rascunho" só funciona após aplicar)
+Título: Aplicar as migrations de rascunhos + brinde por carta (20260924150000 e 20260924160000) no Supabase
+Prioridade: Alta (o botão "Salvar rascunho" e o brinde por carta só funcionam após aplicar)
 Status: Aberto — ação do OPERADOR (SQL Editor), código e CI prontos
-Arquivos relacionados: supabase/migrations/20260924150000_auction_drafts.sql (tabela auction_drafts + RPCs upsert/delete + purge/backup atualizados), scripts/doctor.mjs (checa tabela e RPCs), app/api/auctions/drafts/route.ts, app/auctions/new/bulk-wizard.tsx, lib/auction-draft.ts
-Descrição: rascunhos do wizard em lote salvos no Supabase (fotos sobem ao Storage no salvar). Sem a migration aplicada, salvar devolve 503/erro de função ausente (o botão aparece mas falha com mensagem).
-Próximo passo: operador colar o arquivo no SQL Editor → `npm run doctor` (deve mostrar tabela + RPCs de rascunho) → smoke: salvar rascunho com 2 cartas, fechar o navegador, reabrir /auctions/new, Abrir o rascunho (fotos voltam por URL), publicar fila de teste e conferir que o rascunho sumiu da lista.
+Arquivos relacionados: supabase/migrations/20260924150000_auction_drafts.sql (tabela auction_drafts + RPCs upsert/delete + purge/backup atualizados), supabase/migrations/20260924160000_giveaway_queue_items.sql (quick_polls ganha image_url/queue_id/queue_position + RPCs da fila cientes de brinde), scripts/doctor.mjs (checa tabela/RPCs de rascunho), app/api/auctions/drafts/route.ts, app/auctions/new/bulk-wizard.tsx, lib/auction-draft.ts
+Descrição: rascunhos do wizard em lote salvos no Supabase (fotos sobem ao Storage no salvar) + brinde por carta na fila. Sem as migrations aplicadas, salvar devolve erro de função ausente e itens de brinde são rejeitados.
+Próximo passo: operador colar os DOIS arquivos no SQL Editor (ordem lexical: 150000 → 160000) → `npm run doctor` → smoke: (1) salvar rascunho com 2 cartas, fechar, reabrir, Abrir, publicar fila de teste e conferir que o rascunho sumiu; (2) marcar uma carta como "🎁 Brinde" com opções, publicar fila e conferir foto+enquete no grupo.
 ```
 
 ```text

@@ -35,13 +35,13 @@ Com isso um agente deve conseguir trabalhar em ~2-5 minutos de leitura.
 | ----- | ----------------------- | ------------------- | ------ | ------------------ |
 | 01 | `01_PROJECT_CONTEXT.md` | Contexto geral | Estável — leitura obrigatória de todo agente novo | 2026-09-23 |
 | 02 | `02_ARCHITECTURE.md` | Arquitetura real | Estável | 2026-09-23 |
-| 03 | `03_DATABASE.md` | Supabase/PostgreSQL | ⚠️ Migration `20260924150000` (rascunhos) pendente de aplicação manual no SQL Editor | 2026-09-24 |
+| 03 | `03_DATABASE.md` | Supabase/PostgreSQL | ⚠️ Migrations `20260924150000` (rascunhos) + `20260924160000` (brinde por carta) pendentes de aplicação manual no SQL Editor | 2026-09-24 |
 | 04 | `04_API.md` | API Next.js (app/api) | Estável; rotas novas `/api/auctions/drafts` e `/api/quick-polls` | 2026-09-24 |
-| 05 | `05_FRONTEND.md` | Frontend (app/) | Estável; wizard com rascunhos + brinde em `/auctions/brinde` | 2026-09-24 |
-| 06 | `06_WHATSAPP_BOT.md` | Bot Baileys (bot/) | Estável; spam libsignal/"enquete desconhecida" corrigidos; sync de grupos 90s | 2026-09-24 |
+| 05 | `05_FRONTEND.md` | Frontend (app/) | Estável; wizard com rascunhos + BRINDE POR CARTA + brinde avulso em `/auctions/brinde` | 2026-09-24 |
+| 06 | `06_WHATSAPP_BOT.md` | Bot Baileys (bot/) | Estável; spam libsignal/"enquete desconhecida" corrigidos; sync 90s; brinde da fila com foto | 2026-09-24 |
 | 07 | `07_CARD_RECOGNITION.md` | Reconhecimento (recognition/) | Estável; gap do índice `es` pendente | 2026-09-23 |
-| 08 | `08_AUCTION_DOMAIN.md` | Domínio de leilão | Estável | 2026-09-23 |
-| 09 | `09_TESTS_AND_VALIDATION.md` | Testes e validação | Estável — Node 166, SQL 10 arquivos, Python 252, bot 31 | 2026-09-24 |
+| 08 | `08_AUCTION_DOMAIN.md` | Domínio de leilão | Estável; fila com itens de brinde (20260924160000) | 2026-09-24 |
+| 09 | `09_TESTS_AND_VALIDATION.md` | Testes e validação | Estável — Node 169, SQL 11 arquivos, Python 252, bot 31 | 2026-09-24 |
 | 10 | `10_SECURITY_AND_PERFORMANCE.md` | Segurança e performance | Estável | 2026-09-23 |
 | 11 | `11_PENDING_WORK.md` | Trabalho pendente | 🔴 Itens abertos (P-04, P-11, P-13 aplicação de migration, P-01 a confirmar) | 2026-09-24 |
 | 12 | `12_SESSION_HANDOFF.md` | Checkpoint da sessão | Atualizado a cada sessão | 2026-09-24 |

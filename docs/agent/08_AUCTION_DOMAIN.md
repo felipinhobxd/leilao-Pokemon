@@ -27,7 +27,8 @@
 ## FLUXOS CRÍTICOS (ponta a ponta reais)
 
 1. **Criar lote em massa**: `bulk-wizard.tsx` valida → upload de imagens (authorize + batch incremental) → `POST /api/auctions/batch` (cada item: pricing increment|custom; server gera `poll_options`) → `create_auction_publish_queue` → cards+auctions+dispatches numa transação → tela da fila.
-2. **Publicar**: bot clama dispatch vencido (`claim_whatsapp_dispatch`, fila `running`) → envia imagem com legenda (`buildAuctionCaption`: "♡ N. Nome (nº) CONDIÇÃO 🇧🇷 · ☆") → espera 5s → envia enquete → grava `poll_message_id/json` no dispatch → `sent`.
+2. **Publicar**: bot clama dispatch vencido (`claim_whatsapp_dispatch`, fila `running`) → envia imagem com legenda (`buildAuctionCaption`: "♡ N. Nome (nº) VARIANTE CONDIÇÃO 🇧🇷 · ☆" — variante incluída e bandeira "Outro" 🌐 desde 2026-09-24) → espera 5s → envia enquete → grava `poll_message_id/json` no dispatch → `sent`.
+2b. **Publicar brinde da fila** (20260924160000): carta marcada como Brinde NÃO vira leilão — `whatsapp_quick_polls` (título "🎁 Brinde: {nome}", foto, opções livres) na posição do lote → `sendDueQuickPolls` publica FOTO + enquete quando vencida; pausa segura, resume re-agenda, cancel apaga pendentes; fila só conclui com brindes enviados.
 3. **Votar**: WhatsApp → evento criptografado → `decryptIncomingPollVote` → `resolve_whatsapp_participant` → `BID_PLACED/BID_CHANGED` (ou `BUYOUT_CONFIRMED`) com eventId estável → RPC valida (prazo, elegibilidade, valor, stale) → bids + vote_state + events idempotentes.
 4. **Fechar**: prazo vence → bot `AUCTION_FINALIZE` → vencedor por tie-break → `sold` + `purchases`/`deliveries` (ou `closed` sem lances).
 5. **Redução de valor → aviso → 3 avisos → DM**: dentro da mesma transação do `BID_CHANGED`; bot drena `admin_notifications` (≤15s) e DM os admins com histórico.

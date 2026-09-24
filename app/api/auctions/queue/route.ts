@@ -8,11 +8,12 @@ async function readQueue(db: Awaited<ReturnType<typeof authorize>>["db"], queueI
   if (queueError) throw new Error("queue_read_failed");
   if (!queue) throw new HttpError(404, "Fila não encontrada.");
 
-  const [{ data: group, error: groupError }, { data: dispatches, error: dispatchError }] = await Promise.all([
+  const [{ data: group, error: groupError }, { data: dispatches, error: dispatchError }, { data: quickPolls, error: pollsError }] = await Promise.all([
     db.from("whatsapp_groups").select("id,name,group_jid").eq("id", queue.group_id).maybeSingle(),
     db.from("whatsapp_dispatches").select("id,auction_id,status,scheduled_at,sent_at,attempts,last_error,queue_position,announcement_sent_at,poll_sent_at").eq("queue_id", queueId).order("queue_position"),
+    db.from("whatsapp_quick_polls").select("id,title,image_url,scheduled_at,sent_at,poll_message_id,queue_position").eq("queue_id", queueId).order("queue_position"),
   ]);
-  if (groupError || dispatchError) throw new Error("queue_read_failed");
+  if (groupError || dispatchError || pollsError) throw new Error("queue_read_failed");
 
   const auctionIds = (dispatches ?? []).map(row => row.auction_id);
   const { data: auctions, error: auctionError } = auctionIds.length
@@ -25,16 +26,25 @@ async function readQueue(db: Awaited<ReturnType<typeof authorize>>["db"], queueI
     : { data: [], error: null };
   if (cardError) throw new Error("queue_read_failed");
 
-  const items = (dispatches ?? []).map(dispatch => {
-    const auction = (auctions ?? []).find(row => row.id === dispatch.auction_id) ?? null;
-    const card = auction ? (cards ?? []).find(row => row.id === auction.card_id) ?? null : null;
-    return { dispatch, auction, card };
+  const items = [
+    ...(dispatches ?? []).map(dispatch => {
+      const auction = (auctions ?? []).find(row => row.id === dispatch.auction_id) ?? null;
+      const card = auction ? (cards ?? []).find(row => row.id === auction.card_id) ?? null : null;
+      return { dispatch, auction, card, poll: null };
+    }),
+    // Brindes da fila: sem dispatch (exige auction_id) — entram na lista na
+    // própria posição, entre os leilões.
+    ...(quickPolls ?? []).map(poll => ({ dispatch: null, auction: null, card: null, poll })),
+  ].sort((a, b) => {
+    const pa = a.dispatch?.queue_position ?? a.poll?.queue_position ?? 0;
+    const pb = b.dispatch?.queue_position ?? b.poll?.queue_position ?? 0;
+    return pa - pb;
   });
-  const published = items.filter(item => item.dispatch.status === "sent").length;
-  const failed = items.filter(item => item.dispatch.status === "failed").length;
-  const pending = items.filter(item => ["scheduled", "sending"].includes(item.dispatch.status)).length;
-  const next = items.find(item => item.dispatch.status === "scheduled") ?? null;
-  return { queue, group, items, summary: { total: items.length, published, failed, pending, nextScheduledAt: next?.dispatch.scheduled_at ?? null } };
+  const published = items.filter(item => item.dispatch?.status === "sent" || item.poll?.sent_at).length;
+  const failed = items.filter(item => item.dispatch?.status === "failed").length;
+  const pending = items.filter(item => item.dispatch ? ["scheduled", "sending"].includes(item.dispatch.status) : !item.poll?.sent_at).length;
+  const next = items.find(item => item.dispatch ? item.dispatch.status === "scheduled" : !item.poll?.sent_at) ?? null;
+  return { queue, group, items, summary: { total: items.length, published, failed, pending, nextScheduledAt: next?.dispatch?.scheduled_at ?? next?.poll?.scheduled_at ?? null } };
 }
 
 export async function GET(request: Request) {

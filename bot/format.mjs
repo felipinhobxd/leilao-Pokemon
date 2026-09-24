@@ -3,6 +3,8 @@ const flags = {
   en: "🇺🇸",
   ja: "🇯🇵",
   es: "🇪🇸",
+  // "Outro" do dropdown do wizard: sem ela a bandeira sumia da mensagem.
+  other: "🌐",
 };
 
 export function conditionCode(condition) {
@@ -17,9 +19,10 @@ export function languageFlag(language) {
 
 export function buildAuctionCaption(card, auction) {
   const number = String(card?.card_number ?? "").trim();
+  const variant = String(card?.variant ?? "").trim();
   const condition = conditionCode(card?.condition);
   const flag = languageFlag(card?.language);
-  return `♡ ${auction?.lot_number}. ${String(card?.name ?? "Carta").trim()}${number ? ` (${number})` : ""}${condition ? ` ${condition}` : ""}${flag ? ` ${flag}` : ""}\n· ☆`;
+  return `♡ ${auction?.lot_number}. ${String(card?.name ?? "Carta").trim()}${number ? ` (${number})` : ""}${variant ? ` ${variant}` : ""}${condition ? ` ${condition}` : ""}${flag ? ` ${flag}` : ""}\n· ☆`;
 }
 
 export function buildPollTitle(auction) {

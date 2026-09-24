@@ -4,6 +4,11 @@ export type PollPlan = { options: PollOption[]; overflow: boolean; minimumIncrem
 export const MAX_POLL_OPTIONS = 12;
 export const DEFAULT_POLL_OPTIONS = 6;
 
+// Brinde (P-07, decisão do operador 2026-09-24): a carta marcada como brinde
+// vira enquete de brinde no lugar do leilão — "quem clicar primeiro leva".
+// Opções livres de texto/emoji, pré-preenchidas e editáveis por carta.
+export const GIVEAWAY_DEFAULT_OPTIONS = "Quero! 🙋\nTô dentro 🔥\nBora! 🎉";
+
 export const cardConditions = [
   "NM — Near Mint",
   "LP/SP — Levemente jogada",

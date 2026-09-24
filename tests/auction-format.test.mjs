@@ -49,6 +49,11 @@ test('formats compact WhatsApp caption with lot, card number, condition and flag
   assert.equal(buildAuctionCaption({ lotNumber: 19, name: 'Gligar', cardNumber: '140/264', condition: 'NM — Near Mint', language: 'pt-BR' }), expected);
   assert.equal(buildPollTitle(19), '19. Lances');
   assert.equal(buildBotCaption({ name: 'Gligar', card_number: '140/264', condition: 'NM — Near Mint', language: 'pt-BR' }, { lot_number: 19 }), expected);
+  // Variante escolhida pelo operador aparece na mensagem (2026-09-24).
+  const withVariant = '♡ 19. Gligar (140/264) Holo NM 🇧🇷\n· ☆';
+  assert.equal(buildBotCaption({ name: 'Gligar', card_number: '140/264', variant: 'Holo', condition: 'NM — Near Mint', language: 'pt-BR' }, { lot_number: 19 }), withVariant);
+  // Idioma "Outro" do dropdown tem bandeira (antes sumia da mensagem).
+  assert.equal(buildBotCaption({ name: 'Gligar', card_number: '140/264', condition: 'NM — Near Mint', language: 'other' }, { lot_number: 19 }), '♡ 19. Gligar (140/264) NM 🌐\n· ☆');
 });
 
 test('parses custom bid values with commas, semicolons and decimals', () => {

@@ -913,13 +913,18 @@ async function sendDueQuickPolls() {
   try {
     const nowIso = new Date().toISOString();
     const { data: pending, error } = await db.from("whatsapp_quick_polls")
-      .select("id,group_id,title,options,scheduled_at")
+      .select("id,group_id,title,options,image_url,scheduled_at,queue:auction_publish_queues(status)")
       .is("sent_at", null)
       .lte("scheduled_at", nowIso)
       .order("scheduled_at", { ascending: true })
       .limit(2);
     if (error) throw new Error(error.message);
     for (const poll of pending ?? []) {
+      // Brinde de uma fila PAUSADA espera (o resume re-agenda): sem isso o
+      // brinde sairia mesmo com a fila pausada — dispatches não são claimados
+      // pausados e os brindes não podem furar isso. Fila ausente = brinde
+      // avulso do painel: publica normal.
+      if (poll.queue?.status === "paused") continue;
       const { data: group } = await db.from("whatsapp_groups").select("group_jid,active").eq("id", poll.group_id).maybeSingle();
       const values = Array.isArray(poll.options) ? poll.options.map(value => String(value)).filter(Boolean).slice(0, 12) : [];
       if (!group?.active || values.length < 2) {
@@ -928,6 +933,13 @@ async function sendDueQuickPolls() {
         await db.from("whatsapp_quick_polls").update({ sent_at: new Date().toISOString() }).eq("id", poll.id);
         console.warn(`🎁 Brinde ${poll.id} marcado sem envio (grupo inativo ou opções inválidas).`);
         continue;
+      }
+      // Brinde de carta (2026-09-24): a FOTO do prêmio sai antes da enquete,
+      // com messageId estável — crash no meio reenvia imagem+enquete (o
+      // WhatsApp deduplica os messageIds), igual ao fluxo de dispatches.
+      if (typeof poll.image_url === "string" && /^https:\/\//.test(poll.image_url)) {
+        const announcement = await sock.sendMessage(group.group_jid, { image: { url: poll.image_url }, caption: String(poll.title) }, { messageId: dispatchMessageId(poll.id, "quick-announce") });
+        if (!announcement?.key?.id) throw new Error("quick_poll_announcement_send_failed");
       }
       const message = await sock.sendMessage(group.group_jid, {
         poll: { name: String(poll.title), values, selectableCount: 1, messageSecret: dispatchPollSecret(`quick-${poll.id}`) },

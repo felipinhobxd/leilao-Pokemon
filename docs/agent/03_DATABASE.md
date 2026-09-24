@@ -24,7 +24,7 @@ Ordem de aplicação (confirmada no CI `ci.yml`): `tests/bootstrap.sql` → `sup
 | `value_change_log` | histórico de alterações de valor (migration 20260923093000) | `auction_id, participant_id, previous_amount, new_amount, difference, external_event_id UNIQUE, occurred_at` | export, avisos |
 | `participant_warnings` | contador GLOBAL de avisos por usuário (idem) | `participant_id, auction_id (ON DELETE SET NULL), card_name, lot_number, previous_amount, new_amount, external_event_id UNIQUE, occurred_at` | bot (DM), export |
 | `admin_notifications` | DM pendente aos admins (idem) | `participant_id, kind, payload jsonb, external_event_id UNIQUE, sent_at` | bot drena |
-| `whatsapp_quick_polls` | brindes: enquete livre agendada (20260924120000) | `group_id FK, title, options jsonb, scheduled_at, sent_at, poll_message_id UNIQUE, external_event_id UNIQUE, created_by` | bot publica (P-07) |
+| `whatsapp_quick_polls` | brindes: enquete livre agendada (20260924120000) + **itens de brinde da fila** (20260924160000: foto da carta + posição na fila) | `group_id FK, title, options jsonb, image_url, queue_id FK CASCADE, queue_position, scheduled_at, sent_at, poll_message_id UNIQUE, external_event_id UNIQUE, created_by` | bot publica (P-07); fila com brinde |
 | `payment_reminders` | ciclo de lembretes de pagamento (idem) | `purchase_id UNIQUE FK CASCADE, participant_id, reminded_count, last_reminded_at` | bot drena (P-09) |
 | `auction_drafts` | rascunhos do wizard em lote (20260924150000): snapshot serializável para continuar a programação depois | `id uuid PK (client-generated), title 1..120, payload jsonb (≤512KB, cards 1..200), created_by, created_at, updated_at` | API drafts, purge/backup |
 | `cards.extra_images` | coluna jsonb: até 4 URLs HTTPS de fotos de detalhe (idem) | `default '[]'` | wizard + bot envia em sequência (P-08) |
@@ -50,7 +50,9 @@ Ordem de aplicação (confirmada no CI `ci.yml`): `tests/bootstrap.sql` → `sup
 
 ### Demais RPCs
 
-- `create_auction_publish_queue(p_payload, p_admin_user_id)` — fila + dispatches + leilões em massa; valida `pricing_mode: increment|custom` por item; grava `poll_options` prontas; erros `lot_number_in_use`, `whatsapp_group_unavailable`, `event_id_conflict`.
+- `create_auction_publish_queue(p_payload, p_admin_user_id)` — fila + dispatches + leilões em massa; valida `pricing_mode: increment|custom` por item; grava `poll_options` prontas; erros `lot_number_in_use`, `whatsapp_group_unavailable`, `event_id_conflict`. Corpo MAIS RECENTE: 20260924160000 — itens `giveaway` (carta marcada como Brinde) NÃO criam cards/auctions/dispatches: criam 1 linha em `whatsapp_quick_polls` (título "🎁 Brinde: {nome}", foto da carta, opções livres 2..12 ≤100 chars, `scheduled_at` na POSIÇÃO da fila — o próximo lote é agendado DEPOIS do brinde). Erros novos: `invalid_giveaway_options`, `invalid_giveaway_image`.
+- `control_auction_publish_queue(...)` (20260913202000; corpo substituído na 20260924160000) — resume re-agenda brindes pendentes DEPOIS dos lotes pendentes (simplificação: ordem exata mantida entre leilões); cancel apaga brindes pendentes da fila (nada enviado é perdido).
+- Trigger `sync_auction_publish_queue_status` (corpo substituído na 20260924160000) — serve as DUAS tabelas (`tg_table_name`: dispatches falam `status`, quick_polls fala `sent_at`); brindes pendentes seguram a conclusão da fila; trigger novo em `whatsapp_quick_polls` (after update of sent_at) move a fila para frente.
 - `claim_whatsapp_dispatch(p_worker_id)` — claim atômica de dispatch vencido (fila `running`); `locked_at` + heartbeat do worker; recovery de lock stale (~2 min) no bot.
 - `resolve_whatsapp_participant(...)` — LID/telefone → participante (merge de identidades; conflito → evento auditado).
 - `read_auction_snapshot()` / `read_dashboard_snapshot()` — export/dashboard; a 20260923093000 adiciona as 3 tabelas novas ao auction snapshot.

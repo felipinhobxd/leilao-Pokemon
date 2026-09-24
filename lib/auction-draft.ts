@@ -1,4 +1,4 @@
-import { cardConditions, cardLanguages } from "./auction-wizard.ts";
+import { cardConditions, cardLanguages, GIVEAWAY_DEFAULT_OPTIONS } from "./auction-wizard.ts";
 
 // Rascunho do wizard em lote: snapshot serializável do estado da tela para o
 // operador continuar a programação do leilão em outra sessão/navegador. As
@@ -39,6 +39,10 @@ export type AuctionDraftCard = {
   pricingMode: "increment" | "custom";
   customValues: string;
   customBuyoutLast: boolean;
+  // Brinde: a carta vira enquete de brinde no lugar do leilão (foto + enquete
+  // "quem clicar primeiro leva"); opções livres pré-preenchidas e editáveis.
+  giveaway: boolean;
+  giveawayOptions: string;
   lotNumber: string;
   startingPrice: string;
   increment: string;
@@ -135,6 +139,8 @@ export function normalizeDraftCard(raw: unknown): AuctionDraftCard {
     pricingMode: raw.pricingMode === "custom" ? "custom" : "increment",
     customValues: text(raw.customValues),
     customBuyoutLast: raw.customBuyoutLast !== false,
+    giveaway: raw.giveaway === true,
+    giveawayOptions: text(raw.giveawayOptions, GIVEAWAY_DEFAULT_OPTIONS),
     lotNumber: text(raw.lotNumber, "1"),
     startingPrice: text(raw.startingPrice),
     increment: text(raw.increment),
@@ -160,6 +166,8 @@ export type AuctionDraftCardSource = {
   pricingMode: string;
   customValues: string;
   customBuyoutLast: boolean;
+  giveaway: boolean;
+  giveawayOptions: string;
   lotNumber: string;
   startingPrice: string;
   increment: string;

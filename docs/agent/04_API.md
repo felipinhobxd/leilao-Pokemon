@@ -23,6 +23,7 @@
 
 ### `POST /api/auctions/batch` — fila em lote (wizard `/auctions/new`)
 - Body: `eventId`, `queue{group_id, starts_at, interval_seconds}`, `items[1..100]{card, auction}` — cada item aceita `pricing_mode/custom_values/custom_buyout_last` (espelha a rota única; `poll_options` gravadas por item).
+- **Itens de brinde (2026-09-24)**: item `giveaway{options[2..12]}` (carta marcada como Brinde) — NÃO vira leilão: o RPC cria enquete de brinde (foto + opções livres) na posição do lote; validação própria (nome obrigatório — é o título, foto HTTPS, opções 2..12 ≤100 chars); lote/duração/valores não se aplicam.
 - Valida: lotes únicos e >0, duração 1s–604800s, intervalo 1–86400s.
 - Cria TUDO via `create_auction_publish_queue`; erros mapeados (409 lote duplicado/grupo indisponível/evento conflitante).
 
@@ -34,6 +35,7 @@
 
 ### `/api/auctions/queue` — fila em execução (tela pós-publicação do wizard em lote)
 - Métodos conforme implementação (pause/resume/cancel/status/consultas de itens) — o wizard usa para **Pausar/Continuar/Cancelar** a fila e acompanhar `summary` (total/publicados/falhos/pendentes/próximo). Estado `paused` é persistente: retomar continua exatamente do próximo dispatch pendente, sem duplicação (claim idempotente por dispatch).
+- **Brindes na fila (2026-09-24)**: o `items` agora traz TAMBÉM as enquetes de brinde da fila (`poll`, por `queue_position`, entre os leilões); o `summary` conta brindes em publicados/pendentes/total.
 
 ### `GET /api/dashboard` — painel ao vivo
 - `?scope=operations` → só bot/grupo/dispatches; sem scope → `read_dashboard_snapshot` + operações.

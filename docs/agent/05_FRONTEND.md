@@ -26,6 +26,14 @@
 3. **Publicação**: grupo, intervalo entre publicações (1s–24h), agora vs agendar (horário de Brasília).
 4. **Revisar**: resumo + lista com imagem/valores/horários → `POST /api/auctions/batch` → tela da **fila** com Pausar/Continuar/Cancelar e progresso (`queueId`, `QueueView`).
 
+### Brinde por carta (2026-09-24, migration `20260924160000`)
+
+- **Botão "🎁 Brinde" na edição da carta** (draft-actions, entre ↓ e Editar): marca a carta como BRINDE — ela NÃO vira leilão. Título/badge "🎁 Brinde — vira enquete, não leilão" na linha da carta.
+- O que a publicação faz no lugar do lote: **foto da carta + enquete de brinde** ("quem clicar primeiro leva") com opções LIVRES pré-preenchidas (`GIVEAWAY_DEFAULT_OPTIONS`: "Quero! 🙋 / Tô dentro 🔥 / Bora! 🎉") e editáveis na própria carta (editor aparece na edição e no passo 2). Sem cards/auctions/dispatches — a posição SEGUE contando (o próximo leilão é agendado DEPOIS do brinde).
+- "Numerar lotes" pula brindes (brinde não consome número); extras ficam ocultos em brindes (a publicação usa só a foto principal); validação própria (2–12 opções, ≤100 chars).
+- A fila (pós-publicação) mostra os brindes entre os leilões (`poll` por posição, "🎁" com enviado/agendado); cancelar a fila apaga brindes pendentes.
+- O formulário avulso de brinde (enquete sem carta) continua em `/auctions/brinde` (botão "🎁 Brinde" no topbar).
+
 ### Rascunhos (2026-09-24, migration `20260924150000`)
 
 - **Salvar**: botão "💾 Salvar rascunho" no topbar (todas as etapas). As FOTOS sobem ao Storage no salvar (`uploadImages(true)` mantém os `File`s em memória — reconhecimento/re-upload continuam na sessão); o payload guarda só URLs HTTPS + campos do wizard (`lib/auction-draft.ts` — whitelist, `buildDraftState`/`restoreDraftState`, guards 1..200 cartas / ≤512KB). Título automático: "Rascunho de dd/mm/aaaa hh:mm · N cartas".

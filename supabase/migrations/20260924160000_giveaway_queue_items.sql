@@ -263,11 +263,13 @@ revoke execute on function public.control_auction_publish_queue(uuid,text,uuid) 
 grant execute on function public.control_auction_publish_queue(uuid,text,uuid) to service_role;
 
 -- ---------------------------------------------------------------------------
--- 4) sync_auction_publish_queue_status: LATEST body is 20260913202000. Copied
---    VERBATIM with ONLY the marked additions: the function now serves BOTH
---    tables (whatsapp_quick_polls has no `status` column — "publicado" lá é
---    sent_at) and pending giveaways hold the queue from completing early.
---    A second trigger wires quick_poll updates into the same logic.
+-- 4) sync_auction_publish_queue_status: LATEST body is 20260913203200 (it
+--    REMOVED 'failed' from the pending list — a terminal failure must not
+--    keep the queue running forever). Copied VERBATIM with ONLY the marked
+--    additions: the function now serves BOTH tables (whatsapp_quick_polls
+--    has no `status` column — "publicado" lá é sent_at) and pending
+--    giveaways hold the queue from completing early. A second trigger wires
+--    quick_poll updates into the same logic.
 -- ----------------------------------------------------------------------------
 create or replace function public.sync_auction_publish_queue_status()
 returns trigger language plpgsql security definer set search_path='' as $$
@@ -290,7 +292,7 @@ begin
   end if;
   if not exists(
     select 1 from public.whatsapp_dispatches
-    where queue_id=new.queue_id and status in('scheduled','sending','failed')
+    where queue_id=new.queue_id and status in('scheduled','sending')
   ) -- ADDITION (20260924160000): brindes pendentes também seguram a conclusão
   and not exists(
     select 1 from public.whatsapp_quick_polls
@@ -302,6 +304,9 @@ begin
   end if;
   return new;
 end $$;
+
+revoke execute on function public.sync_auction_publish_queue_status() from public, anon, authenticated;
+grant execute on function public.sync_auction_publish_queue_status() to service_role;
 
 drop trigger if exists sync_auction_publish_queue_after_dispatch on public.whatsapp_dispatches;
 create trigger sync_auction_publish_queue_after_dispatch

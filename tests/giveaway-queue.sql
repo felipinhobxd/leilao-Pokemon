@@ -32,14 +32,15 @@ declare
   auction_item jsonb:=jsonb_build_object('card',jsonb_build_object('name','Lote','language','pt-BR'),
     'auction',jsonb_build_object('starting_price',1,'bid_increment',1,'poll_options',poll_options));
   base jsonb:=jsonb_build_object(
-    'eventId','x-give-1',
     'queue',jsonb_build_object('group_id','44444444-4444-4444-4444-444444444444','starts_at',clock_timestamp()+interval '1 hour','interval_seconds',60));
 begin
   -- ------------------------------------------------------------------
-  -- 1) fila [leilão, brinde, leilão].
+  -- 1) fila [leilão, brinde, leilão]. Os guards usam eventIds PRÓPRIOS:
+  --    mesmo eventId com payload divergente é event_id_conflict, não o erro
+  --    do guard.
   -- ------------------------------------------------------------------
   result:=public.create_auction_publish_queue(base
-    ||jsonb_build_object('items',jsonb_build_array(
+    ||jsonb_build_object('eventId','x-give-1','items',jsonb_build_array(
       auction_item||jsonb_build_object('auction',jsonb_build_object('lot_number',10,'starting_price',1,'bid_increment',1,'poll_options',poll_options)),
       jsonb_build_object('card',jsonb_build_object('name','Pikachu Brinde','image_url','https://cdn.example/brinde.webp'),
         'auction',jsonb_build_object(),'giveaway',jsonb_build_object('options',jsonb_build_array('Quero!','Bora!'))),
@@ -61,7 +62,7 @@ begin
   -- 2) replay idêntico devolve a mesma fila (idempotência).
   -- ------------------------------------------------------------------
   result2:=public.create_auction_publish_queue(base
-    ||jsonb_build_object('items',jsonb_build_array(
+    ||jsonb_build_object('eventId','x-give-1','items',jsonb_build_array(
       auction_item||jsonb_build_object('auction',jsonb_build_object('lot_number',10,'starting_price',1,'bid_increment',1,'poll_options',poll_options)),
       jsonb_build_object('card',jsonb_build_object('name','Pikachu Brinde','image_url','https://cdn.example/brinde.webp'),
         'auction',jsonb_build_object(),'giveaway',jsonb_build_object('options',jsonb_build_array('Quero!','Bora!'))),
@@ -73,26 +74,26 @@ begin
   -- ------------------------------------------------------------------
   -- 3) guards do brinde.
   -- ------------------------------------------------------------------
-  perform pg_temp.rejects_queue(base||jsonb_build_object('items',jsonb_build_array(
+  perform pg_temp.rejects_queue(base||jsonb_build_object('eventId','x-give-2','items',jsonb_build_array(
     jsonb_build_object('card',jsonb_build_object('name','Pika'),'auction',jsonb_build_object(),'giveaway',jsonb_build_object('options',jsonb_build_array('Só uma'))))),
     '00000000-0000-0000-0000-000000000031','invalid_giveaway_options');
-  perform pg_temp.rejects_queue(base||jsonb_build_object('items',jsonb_build_array(
+  perform pg_temp.rejects_queue(base||jsonb_build_object('eventId','x-give-3','items',jsonb_build_array(
     jsonb_build_object('card',jsonb_build_object('name','Pika'),'auction',jsonb_build_object(),
       'giveaway',jsonb_build_object('options',(select jsonb_agg('opção '||n) from generate_series(1,13) n))))),
     '00000000-0000-0000-0000-000000000031','invalid_giveaway_options');
-  perform pg_temp.rejects_queue(base||jsonb_build_object('items',jsonb_build_array(
+  perform pg_temp.rejects_queue(base||jsonb_build_object('eventId','x-give-4','items',jsonb_build_array(
     jsonb_build_object('card',jsonb_build_object('name','Pika'),'auction',jsonb_build_object(),
       'giveaway',jsonb_build_object('options',jsonb_build_array('Quero!',repeat('x',101)))))),
     '00000000-0000-0000-0000-000000000031','invalid_giveaway_options');
-  perform pg_temp.rejects_queue(base||jsonb_build_object('items',jsonb_build_array(
+  perform pg_temp.rejects_queue(base||jsonb_build_object('eventId','x-give-5','items',jsonb_build_array(
     jsonb_build_object('card',jsonb_build_object('name','Pika'),'auction',jsonb_build_object(),
       'giveaway',jsonb_build_object('options',jsonb_build_array('Quero!',42))))),
     '00000000-0000-0000-0000-000000000031','invalid_giveaway_options');
-  perform pg_temp.rejects_queue(base||jsonb_build_object('items',jsonb_build_array(
+  perform pg_temp.rejects_queue(base||jsonb_build_object('eventId','x-give-6','items',jsonb_build_array(
     jsonb_build_object('card',jsonb_build_object('name','Pika','image_url','http://inseguro/1.webp'),'auction',jsonb_build_object(),
       'giveaway',jsonb_build_object('options',jsonb_build_array('Quero!','Bora!'))))),
     '00000000-0000-0000-0000-000000000031','invalid_giveaway_image');
-  perform pg_temp.rejects_queue(base||jsonb_build_object('items',jsonb_build_array(
+  perform pg_temp.rejects_queue(base||jsonb_build_object('eventId','x-give-7','items',jsonb_build_array(
     jsonb_build_object('card',jsonb_build_object('name',''),'auction',jsonb_build_object(),
       'giveaway',jsonb_build_object('options',jsonb_build_array('Quero!','Bora!'))))),
     '00000000-0000-0000-0000-000000000031','invalid_card_name');

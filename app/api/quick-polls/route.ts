@@ -3,7 +3,7 @@ import { authorize, failure, HttpError } from "@/lib/backend";
 // P-07 — Brinde rápido: enquete livre (texto/emoji) criada no painel e
 // publicada pelo bot no horário agendado ("quem clicar primeiro leva").
 // Vota em whatsapp_quick_polls (tabela própria — dispatches exige auction_id).
-// GET lista os recentes (agendados + enviados) para a Central WhatsApp.
+// GET lista os recentes (agendados + enviados) para /auctions/brinde.
 export const runtime = "nodejs";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

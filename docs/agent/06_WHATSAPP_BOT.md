@@ -41,7 +41,9 @@
 - **Fechamento por tempo ANUNCIA no grupo** (`finalizeDueAuctions`): mensagem de vencedor com nota de empate ("venceu quem deu o lance primeiro") e aviso de encerrado sem lances — CONFIRMADO 2026-09-23.
 - **Supervisor mantém** (2026-09-23): backup diário 4h30 (`bot/backup.mjs` → `bot/backups/`), limpeza 30d, restart noturno e tee de log em `bot/logs/bot-YYYY-MM-DD.log` (`bot/file-logger.mjs`, retenção 14 dias).
 - **P-06 (2026-09-24)**: ARREMATADO e Leilão encerrado fazem **@menção real** ao vencedor — JID de telefone resolvido por `bot/participant-contact.mjs` (pn > lid > fallback); sem JID, mensagem sai com nome plano.
-- **P-07 (2026-09-24)**: `sendDueQuickPolls()` no ciclo de 3s publica brindes agendados pelo painel (`whatsapp_quick_polls`); idempotente por `sent_at` + messageId estável; grupo inativo/opções ruins → marcado sem envio.
+- **P-07 (2026-09-24)**: `sendDueQuickPolls()` no ciclo de 3s publica brindes agendados pelo painel (`whatsapp_quick_polls`); idempotente por `sent_at` + messageId estável; grupo inativo/opções ruins → marcado sem envio. **Formulário movido para `/auctions/brinde`** (decisão do operador: brinde pertence à área de leilões — botão "🎁 Brinde" no topbar do wizard; a Central WhatsApp não tem mais o formulário).
+- **Spam de "Voto recebido para enquete desconhecida" corrigido (2026-09-24)**: votos em enquetes que o bot não rastreia (brindes do painel, enquetes antigas já limpas pela 30d) são ESPERADOS — o warn por EVENTO inundava o console (dezenas de linhas idênticas por enquete). Agora loga UMA vez por enquete por sessão (`unknownPollWarned`, Set limitado a 200 em index.mjs).
+- **Timeout da sync de grupos: 30s → 90s (filho) / 35s → 95s (corrida do pai)** (2026-09-24): em 2 boots reais o socket descartável precisou de >30s para abrir+syncar logo após o kill do bot principal (o servidor leva instantes para liberar a conexão anterior da mesma sessão); a tentativa seguinte sincronizou 13 grupos. O bound continua existindo (sync travada de verdade ainda é morta).
 - **P-08 (2026-09-24)**: fotos de detalhe (`cards.extra_images`, até 4) saem em sequência após a foto principal, ANTES de persistir `announcement_sent_at` (crash → reenvio com os MESMOS messageIds estáveis `extra-1..4`).
 - **P-09 (2026-09-24)**: `bot/payment-reminder.mjs` — DM ao arrematante a cada 7 dias (`BOT_PAYMENT_REMINDER_DAYS`) enquanto a entrega estiver `waiting_payment` sem payment `paid`; sem aviso/punição; máx. 5 por padrão (`BOT_PAYMENT_REMINDER_MAX`, 0 = ilimitado); idempotente por `payment_reminders.purchase_id` UNIQUE.
 
@@ -54,7 +56,7 @@
 
 ## Grupos, participantes e estado
 
-- `sync-groups.mjs` (spawnado pelo supervisor) + `syncOpenAuctionGroups` no filho: `whatsapp_groups` ativos e default; participantes sincronizados (`group-participants.mjs`, mapa LID↔telefone).
+- `sync-groups.mjs` (spawnado pelo supervisor) + `syncOpenAuctionGroups` no filho: `whatsapp_groups` ativos e default; participantes sincronizados (`group-participants.mjs`, mapa LID↔telefone). O fluxo automático é stop-bot → sync → restart: o bot fica fora por até ~95s quando o sync demora; a sincronização manual também existe ("Atualizar grupos" na Central → comando `sync_groups`).
 - Caches limitados: `contactNames` (LRU cap), `pollMessageCache` (máx 200), `pendingPollVotes`, `dispatchInFlight`, `groupMetadataCache` (TTL por timestamp), `enrichmentMemo`.
 - `poll-store.mjs`/`instrument.mjs`: persistência de mensagens de enquete para re-decrypt e telemetria de eventos.
 

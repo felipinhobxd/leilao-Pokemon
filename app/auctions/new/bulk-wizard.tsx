@@ -723,7 +723,7 @@ export default function BulkAuctionWizard() {
   }
 
   return <main className="shell batch-shell">
-    <header className="topbar"><div><p className="eyebrow">NOVOS LEILÕES</p><h1>Cadastro em lote</h1><p className="muted">Adicione várias cartas, defina a ordem e deixe o bot publicar sozinho.</p></div><div className="topbar-actions"><button className="secondary" disabled={draftBusy || busy || !cards.length} onClick={() => void saveDraft()}>{draftBusy ? "Salvando…" : "💾 Salvar rascunho"}</button><Link href="/">← Cancelar</Link></div></header>
+    <header className="topbar"><div><p className="eyebrow">NOVOS LEILÕES</p><h1>Cadastro em lote</h1><p className="muted">Adicione várias cartas, defina a ordem e deixe o bot publicar sozinho.</p></div><div className="topbar-actions"><Link className="button-link" href="/auctions/brinde">🎁 Brinde</Link><button className="secondary" disabled={draftBusy || busy || !cards.length} onClick={() => void saveDraft()}>{draftBusy ? "Salvando…" : "💾 Salvar rascunho"}</button><Link href="/">← Cancelar</Link></div></header>
     <nav className="batch-steps">{["Cartas", "Valores", "Publicação", "Revisar"].map((label, index) => <button key={label} className={step === index + 1 ? "active" : step > index + 1 ? "done" : ""} onClick={() => index + 1 < step && setStep(index + 1)}>{index + 1}. {label}</button>)}</nav>
     {error && <p className="alert" role="alert">{error}</p>}
     {draftNotice && <p className="notice">{draftNotice}</p>}

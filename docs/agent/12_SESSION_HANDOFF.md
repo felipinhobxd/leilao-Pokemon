@@ -1,11 +1,17 @@
 # SESSION HANDOFF
 
 ## Última atualização
-2026-09-24 (fim da sessão: rascunhos do wizard em lote — salvar/abrir/excluir, migration 20260924150000) + hotfix do spam "Closing session" no console do bot
+2026-09-24 (rodada 2: brinde movido para /auctions/brinde + spam "enquete desconhecida" dedup + timeout da sync de grupos 30s→90s)
 
 ## Sessão atual
 1. Rascunhos do wizard em lote (concluído, CI verde em 529c0f9d).
-2. Incidente do operador no `npm run start`: "Falha na sincronização automática de grupos: Tempo esgotado" + reconexão + enxurrada de "Closing session: SessionEntry {...}" no terminal (+ privKeys vazando no log) → operador deu SIGINT por susto. Diagnóstico: ENCHENTE era ruído bruto de `console.info` dentro do libsignal (`session_record.js`), disparado pelo ciclo stop-bot → sync-groups (socket descartável) → restart do bot. Sem dano: o "close" só marca `indexInfo.closed`; creds/sessão intactas (bot\sessao: 2193 arquivos, creds.json presente).
+2. Hotfix spam "Closing session" do libsignal (04605f72, CI verde).
+3. Novo relato do operador + decisões: (a) sync de grupos seguia falhando na 1ª tentativa (recuperava depois); (b) spam "Voto recebido para enquete desconhecida" (dezenas de linhas idênticas); (c) PRODUTO: brinde SAI da Central WhatsApp e vai para a área de leilões com botão "Brinde".
+
+## O que foi concluído (rodada 2)
+1. **Brinde movido**: `/auctions/brinde` (nova página, app/auctions/brinde/page.tsx) com o formulário (título, opções 2-12, grupo via /api/whatsapp/groups com default, agendar) + "Brindes recentes"; botão "🎁 Brinde" no topbar do wizard em lote (todas as etapas); Central WhatsApp SEM o formulário (QR/status/grupos/reconexão permanecem).
+2. **Spam "enquete desconhecida" dedup**: votos em enquetes não-rastreadas (brindes do painel, enquetes antigas já limpas pela 30d) são esperados — o warn por EVENTO virou UMA linha por enquete por sessão (`unknownPollWarned`, Set limitado a 200, bot/index.mjs).
+3. **Timeout da sync de grupos: 30s → 90s** (sync-groups.mjs) e corrida do pai **35s → 95s** (service.mjs) — justificativa medida: 2 boots reais onde o socket descartável precisou de >30s logo após o kill do bot principal; a tentativa seguinte sincronizou 13 grupos (log do operador). O bound continua existindo.
 
 ## O que foi concluído
 8. **Hotfix libsignal spam**: `bot/patch-baileys.mjs` ganhou `patchLibsignalSessionSpam()` — 7 call sites (`Closing/Opening session`, `Session already closed/open`, `Removing old closed session`, pré-key churn em session_builder, "Decrypted message with closed session") viraram `void 0` com comentário explicativo. `console.error` de falhas REAIS (decrypt, migração V1) permanece. Aplicado na máquina do operador na hora + postinstall/CI cobertos (`patch-baileys.mjs --check` roda no `npm --prefix bot run check`).
@@ -24,9 +30,11 @@
 
 ## Arquivos modificados (nesta sessão)
 - `lib/auction-draft.ts` (novo), `app/api/auctions/drafts/route.ts` (novo), `supabase/migrations/20260924150000_auction_drafts.sql` (novo), `tests/auction-draft.test.mjs` (novo), `tests/auction-drafts.sql` (novo)
-- `app/auctions/new/bulk-wizard.tsx` (saveDraft/openDraft/discardDraft/refreshDrafts, uploadImages(keepFiles), extras cap, merge extraImages, topbar, painel rascunhos, "＋ Novo leilão" na fila), `app/auctions/new/batch-wizard.css` (.topbar-actions, .draft-row)
+- `app/auctions/new/bulk-wizard.tsx` (saveDraft/openDraft/discardDraft/refreshDrafts, uploadImages(keepFiles), extras cap, merge extraImages, topbar com Brinde + Salvar rascunho, painel rascunhos, "＋ Novo leilão" na fila), `app/auctions/new/batch-wizard.css` (.topbar-actions, .draft-row)
+- `app/auctions/brinde/page.tsx` (novo — formulário movido da Central), `app/whatsapp/page.tsx` (BRINDE removido)
+- `bot/index.mjs` (unknownPollWarned dedup), `bot/sync-groups.mjs` (timeout 90s), `bot/service.mjs` (corrida 95s), `bot/patch-baileys.mjs` (libsignal spam), `.gitignore` (bot/backups/)
 - `scripts/doctor.mjs`, `.github/workflows/ci.yml` (tests/auction-drafts.sql)
-- `docs/agent/03,04,05,09,11` + este handoff + 00_INDEX
+- `docs/agent/03,04,05,06,09,11` + este handoff + 00_INDEX
 
 ## Decisões tomadas
 - Rascunhos no Supabase (fonte da verdade; valem em qualquer navegador/painel), NÃO localStorage.
@@ -34,12 +42,15 @@
 - Estágios transitórios de reconhecimento não sobrevivem ao rascunho; candidatos SIM (≤5, sem File dá para escolher à mão).
 - Drafts NÃO entram na limpeza de 30d (operador exclui/purga; volume natural é 1-3 linhas) — decisão consciente de escopo.
 - imageUrl do rascunho não força HTTPS (é input do operador em edição); extraImages força (só o uploader escreve).
+- BRINDE pertence à área de leilões (/auctions/brinde + botão no wizard), NÃO à Central WhatsApp (decisão do operador 2026-09-24).
+- Timeout da sync de grupos: 90s (filho) / 95s (pai) — margem medida (2 boots reais >30s; recuperação posterior comprovada).
 
 ## Problemas encontrados
 - Pré-existentes, corrigidos de carona: teto de extras desconsiderava URLs já enviadas; merge de extraImages no payload descartava silenciosamente novas após upload parcial; sem retorno do wizard quando a fila está ativa.
+- libsignal despejava SessionEntry inteira (privKey) no console a cada churn de sessão (patch) e o warn de "enquete desconhecida" disparava por EVENTO (dedup).
 
 ## Testes executados
-- Node 166 OK (11 novos), bot 31 OK, typecheck OK, build OK (rota /api/auctions/drafts presente), Python 252 OK. SQL novo validado pelo CI (não há Postgres local).
+- Node 166 OK (11 novos), bot 31 OK, typecheck OK, build OK (rotas /api/auctions/drafts e /auctions/brinde presentes), Python 252 OK. SQL novo validado pelo CI (não há Postgres local).
 
 ## Ponto EXATO onde paramos
 Código completo e testado localmente. **Pendente: push + CI verde** (se esta sessão fechar antes do push, retomar aqui) e **P-13**: operador aplicar `20260924150000_auction_drafts.sql` no SQL Editor → `npm run doctor` → smoke (salvar 2 cartas, fechar navegador, reabrir/Abrir, publicar fila de teste, rascunho some da lista).

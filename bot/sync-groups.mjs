@@ -59,6 +59,11 @@ sock.ev.on("connection.update", async ({ connection, qr, lastDisconnect }) => {
   }
 });
 
+// 90s (era 30s): em 2 boots reais (2026-09-24) o socket descartável precisou
+// de mais de 30s para abrir+syncar logo após o kill do bot principal (o
+// servidor leva instantes para liberar a conexão anterior da mesma sessão) —
+// a tentativa seguinte sincronizou ("Grupos sincronizados: 13"). O bound
+// continua existindo: sync travada de verdade ainda é morta em 90s.
 timeout = setTimeout(() => {
   void finish(new Error("Tempo esgotado ao sincronizar grupos."), sock);
-}, 30_000);
+}, 90_000);

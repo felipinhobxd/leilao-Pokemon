@@ -67,6 +67,10 @@ const contactNames = new Map();
 const pollMessageCache = new Map();
 const pendingPollVotes = new Map();
 const trackedGroupJids = new Set();
+// Enquetes "desconhecidas" já avisadas nesta sessão: votos em brindes do
+// painel e enquetes antigas já limpas são ESPERADOS (decisão: sem rastrear
+// votos) — o warn por EVENTO inundava o console (dezenas por enquete).
+const unknownPollWarned = new Set();
 const dispatchInFlight = new Map();
 // Bounded caches (review: the three Maps above grew without limit for the
 // process lifetime). contactNames: LRU by insertion order. groupMetadata: a
@@ -741,7 +745,13 @@ async function processIncomingPollMessage(message) {
   const loaded = await loadDispatchForPoll(pollMessageId);
   const dispatch = loaded.dispatch;
   if (!dispatch?.poll_message_json && !loaded.cached?.message) {
-    console.warn(`Voto recebido para enquete desconhecida: ${pollMessageId}`);
+    // Loga UMA vez por enquete por sessão (Set limitado): cada voto de cada
+    // participante disparava o warn de novo — dezenas de linhas idênticas.
+    if (!unknownPollWarned.has(pollMessageId)) {
+      if (unknownPollWarned.size >= 200) unknownPollWarned.clear();
+      unknownPollWarned.add(pollMessageId);
+      console.warn(`Voto recebido para enquete desconhecida: ${pollMessageId}`);
+    }
     return;
   }
 

@@ -85,8 +85,8 @@ O que falta: nada — validado por `node --check` + suíte do bot.
 ID: P-07
 Título: Enquete rápida de brindes (texto livre/emojis, "quem clicar primeiro leva")
 Prioridade: Média
-Status: CONCLUÍDO 2026-09-24 — decisão do operador: SÓ painel, SÓ publicar (votos visíveis na própria enquete do WhatsApp; sem rastrear vencedor). Tabela `whatsapp_quick_polls` + `POST /api/quick-polls` (valida título 1-200, 2-12 opções ≤100 chars, grupo ativo, idempotente por external_event_id) + dreno `sendDueQuickPolls()` no ciclo de 3s do bot (messageId estável, sent_at só após envio) + formulário "Enquete rápida de brinde" na Central WhatsApp.
-Arquivos relacionados: app/api/quick-polls/route.ts, bot/index.mjs::sendDueQuickPolls, app/whatsapp/page.tsx
+Status: CONCLUÍDO 2026-09-24 — decisão do operador: SÓ painel, SÓ publicar (votos visíveis na própria enquete do WhatsApp; sem rastrear vencedor). Tabela `whatsapp_quick_polls` + `POST /api/quick-polls` (valida título 1-200, 2-12 opções ≤100 chars, grupo ativo, idempotente por external_event_id) + dreno `sendDueQuickPolls()` no ciclo de 3s do bot (messageId estável, sent_at só após envio). ATUALIZAÇÃO 2026-09-24: o formulário foi MOVIDO da Central WhatsApp para `/auctions/brinde` (decisão do operador: brinde pertence à área de leilões; botão "🎁 Brinde" no topbar do wizard em lote; a página escolhe o grupo via /api/whatsapp/groups em vez de depender do grupo padrão da Central).
+Arquivos relacionados: app/api/quick-polls/route.ts, bot/index.mjs::sendDueQuickPolls, app/auctions/brinde/page.tsx
 Descrição: enquete com título/opções livres, sem carta/lance; publicada no grupo.
 O que falta: nada.
 ```

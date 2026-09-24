@@ -288,7 +288,10 @@ async function runGroupSync() {
 
   const code = await Promise.race([
     new Promise(resolve => active.once("exit", resolve)),
-    delay(35_000).then(() => "timeout"),
+    // 95s (era 35s): o filho agora tem timeout próprio de 90s (2 boots reais
+    // precisaram de >30s — ver sync-groups.mjs); a corrida do pai tem que
+    // cobrir o timeout do filho com folga.
+    delay(95_000).then(() => "timeout"),
   ]);
   if (code === "timeout") {
     try { active.kill("SIGKILL"); } catch {}

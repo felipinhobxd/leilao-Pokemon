@@ -55,6 +55,10 @@
 ### `POST /api/commands` — enfileirar comando para o bot
 - Escreve em `whatsapp_bot_commands` (o supervisor faz poll a cada 3s). Usado pela central WhatsApp (reconectar, logout, sincronizar grupos etc.).
 
+### `POST /api/quick-polls` — brindes: enquete rápida (2026-09-24)
+- Body: `eventId`, `groupId` (ativo), `title` 1..200, `options` 2..12 (≤100 chars cada), `scheduledAt` (default agora; passado >2min → 400). Idempotência leve: `external_event_id = quick-poll:{eventId}` (mesmo eventId devolve a enquete existente).
+- GET → recentes (20, agendados + enviados). Consumidor: `/auctions/brinde` (formulário movido da Central WhatsApp — decisão do operador).
+
 ### `/api/whatsapp/*`
 - `bootstrap` (estado inicial da central), `bot` (status do worker/QR/session), `groups` (lista de grupos; `is_default`), `schedules` (consulta de agendamentos). Leitura via service_role; QR NUNCA vai para não-operador.
 

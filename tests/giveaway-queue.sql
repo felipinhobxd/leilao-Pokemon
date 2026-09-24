@@ -15,9 +15,9 @@ values('44444444-4444-4444-4444-444444444444','4444444444444@g.us','Grupo Brinde
 create function pg_temp.check_that(ok boolean, message text) returns void language plpgsql as $$ begin if ok is distinct from true then raise exception 'ASSERT: %',message; end if; end $$;
 -- O argumento de plpgsql é avaliado ANTES do call: o helper chama o RPC
 -- DENTRO do próprio handler (regra dos PERIGOS).
-create function pg_temp.rejects_queue(p jsonb, expected text) returns void language plpgsql as $$
+create function pg_temp.rejects_queue(p jsonb, p_admin uuid, expected text) returns void language plpgsql as $$
 begin
-  perform public.create_auction_publish_queue(p,'00000000-0000-0000-0000-000000000031');
+  perform public.create_auction_publish_queue(p,p_admin);
   raise exception 'EXPECTED_ERROR_NOT_RAISED';
 exception when others then
   if sqlerrm<>expected then raise exception 'Expected %, got %',expected,sqlerrm; end if;

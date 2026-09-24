@@ -1,7 +1,7 @@
 # SESSION HANDOFF
 
 ## Última atualização
-2026-09-24 (rodada 2: brinde movido para /auctions/brinde + spam "enquete desconhecida" dedup + timeout da sync de grupos 30s→90s)
+2026-09-24 (rodada 2: brinde movido para /auctions/brinde + spam "enquete desconhecida" dedup + timeout da sync de grupos 30s→90s + force-dynamic no layout do brinde)
 
 ## Sessão atual
 1. Rascunhos do wizard em lote (concluído, CI verde em 529c0f9d).
@@ -12,6 +12,7 @@
 1. **Brinde movido**: `/auctions/brinde` (nova página, app/auctions/brinde/page.tsx) com o formulário (título, opções 2-12, grupo via /api/whatsapp/groups com default, agendar) + "Brindes recentes"; botão "🎁 Brinde" no topbar do wizard em lote (todas as etapas); Central WhatsApp SEM o formulário (QR/status/grupos/reconexão permanecem).
 2. **Spam "enquete desconhecida" dedup**: votos em enquetes não-rastreadas (brindes do painel, enquetes antigas já limpas pela 30d) são esperados — o warn por EVENTO virou UMA linha por enquete por sessão (`unknownPollWarned`, Set limitado a 200, bot/index.mjs).
 3. **Timeout da sync de grupos: 30s → 90s** (sync-groups.mjs) e corrida do pai **35s → 95s** (service.mjs) — justificativa medida: 2 boots reais onde o socket descartável precisou de >30s logo após o kill do bot principal; a tentativa seguinte sincronizou 13 grupos (log do operador). O bound continua existindo.
+4. **Correção de build pega pelo CI**: `/auctions/brinde` era prerenderizada como estática e o Export falhava o build em ambiente SEM env públicas (createPublicSupabaseClient lança) — `app/auctions/brinde/layout.tsx` com `export const dynamic = "force-dynamic"` (mesmo padrão do layout da Central WhatsApp). CI verde em `708ca530`. Padrão: página client-side nova que usa createPublicSupabaseClient PRECISA de layout force-dynamic.
 
 ## O que foi concluído
 8. **Hotfix libsignal spam**: `bot/patch-baileys.mjs` ganhou `patchLibsignalSessionSpam()` — 7 call sites (`Closing/Opening session`, `Session already closed/open`, `Removing old closed session`, pré-key churn em session_builder, "Decrypted message with closed session") viraram `void 0` com comentário explicativo. `console.error` de falhas REAIS (decrypt, migração V1) permanece. Aplicado na máquina do operador na hora + postinstall/CI cobertos (`patch-baileys.mjs --check` roda no `npm --prefix bot run check`).
@@ -53,11 +54,11 @@
 - Node 166 OK (11 novos), bot 31 OK, typecheck OK, build OK (rotas /api/auctions/drafts e /auctions/brinde presentes), Python 252 OK. SQL novo validado pelo CI (não há Postgres local).
 
 ## Ponto EXATO onde paramos
-Código completo e testado localmente. **Pendente: push + CI verde** (se esta sessão fechar antes do push, retomar aqui) e **P-13**: operador aplicar `20260924150000_auction_drafts.sql` no SQL Editor → `npm run doctor` → smoke (salvar 2 cartas, fechar navegador, reabrir/Abrir, publicar fila de teste, rascunho some da lista).
+Tudo concluído e publicado (CI verde em `708ca530`). Backlog: **P-13** (operador aplicar `20260924150000_auction_drafts.sql` no SQL Editor → `npm run doctor` → smoke do rascunho), **P-04** (SigLIP2 quantizado) e **P-11** (env Vercel). Verificação ao vivo pendente (operador): sync de grupos na 1ª tentativa com o timeout novo + botão "🎁 Brinde" no wizard + página /auctions/brinde.
 
 ## Próximo passo EXATO
-1. Push + esperar CI verde (jobs validate/recognition-python/windows-startup).
-2. P-13 (acima) — ação do operador; doctor confirma.
+1. P-13: operador aplicar `20260924150000_auction_drafts.sql` no SQL Editor → `npm run doctor` → smoke do rascunho.
+2. Verificação ao vivo: `npm run start` → a 1ª sync de grupos deve passar com o timeout de 90s; wizard → botão "🎁 Brinde" → /auctions/brinde → agendar → bot publica.
 3. P-04 (SigLIP2 quantizado — único item grande de IA restante) e P-11 (env Vercel) continuam no backlog.
 4. P-01 (/memory/confirm 401) permanece ABERTO — operador não confirmou se já foi resolvido; perguntar antes de mexer.
 

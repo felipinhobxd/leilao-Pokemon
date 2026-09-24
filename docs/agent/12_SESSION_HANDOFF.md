@@ -42,14 +42,13 @@
 - Node 169 OK, bot 31 OK, typecheck OK, build OK (rotas /api/auctions/drafts, /auctions/brinde presentes), Python 252 OK. SQL novo (drafts + giveaway-queue) validado pelo CI.
 
 ## Ponto EXATO onde paramos
-Código completo e testado localmente. **Pendente: push + CI verde desta rodada** (commits anteriores: 529c0f9d, 04605f72, e9c68aa0, 708ca530, 76f8c8a4 — todos verdes). Depois: **P-13** (operador aplicar 20260924150000 + 20260924160000 no SQL Editor, ordem lexical → `npm run doctor` → smoke).
+Tudo concluído e publicado. CI verde em `270a9d74` (validate inclui as 2 migrations novas + giveaway-queue.sql). Dois fixes pegos pelo CI durante a rodada: helper `rejects_queue` com a assinatura chamada (admin arg) e guards com eventIds PRÓPRIOS (reuso do eventId da fila com payload divergente = event_id_conflict), e o trigger `sync_auction_publish_queue_status` copiado da versão MAIS RECENTE (20260913203200 — removeu 'failed' dos pendentes). Backlog: **P-13** (operador aplicar 20260924150000 + 20260924160000 no SQL Editor, ordem lexical → `npm run doctor` → smoke), **P-04** e **P-11**.
 
 ## Próximo passo EXATO
-1. Push + esperar CI verde (jobs validate/recognition-python/windows-startup).
-2. P-13: operador colar os DOIS arquivos de migration no SQL Editor (150000 → 160000) → `npm run doctor` → smoke: (1) rascunho salvo → fechar → reabrir → Abrir → publicar → rascunho some; (2) carta marcada "🎁 Brinde" → publicar fila → foto + enquete no grupo.
-3. Verificação ao vivo: `npm run start` → 1ª sync de grupos deve passar com o timeout novo; seleção de texto e reorder pelo ☰ funcionam.
-4. P-04 (SigLIP2 quantizado) e P-11 (env Vercel) continuam no backlog.
-5. P-01 (/memory/confirm 401) permanece ABERTO — operador não confirmou se já foi resolvido; perguntar antes de mexer.
+1. P-13: operador colar os DOIS arquivos de migration no SQL Editor (150000 → 160000) → `npm run doctor` → smoke: (1) rascunho salvo → fechar → reabrir → Abrir → publicar → rascunho some; (2) carta marcada "🎁 Brinde" → publicar fila → foto + enquete no grupo.
+2. Verificação ao vivo: `npm run start` → 1ª sync de grupos deve passar com o timeout novo; seleção de texto e reorder pelo ☰ funcionam; legenda com variante e bandeira 🌐.
+3. P-04 (SigLIP2 quantizado) e P-11 (env Vercel) continuam no backlog.
+4. P-01 (/memory/confirm 401) permanece ABERTO — operador não confirmou se já foi resolvido; perguntar antes de mexer.
 
 ## Arquivo recomendado para continuar
 `docs/agent/11_PENDING_WORK.md` → depois `05_FRONTEND.md` (brinde/rascunhos) ou `06_WHATSAPP_BOT.md`.

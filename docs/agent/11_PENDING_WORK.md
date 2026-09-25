@@ -61,11 +61,10 @@ Próximo passo: rodar scripts/bakeoff_embeddings.py com o candidato quantizado n
 ID: P-05
 Título: Aviso de início do leilão — figurinha "O leilão vai começar!" + @todos antes do primeiro lote
 Prioridade: Média
-Status: Não iniciado (aguardando a figurinha do operador)
-Arquivos relacionados: bot/index.mjs (fluxo de publicação), bot/queue-worker.mjs, supabase (posição na fila)
-Descrição: ao iniciar uma fila (agendada), bot publica a figurinha e menciona @todos (mentionedJid) antes do primeiro dispatch.
-O que falta: asset da figurinha; decidir gatilho (início de fila vs. X min antes); implementar envio de sticker no Baileys.
-Próximo passo: pedir a figurinha ao operador e definir o momento do disparo.
+Status: CONCLUÍDO — figurinha capturada pelo operador em 2026-09-23 (enviar no WhatsApp + `!figurinha` na mesma conversa; persiste em bot/data/announcement-sticker.json — o doctor checa). GATILHO CORRIGIDO 2026-09-24: era baseado no 1º dispatch (status scheduled, posição 1), o que falhava em silêncio para (a) filas "Agora" (o runScheduler claimava/enviava o lote 1 antes do anúncio consultar) e (b) filas começando com BRINDE (sem dispatch na posição 1). Agora o gatilho é a FILA (auction_publish_queues.starts_at): janela de BOT_ANNOUNCE_MINUTES_BEFORE (default 5) antes até ANNOUNCE_GRACE_MINUTES (default 15) depois do início; pausada fica em silêncio; idempotente por announce-state.json; o anúncio roda PRIMEIRO no ciclo de 3s.
+Arquivos relacionados: bot/index.mjs::sendOpeningAnnouncements, bot/announce-sticker.mjs (+ testes), scripts/doctor.mjs (check da figurinha)
+Descrição: ao iniciar uma fila, bot publica a figurinha + @todos (menção real de todos os participantes via groupMetadata).
+Próximo passo: nenhum — verificação ao vivo na próxima fila agendada/"Agora".
 ```
 
 ```text

@@ -29,6 +29,11 @@ export const STICKER_FILE = join(DATA_DIR, "announcement-sticker.json");
 export const ANNOUNCE_STATE_FILE = join(DATA_DIR, "announce-state.json");
 
 export const ANNOUNCE_MINUTES_BEFORE = Number(process.env.BOT_ANNOUNCE_MINUTES_BEFORE ?? 5);
+// Após o início da fila, o bot ainda avisa por esta janela (restart atrasado
+// cobre); além disso a fila fica em silêncio — "vai começar" tardio seria
+// mentira. Desacoplado do dispatch: fila "Agora" tem o 1º lote claimado
+// antes do anúncio, e fila começando com BRINDE nem tem dispatch na pos. 1.
+export const ANNOUNCE_GRACE_MINUTES = Number(process.env.BOT_ANNOUNCE_GRACE_MINUTES ?? 15);
 
 function readJson(path) {
   try {

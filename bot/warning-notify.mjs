@@ -98,7 +98,9 @@ export function createAdminNotificationDrain({ db, getSocket, adminJids = DEFAUL
           if (updateError) throw new Error(updateError.message);
           if (everyone) {
             delivered += 1;
-            console.log(`⚠️ Aviso global entregue (${notification.external_event_id}) para ${sentTo.length} administrador(es).`);
+            // Terminal: QUEM, em qual enquete/lote e quais valores — o operador
+            // acompanha ao vivo sem abrir o painel.
+            console.log(`⚠️ 3 AVISOS: ${String(payload.participant_name ?? "Participante")} — última redução no lote ${payload.lot_number ?? "—"} (${payload.card_name ?? "Carta"}): ${brl(payload.previous_amount)} → ${brl(payload.new_amount)} · DM enviada a ${sentTo.length} admin(s).`);
           }
         }
         return delivered;
@@ -165,6 +167,13 @@ export function createParticipantWarningDrain({ db, getSocket, resolveJid, inter
             .eq("participant_id", warning.participant_id)
             .lte("occurred_at", warning.occurred_at);
           if (countError) throw new Error(countError.message);
+          // Nome para o log do terminal (o operador acompanha quem trocou,
+          // em qual enquete/lote e por qual preço sem abrir o painel).
+          let who = String(warning.participant_id);
+          try {
+            const { data: person } = await db.from("participants").select("display_name").eq("id", warning.participant_id).maybeSingle();
+            if (person?.display_name) who = String(person.display_name);
+          } catch { /* nome é luxo do log, nunca trava a entrega */ }
           let done = false;
           const jid = resolveJid ? await resolveJid(warning.participant_id) : null;
           if (jid) {
@@ -172,14 +181,14 @@ export function createParticipantWarningDrain({ db, getSocket, resolveJid, inter
               await sock.sendMessage(jid, { text: formatParticipantWarning(warning, count) });
               delivered += 1;
               done = true;
-              console.log(`⚠️ DM de aviso entregue ao participante ${warning.participant_id} (${warning.external_event_id}).`);
+              console.log(`⚠️ ${who} reduziu o lance no lote ${warning.lot_number ?? "—"} (${warning.card_name ?? "Carta"}): ${brl(warning.previous_amount)} → ${brl(warning.new_amount)} · aviso ${count ?? 1} de 3 · DM enviada.`);
             } catch (error) {
               console.error(`Aviso: falha na DM ao participante ${warning.participant_id}:`, error?.message || error);
             }
           } else {
             // Sem JID de telefone resolvível a DM é impossível: marca para não
             // rodar em círculo — o aviso CONTINUA contando (banco + admins).
-            console.warn(`Aviso: participante ${warning.participant_id} sem JID para DM — aviso registrado sem aviso direto.`);
+            console.warn(`⚠️ ${who} reduziu o lance no lote ${warning.lot_number ?? "—"} (${warning.card_name ?? "Carta"}): ${brl(warning.previous_amount)} → ${brl(warning.new_amount)} · aviso ${count ?? 1} de 3 · SEM DM (nenhum JID de telefone resolvível).`);
             done = true;
           }
           // notified_at só depois de decidir a entrega (crash → reenvio).

@@ -1,7 +1,18 @@
 # SESSION HANDOFF
 
 ## Última atualização
-2026-09-24 (rodada 5: avisos de alteração de valores — DM ao PARTICIPANTE que reduziu o lance + painel ao vivo no dashboard; migration 20260924180000)
+2026-09-24 (rodada 6: figurinha+@todos de abertura NÃO disparava — gatilho reescrito pela FILA; avisos detalhados no terminal; revisão geral a pedidos)
+
+## Rodada 6 (o que foi feito)
+1. **Figurinha + @todos (P-05, gatilho corrigido)**: o recurso JÁ existia (figurinha capturada 2026-09-23, arquivo em bot/data/announcement-sticker.json ✓) mas NUNCA disparava: (a) filas "Agora" — o runScheduler claimava o lote 1 antes do anúncio consultar (status scheduled sumia); (b) fila começando com BRINDE nem tem dispatch na posição 1. Gatilho novo: pela FILA (`auction_publish_queues.starts_at`), janela 5 min antes (`BOT_ANNOUNCE_MINUTES_BEFORE`) até 15 min depois (`ANNOUNCE_GRACE_MINUTES` — cobre bot que subiu atrasado; fila velha fica em silêncio); pausada não anuncia; idempotente (announce-state.json); **o anúncio agora roda PRIMEIRO no ciclo de 3s**. P-05 marcado CONCLUÍDO (11_PENDING_WORK).
+2. **Avisos no terminal**: os drenos agora logam QUEM, QUAL enquete/lote e QUAIS valores — "⚠️ Ana reduziu o lance no lote 7 (Gengar): R$ 30,00 → R$ 22,00 · aviso 1 de 3 · DM enviada." e no 3º: "⚠️ 3 AVISOS: Ana — última redução no lote N (carta): R$ X → R$ Y · DM enviada a 2 admin(s)". No SITE o painel "Avisos de alteração de valores" já mostra (rodada 5).
+3. **Revisão geral (pedido do operador)**: sem sobras do gatilho antigo (grep); sticker/announce/doctor conferidos; defaults de env OK (BOT_ADMIN_WA_JIDS = 554197285978+5519989759121); suítes: bot 38, site 170, typecheck, build — verdes.
+4. Docs: 06 (P-05 + logs de terminal), 11 (P-05 CONCLUÍDO), este handoff.
+
+## Pendências do operador (repetindo)
+- **P-13**: aplicar as 4 migrations no SQL Editor (150000→160000→170000→180000) → `npm run doctor` → smokes (rascunho, brinde por carta, avisos).
+- **P-11**: `RECOGNITION_SERVICE_SHARED_SECRET` na Vercel (reconhecimento do painel publicado).
+- Próxima fila agendada/"Agora": conferir figurinha + @todos chegando no grupo (janela de 5 min antes até 15 min depois do início).
 
 ## Sessão atual (resumo das 5 rodadas)
 1. **Rascunhos do wizard em lote** (529c0f9d): salvar/abrir/excluir, fotos no Storage, apaga ao publicar; migration 150000.

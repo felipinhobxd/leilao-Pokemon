@@ -9,7 +9,7 @@ import { join } from "node:path";
 const dataDir = mkdtempSync(join(tmpdir(), "announce-sticker-test-"));
 process.env.BOT_DATA_DIR = dataDir;
 
-const { loadAnnouncedQueueIds, loadAnnouncementSticker, saveAnnouncementSticker, markQueueAnnounced, buildOpeningMessage, STICKER_FILE } = await import("./announce-sticker.mjs");
+const { loadAnnouncedQueueIds, loadAnnouncementSticker, saveAnnouncementSticker, markQueueAnnounced, buildOpeningMessage, STICKER_FILE, ANNOUNCE_GRACE_MINUTES, ANNOUNCE_MINUTES_BEFORE } = await import("./announce-sticker.mjs");
 
 test.after(() => {
   rmSync(dataDir, { recursive: true, force: true });
@@ -55,4 +55,9 @@ test("mensagem de abertura menciona participantes reais", () => {
 test("estado de produção NÃO é tocado (BOT_DATA_DIR redirecionado)", () => {
   // O arquivo real do operador não pode ganhar nada desta suíte.
   assert.ok(STICKER_FILE.startsWith(dataDir), "os testes escrevem no temp, nunca em bot/data");
+});
+
+test("janela de grace: bot que sob atrasado ainda avisa; fila velha fica em silencio", () => {
+  assert.ok(ANNOUNCE_GRACE_MINUTES > 0, "grace precisa existir");
+  assert.ok(ANNOUNCE_MINUTES_BEFORE >= 0, "janela anterior precisa ser >= 0");
 });

@@ -138,9 +138,9 @@ const WARNING = {
   occurred_at: "2026-09-24T23:10:00.000Z",
 };
 
-function fakeParticipantDb(rows) {
+function fakeParticipantDb(rows, participant = { display_name: "Ana" }) {
   const state = { rows: rows.map(row => ({ notified_at: null, ...row })), count: 1 };
-  const chain = () => {
+  const warningsChain = () => {
     const c = {
       head: false,
       select: (_columns, options) => { c.head = Boolean(options?.head); return c; },
@@ -155,7 +155,21 @@ function fakeParticipantDb(rows) {
     };
     return c;
   };
-  return { state, from: () => chain() };
+  return {
+    state,
+    from: table => {
+      if (table === "participants") {
+        return {
+          select: () => ({
+            eq: () => ({
+              maybeSingle: () => Promise.resolve({ data: participant, error: null }),
+            }),
+          }),
+        };
+      }
+      return warningsChain();
+    },
+  };
 }
 
 test("formatParticipantWarning: DM nomeia enquete/lote, valores, horário e o no do aviso", () => {

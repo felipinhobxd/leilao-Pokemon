@@ -46,6 +46,8 @@ export default function Dashboard() {
   const [purgeStep1, setPurgeStep1] = useState("");
   const [deleteAuctionOpen, setDeleteAuctionOpen] = useState(false);
   const [deleteAuctionConfirm, setDeleteAuctionConfirm] = useState("");
+  const deleteAuctionDialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => { if (deleteAuctionOpen && deleteAuctionDialog.current && !deleteAuctionDialog.current.open) deleteAuctionDialog.current.showModal(); }, [deleteAuctionOpen]);
   const [purgeStep2, setPurgeStep2] = useState("");
   const revision = useRef(0);
   const fullLoadedAt = useRef(0);
@@ -251,7 +253,7 @@ export default function Dashboard() {
       {editor.kind==="PARTICIPANT"&&editor.row&&<>{input("display_name","Nome","text",true)}{input("whatsapp_id","Identificador WhatsApp","text",true)}{input("phone_e164","Telefone internacional")}{input("notes","Observações")}<label>Status<select name="status" defaultValue={str(editor.row,"status")||"active"}><option value="active">Ativo</option><option value="suspended">Suspenso</option><option value="banned">Bloqueado</option></select></label></>}
       {editor.kind==="AUCTION"&&<>{input("starting_price","Preço inicial","number",true)}{input("buyout_price","ARREMATE (opcional)","number")}{input("scheduled_end_at","Prazo (horário de Brasília)","datetime-local")}</>}
       <div className="actions"><button disabled={!writable}>Salvar</button><button type="button" disabled={busy} onClick={()=>setEditor(null)}>Cancelar</button></div></form></dialog>}
-    {deleteAuctionOpen && auction && <dialog open className="panel modal" aria-label="Excluir leilão" onCancel={event => { if (busy) event.preventDefault(); else setDeleteAuctionOpen(false); }}><h2>Excluir leilão definitivamente</h2>
+    {deleteAuctionOpen && auction && <dialog ref={deleteAuctionDialog} className="panel modal" aria-label="Excluir leilão" onCancel={event => { if (busy) event.preventDefault(); else setDeleteAuctionOpen(false); }}><h2>Excluir leilão definitivamente</h2>
       <p>Você quer mesmo excluir o leilão <strong>#{Number(auction.lot_number) || "—"}</strong> da carta <strong>{str(card, "name")}</strong>?</p>
       <p className="muted">Todos os dados dele (lances, votos, publicações, eventos, compras, pagamentos) são apagados e ele sai da exportação do Excel. {str(card, "name") && "A carta também é excluída quando não há outro leilão dela. "}Não há como desfazer.</p>
       <form className="form-grid" onSubmit={event => { event.preventDefault(); void deleteAuctionForever(); }}>

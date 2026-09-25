@@ -12,6 +12,12 @@
 -- (extração programática, sem transcrição manual).
 begin;
 
+-- setval (OPERATOR FIX abaixo) exige UPDATE na sequence; o grant de
+-- 20260913050837 só dava usage,select — sem isto o service_role (que é
+-- quem executa os RPCs em produção e nos testes) recebe
+-- "permission denied for sequence".
+grant update on sequence public.auction_lot_number_seq to service_role;
+
 create table if not exists public.auction_publish_queues (
   id uuid primary key default gen_random_uuid(),
   status text not null default 'scheduled' check (status in ('scheduled','running','paused','completed','cancelled')),

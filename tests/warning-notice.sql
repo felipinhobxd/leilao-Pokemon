@@ -38,7 +38,7 @@ begin
   snap:=public.read_dashboard_snapshot();
   perform pg_temp.check_that((select jsonb_array_length(coalesce(snap->'participant_warnings','[]'::jsonb))=1),'dashboard snapshot exposes participant_warnings');
   perform pg_temp.check_that((select (snap->'participant_warnings'->0->>'lot_number') is not null and (snap->'participant_warnings'->0->>'card_name')='Gengar'),'snapshot warning carries lot and card');
-  perform pg_temp.check_that((select (snap->'participant_warnings'->0->'notified_at') is null),'snapshot carries notified_at (pending DM)');
+  perform pg_temp.check_that((select jsonb_typeof(snap->'participant_warnings'->0->'notified_at')='null'),'snapshot carries notified_at (pending DM)');
   perform pg_temp.check_that((select jsonb_array_length(coalesce(snap->'value_change_log','[]'::jsonb))=2),'dashboard snapshot exposes value_change_log');
 
   -- O dreno do bot marca notified_at; nada é apagado (o contador dos 3

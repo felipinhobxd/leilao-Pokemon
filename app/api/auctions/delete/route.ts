@@ -1,5 +1,5 @@
 import { authorize, failure, HttpError } from "@/lib/backend";
-import { isAuctionDeleteConfirm } from "@/lib/purge";
+import { isAuctionDeleteConfirm, normalizePurgePhrase } from "@/lib/purge";
 
 export const runtime = "nodejs";
 
@@ -18,7 +18,8 @@ export async function POST(request: Request) {
     if (!uuid.test(auctionId)) throw new HttpError(400, "Leilão inválido.");
     const confirm = String(body.confirm ?? "");
     if (!isAuctionDeleteConfirm(confirm)) throw new HttpError(400, "Digite exatamente “sim quero” para excluir.");
-    const { data, error } = await db.rpc("delete_auction", { p_auction_id: auctionId, p_confirm: confirm.trim(), p_admin_user_id: user.id });
+    const normalizedConfirm = normalizePurgePhrase(confirm);
+    const { data, error } = await db.rpc("delete_auction", { p_auction_id: auctionId, p_confirm: normalizedConfirm, p_admin_user_id: user.id });
     if (error) {
       const message = String(error.message ?? "");
       if (/delete_not_confirmed/i.test(message)) throw new HttpError(400, "Digite exatamente “sim quero” para excluir.");

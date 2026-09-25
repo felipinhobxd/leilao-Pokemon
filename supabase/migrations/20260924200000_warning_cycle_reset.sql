@@ -10,8 +10,8 @@
 -- no manual transcription) with ONLY the marked ADDITION in the warning hook.
 begin;
 
-alter table public.participant_warnings
-  add column if not exists cycle_closed boolean not null default false;
+-- A coluna cycle_closed nasce na 20260924180000 (o snapshot a seleciona e
+-- ela aplica antes na ordem lexical); aqui fica apenas a logica do ciclo.
 
 create or replace function public.process_auction_command(p_command jsonb,p_admin_user_id uuid)
 returns jsonb language plpgsql security invoker set search_path='' as $$

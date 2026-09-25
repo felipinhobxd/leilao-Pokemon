@@ -14,6 +14,15 @@
 begin;
 
 -- ---------------------------------------------------------------------------
+-- 1) participant_warnings.cycle_closed: the row that CLOSED a warning cycle
+--    (3rd warning -> admin DM -> counter resets). The column is born HERE
+--    because this migration's snapshot selects it; the cycle LOGIC lives in
+--    20260924200000 (process_auction_command hook) which runs right after.
+-- ----------------------------------------------------------------------------
+alter table public.participant_warnings
+  add column if not exists cycle_closed boolean not null default false;
+
+-- ---------------------------------------------------------------------------
 -- read_dashboard_snapshot: LATEST body is 20260924120000 (ADDITION C round:
 -- real payments + payment_reminders). Copied VERBATIM with ONLY the marked
 -- addition: value_change_log + participant_warnings (bounded 100, most

@@ -61,7 +61,46 @@ begin
   perform pg_temp.check_that((result->>'card_deleted')='false','card with another auction SURVIVES');
   perform pg_temp.check_that((select count(*)=1 from public.cards where name='Com Historico'),'card kept');
 
-  -- 6) immutable_audit restaurado: DELETE manual em auction_events bloqueia.
+  -- 6) Exclusão de um item de fila mantém a fila consistente: o total
+  -- diminui; quando o último item sai, a fila vazia também desaparece.
+  result:=public.create_auction_publish_queue(
+    jsonb_build_object(
+      'eventId','d-queue-delete',
+      'queue',jsonb_build_object(
+        'group_id',(select id from public.whatsapp_groups where active order by created_at nulls last limit 1),
+        'starts_at',clock_timestamp()+interval '1 day',
+        'interval_seconds',60
+      ),
+      'items',jsonb_build_array(
+        jsonb_build_object(
+          'card',jsonb_build_object('name','Fila Delete 1','language','pt-BR','condition','NM','image_url','https://cdn.example/1.webp'),
+          'auction',jsonb_build_object('lot_number',7001,'starting_price',5,'bid_increment',1,'duration_seconds',120,
+            'poll_options',jsonb_build_array(
+              jsonb_build_object('label','R$ 5,00','amount',5,'isBuyout',false),
+              jsonb_build_object('label','R$ 6,00','amount',6,'isBuyout',false)
+            )
+          )
+        ),
+        jsonb_build_object(
+          'card',jsonb_build_object('name','Fila Delete 2','language','pt-BR','condition','NM','image_url','https://cdn.example/2.webp'),
+          'auction',jsonb_build_object('lot_number',7002,'starting_price',5,'bid_increment',1,'duration_seconds',120,
+            'poll_options',jsonb_build_array(
+              jsonb_build_object('label','R$ 5,00','amount',5,'isBuyout',false),
+              jsonb_build_object('label','R$ 6,00','amount',6,'isBuyout',false)
+            )
+          )
+        )
+      )
+    ),
+    '00000000-0000-0000-0000-000000000071'
+  );
+  result:=public.delete_auction((result->'items'->0->'auction'->>'id')::uuid,'sim quero','00000000-0000-0000-0000-000000000071');
+  perform pg_temp.check_that((select total_items=1 and status='scheduled' from public.auction_publish_queues where id=(result->'items'->0->'dispatch'->>'queue_id')::uuid),'queue keeps remaining item');
+  perform pg_temp.check_that((select count(*)=1 from public.whatsapp_dispatches where queue_id=(result->'items'->0->'dispatch'->>'queue_id')::uuid),'queue keeps one dispatch');
+  result:=public.delete_auction((select auction_id from public.whatsapp_dispatches where queue_id=(select id from public.auction_publish_queues where total_items=1 and status='scheduled' order by created_at desc limit 1) order by queue_position limit 1),'sim quero','00000000-0000-0000-0000-000000000071');
+  perform pg_temp.check_that((select count(*)=0 from public.auction_publish_queues where id=(result->'items'->0->'dispatch'->>'queue_id')::uuid),'empty queue removed');
+
+  -- 7) immutable_audit restaurado: DELETE manual em auction_events bloqueia.
   begin
     delete from public.auction_events where id=(select min(id) from public.auction_events);
     raise exception 'EXPECTED_ERROR_NOT_RAISED';

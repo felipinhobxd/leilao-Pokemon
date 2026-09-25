@@ -1,7 +1,6 @@
--- 2026-09-25: finalize queue bookkeeping for permanent auction deletion.
--- Empty queues are removed (their quick-poll rows cascade); non-empty queues
--- keep an exact total_items count and complete automatically when no pending
--- dispatch/poll remains.
+-- 2026-09-25: keep publish queues consistent when an auction is
+-- permanently deleted. Empty queues are removed; non-empty queues keep an
+-- exact total_items count and complete when no pending item remains.
 
 begin;
 
@@ -58,24 +57,10 @@ begin
   -- participant_warnings.auction_id é SET NULL: avisos globais sobrevivem.
   delete from public.auctions where id=a.id;
 
-  -- A exclusão de um item também atualiza a fila que o continha. O dispatch
-  -- não dispara o trigger de sincronização ao ser removido, então sem este
-  -- bloco uma fila de 1 item ficaria "scheduled" para sempre com total_items=1.
+  -- Se o leilão fazia parte de uma fila, o dispatch já foi removido acima.
+  -- Atualizamos a fila explicitamente, pois DELETE no dispatch não dispara o
+  -- trigger de sincronização por mudança de status.
   if deleted_queue_id is not null then
-    select q.status,q.total_items
-      into deleted_queue_status,deleted_queue_total
-      from public.auction_publish_queues q
-     where q.id=deleted_queue_id
-     for update;
-
-    select
-      (select count(*) from public.whatsapp_dispatches dd
-        where dd.queue_id=deleted_queue_id and dd.status in('scheduled','sending'))
-      + (select count(*) from public.whatsapp_quick_polls qp
-        where qp.queue_id=deleted_queue_id and qp.sent_at is null)
-      into remaining_queue_pending;
-
-    if deleted_queue_id is not null then
     select
       (select count(*) from public.whatsapp_dispatches dd
         where dd.queue_id=deleted_queue_id)

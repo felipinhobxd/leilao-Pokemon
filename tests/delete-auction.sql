@@ -22,7 +22,7 @@ exception when others then
 end $$;
 set local role service_role;
 do $$
-declare card jsonb; a1 jsonb; a2 jsonb; p1 jsonb; result jsonb; aid uuid; aid2 uuid;
+declare card jsonb; a1 jsonb; a2 jsonb; p1 jsonb; result jsonb; aid uuid; aid2 uuid; qid uuid; queued_aid1 uuid; queued_aid2 uuid;
 begin
   -- Carta A: leilão de teste com lance, redução (aviso) e compra (buyout).
   card:=pg_temp.cmd('{"type":"CARD_CREATE","eventId":"d-card1","data":{"name":"Teste Excel A","starting_price":5,"buyout_price":50}}');
@@ -94,11 +94,14 @@ begin
     ),
     '00000000-0000-0000-0000-000000000071'
   );
-  result:=public.delete_auction((result->'items'->0->'auction'->>'id')::uuid,'sim quero','00000000-0000-0000-0000-000000000071');
-  perform pg_temp.check_that((select total_items=1 and status='scheduled' from public.auction_publish_queues where id=(result->'items'->0->'dispatch'->>'queue_id')::uuid),'queue keeps remaining item');
-  perform pg_temp.check_that((select count(*)=1 from public.whatsapp_dispatches where queue_id=(result->'items'->0->'dispatch'->>'queue_id')::uuid),'queue keeps one dispatch');
-  result:=public.delete_auction((select auction_id from public.whatsapp_dispatches where queue_id=(select id from public.auction_publish_queues where total_items=1 and status='scheduled' order by created_at desc limit 1) order by queue_position limit 1),'sim quero','00000000-0000-0000-0000-000000000071');
-  perform pg_temp.check_that((select count(*)=0 from public.auction_publish_queues where id=(result->'items'->0->'dispatch'->>'queue_id')::uuid),'empty queue removed');
+  qid:=(result->'queue'->>'id')::uuid;
+  queued_aid1:=(result->'items'->0->'auction'->>'id')::uuid;
+  queued_aid2:=(result->'items'->1->'auction'->>'id')::uuid;
+  result:=public.delete_auction(queued_aid1,'sim quero','00000000-0000-0000-0000-000000000071');
+  perform pg_temp.check_that((select total_items=1 and status='scheduled' from public.auction_publish_queues where id=qid),'queue keeps remaining item');
+  perform pg_temp.check_that((select count(*)=1 from public.whatsapp_dispatches where queue_id=qid),'queue keeps one dispatch');
+  result:=public.delete_auction(queued_aid2,'sim quero','00000000-0000-0000-0000-000000000071');
+  perform pg_temp.check_that((select count(*)=0 from public.auction_publish_queues where id=qid),'empty queue removed');
 
   -- 7) immutable_audit restaurado: DELETE manual em auction_events bloqueia.
   begin

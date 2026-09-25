@@ -1,77 +1,23 @@
 # SESSION HANDOFF
 
 ## Última atualização
-2026-09-24 (rodada 7: CORREÇÃO de produto — participante NÃO recebe DM de aviso; só conta e aos 3 os admins são DMados. Migration 180000 reescrita ANTES da aplicação)
+2026-09-25 (rodada 8: CICLO de 3 avisos com reset + auto-save de rascunho + backup na nuvem + DM de lote falho + edição de lote pendente na fila)
 
-## Rodada 7 (o que foi feito)
-1. **Correção do operador**: "o aviso não é mandando para a pessoa que trocou os valores, só para os admins". Removida a DM ao participante (dreno + formatParticipantWarning + wiring no ciclo + 6 testes + coluna notified_at). A regra volta ao desenho original: redução CONTA silenciosamente; 3 exatos → DM aos admins (554197285978 + 5519989759121, já funcionando).
-2. **Migration 20260924180000 reescrita e renomeada** (`dashboard_warnings_snapshot.sql`): só o snapshot do dashboard (`participant_warnings` + `value_change_log`, limit 100, sem notified_at). Verificação ao vivo ANTES da decisão: coluna notified_at NÃO existia no Supabase (não foi aplicada) → edição in-place é segura; se o operador tivesse aplicado a versão antiga, a nova roda sem conflito (só substitui a função; coluna sobrando é inofensiva).
-3. **Terminal em tempo real**: o log do voto agora traz o LOTE e marca redução — "🔄 Voto alterado: Ana (+55…) → R$ 30,00 → R$ 22,00 · lote 7 · ⚠️ redução: aviso global registrado" (no processamento do voto, sem polling). O log resumido do 3º aviso aos admins continua.
-4. **Dashboard**: painel "Avisos de alteração de valores" mantido (coluna DM removida) — participante, lote, carta, anterior→novo, horário, K de 3.
-5. **Verificação ao vivo de migrations** (novo aprendizado, via PostgREST com a service key do .env.local — read-only): 150000 APLICADA, 160000 APLICADA, 180000 pendente. Doctor continua confirmando rascunhos.
-6. Testes: warning-notice.sql reescrito (sem notified_at/DM), bot warning-notify limpo (32 testes), site 170, typecheck, build — verdes.
+## Rodada 8 (o que foi feito)
+1. **Ciclo de 3 avisos com RESET (decisão do operador)**: migration `20260924200000_warning_cycle_reset.sql` — coluna `cycle_closed` em participant_warnings + `process_auction_command` copiado VERBATIM por EXTRAÇÃO programática (gerador node; zero transcrição manual) com a única mudança marcada no hook: o contador considera apenas avisos APÓS o último cycle_closed; o 3º do ciclo notifica os admins E marca a linha (baseline do próximo ciclo); nova sequência de 3 → nova notificação. Histórico nunca é apagado. DM aos admins: "ciclo atual — o contador reinicia após esta notificação". Dashboard mostra K do CICLO + "contador reiniciado" na linha que fechou. Teste SQL: 2 ciclos completos → 2 notificações, ambas marcadas, histórico com 6 linhas.
+2. **Auto-save de rascunho**: intervalo de 45s no wizard; fingerprint (transições de reconhecimento NÃO contam); silencioso (sem banner de erro — desativa na sessão se falhar, ex. migration pendente); "salvo automaticamente às HH:MM". Botão manual continua.
+3. **Backup fora do disco**: `uploadBackupToCloud` (bot/backup.mjs) sobe o JSON diário ao Storage Supabase (bucket privado `business-backups`, cria se não existir, upsert por stamp, retenção nuvem `BOT_BACKUP_CLOUD_KEEP`=7 vs local 30); falha na nuvem NUNCA derruba o local (warn).
+4. **DM aos admins quando um lote FALHA de vez**: `notifyAdminsDispatchFailed` (idempotente por `dispatch-failed:{id}`) nos dois caminhos terminais (markDispatchFailed irrecuperável + markDispatchRetry esgotando 5 tentativas); dreno dos admins formata por kind (`formatDispatchFailedNotification`): lote, carta, tentativas, erro, "NÃO volta para a fila".
+5. **Edição de lote PENDENTE na fila**: migration `20260924210000_edit_queue_item.sql` (`update_pending_queue_item`: só dispatch scheduled de fila não-terminal; reescreve preços/duração/foto + REGENERA poll_options + recompute de scheduled_end_at; audita previous/next — capturados ANTES dos updates; variável `new_image_url` por causa do PERIGOS 42702). API: `POST /api/auctions/queue {action:"edit_item"}` (valida + buildPollPlan igual à criação; readQueue agora traz duration_seconds/poll_options/prices). UI: botão "✏️ Editar lote" em lotes scheduled + diálogo (inicial, incremento, ARREMATE, duração, opções, URL da foto). Teste SQL tests/edit-queue-item.sql (+ci.yml).
+6. Reconhecimento verificado SÃO ao vivo (lote de 12 fotos do zap: PROVAVEL/IDENTIFICADO corretos, 0 crash — o "piorou" era a fila/estado do serviço na hora).
 
-## Decisão de produto (definitiva — não reverter)
-- **Avisos globais**: redução = +1 no contador (global, sem reset, idempotente por evento); 3 exatos = DM aos admins; SEM DM ao participante, sem punição. Visibilidade: terminal (log do voto em tempo real + resumo do 3º) + dashboard (painel) + Excel (abas).
-
-## Pendências do operador
-- **P-13 (atualizado)**: aplicar `20260924180000_dashboard_warnings_snapshot.sql` no SQL Editor (150000/160000 já estão aplicadas ✓; confirmar a 170000 e a 190000_repair_auction_lot_sequence — esta última escrita pelo OPERADOR em 2026-09-24 para consertar drift real da sequence de lotes) → `npm run doctor` → smoke: reduzir lance de teste → terminal loga com lote + painel mostra.
-- **P-11**: `RECOGNITION_SERVICE_SHARED_SECRET` na Vercel (painel publicado).
-- Próxima fila: conferir figurinha + @todos no grupo (gatilho corrigido na rodada 6).
-
-## Rodada 6 (o que foi feito)
-1. **Figurinha + @todos (P-05, gatilho corrigido)**: o recurso JÁ existia (figurinha capturada 2026-09-23, arquivo em bot/data/announcement-sticker.json ✓) mas NUNCA disparava: (a) filas "Agora" — o runScheduler claimava o lote 1 antes do anúncio consultar (status scheduled sumia); (b) fila começando com BRINDE nem tem dispatch na posição 1. Gatilho novo: pela FILA (`auction_publish_queues.starts_at`), janela 5 min antes (`BOT_ANNOUNCE_MINUTES_BEFORE`) até 15 min depois (`ANNOUNCE_GRACE_MINUTES` — cobre bot que subiu atrasado; fila velha fica em silêncio); pausada não anuncia; idempotente (announce-state.json); **o anúncio agora roda PRIMEIRO no ciclo de 3s**. P-05 marcado CONCLUÍDO (11_PENDING_WORK).
-2. **Avisos no terminal**: os drenos agora logam QUEM, QUAL enquete/lote e QUAIS valores — "⚠️ Ana reduziu o lance no lote 7 (Gengar): R$ 30,00 → R$ 22,00 · aviso 1 de 3 · DM enviada." e no 3º: "⚠️ 3 AVISOS: Ana — última redução no lote N (carta): R$ X → R$ Y · DM enviada a 2 admin(s)". No SITE o painel "Avisos de alteração de valores" já mostra (rodada 5).
-3. **Revisão geral (pedido do operador)**: sem sobras do gatilho antigo (grep); sticker/announce/doctor conferidos; defaults de env OK (BOT_ADMIN_WA_JIDS = 554197285978+5519989759121); suítes: bot 38, site 170, typecheck, build — verdes.
-4. Docs: 06 (P-05 + logs de terminal), 11 (P-05 CONCLUÍDO), este handoff.
-
-## Pendências do operador (repetindo)
-- **P-13**: aplicar as 4 migrations no SQL Editor (150000→160000→170000→180000) → `npm run doctor` → smokes (rascunho, brinde por carta, avisos).
-- **P-11**: `RECOGNITION_SERVICE_SHARED_SECRET` na Vercel (reconhecimento do painel publicado).
-- Próxima fila agendada/"Agora": conferir figurinha + @todos chegando no grupo (janela de 5 min antes até 15 min depois do início).
-
-## Sessão atual (resumo das 5 rodadas)
-1. **Rascunhos do wizard em lote** (529c0f9d): salvar/abrir/excluir, fotos no Storage, apaga ao publicar; migration 150000.
-2. **Hotfixes do bot** (04605f72 + e9c68aa0): spam libsignal (patch), spam "enquete desconhecida" dedup, sync de grupos 90s, brinde avulso /auctions/brinde.
-3. **Brinde por carta** (270a9d74/cdbb8f1b): botão na EDIÇÃO da carta → foto+enquete no lugar do leilão (migration 160000); variante/bandeira "Outro" na legenda; drag só no ☰. OPERADOR também publica (170000, backup do brinde — verificado correto).
-4. **Pipeline de reconhecimento VISÍVEL** (d5470f9c): chip no wizard; P-11 (secret na Vercel) era o motivo do "muito ruim de novo" no painel publicado.
-5. **Rodada 5** (esta): avisos — ver qual enquete/horário + DM ao participante + 3 → admins.
-
-## O que foi concluído (rodada 5)
-1. **Pedido do operador**: "ver qual enquete a pessoa mudou o voto, que horas; se deu valor maior e põe menor recebe um aviso; com 3 contata os admins (554197285978, 5519989759121)". A regra dos 3 → admins JÁ EXISTIA (20260923093000 aplicada + dreno warning-notify.mjs); faltavam a DM à PESSOA e a visibilidade ao vivo.
-2. **DM ao participante** (`bot/warning-notify.mjs::createParticipantWarningDrain`, migration 20260924180000): cada redução → DM direto nomeando a enquete/lote, carta, valores, horário e "aviso K de 3" (no 3º+ diz que os admins foram notificados). `participant_warnings.notified_at` só após enviar (crash → reenvio); sem JID resolvível marca sem DM (o aviso continua contando). Wired no ciclo de 3s do bot ao lado do dreno dos admins.
-3. **Dashboard ao vivo**: `read_dashboard_snapshot` agora traz `participant_warnings` (lote/carta/valores/horário/notified_at) + `value_change_log` (limit 100) — novo painel "Avisos de alteração de valores" entre Disputa e Cartas (participante, lote, carta, anterior→novo, horário, K de 3, DM pendente/enviada). Antes só o Excel tinha esses dados.
-4. **Testes**: `tests/warning-notice.sql` (novo, no ci.yml) + 6 testes do dreno em `bot/warning-notify.test.mjs`. Bot 37, site 170, typecheck, build — OK local.
-
-## Ponto EXATO onde paramos
-Código completo e testado localmente; push + CI desta rodada a caminho. **P-13 agora são QUATRO migrations** (150000→160000→170000→180000) — sem a 180000 o painel de avisos fica vazio (coluna notified_at) e o dreno do participante loga erro até aplicar. P-11 (secret na Vercel) segue pendente para o painel publicado.
+## Migrations pendentes do operador (P-13)
+`20260924180000_dashboard_warnings_snapshot.sql` (avisos no dashboard — snapshot agora inclui created_at/cycle_closed), `20260924200000_warning_cycle_reset.sql`, `20260924210000_edit_queue_item.sql` (+ confirmar 170000/190000 se ainda não colou). 150000/160000 confirmadas aplicadas.
 
 ## Próximo passo EXATO
 1. Push + CI verde.
-2. OPERADOR (P-13): colar as 4 migrations no SQL Editor (ordem lexical) → `npm run doctor` → smoke: reduzir um lance de teste → DM chega à pessoa + painel de avisos mostra lote/horário; 3 reduções → DM aos admins.
-3. OPERADOR (P-11): secret na Vercel + redeploy → chip "serviço local ✅" no painel publicado.
-4. P-04 (SigLIP2 quantizado) no backlog. P-01 CONCLUÍDO (drift limpo na rodada 4).
+2. OPERADOR: aplicar as migrations pendentes no SQL Editor (ordem lexical) → `npm run doctor` → smoke: editar um lote pendente; 3+3 reduções → 2 DMs de ciclo; backup diário com cloudPath no log; lote forçado a falhar → DM.
+3. P-11 (secret na Vercel) segue pendente.
 
-## Arquivos de código prioritários
-- `bot/warning-notify.mjs` (formatParticipantWarning + createParticipantWarningDrain), `supabase/migrations/20260924180000_participant_warning_notice.sql`
-- `app/dashboard.tsx` (painel de avisos), `bot/index.mjs` (wiring do dreno no ciclo de 3s)
-
-## Comandos úteis
-```bash
-npm run doctor
-npm run start
-npm test && npm run typecheck && npm run build
-node --test bot/*.test.mjs
-# python: a partir de recognition/ com o venv
-.venv\Scripts\python.exe -m unittest discover -s tests
-```
-
-## Atenções
-- Migrations 150000..180000 NÃO aplicadas em produção (P-13): rascunho/brinde/avisos falham com erro claro até aplicar.
-- **P-11 é o gargalo da qualidade no painel publicado** — sem o secret, TODO reconhecimento roda no navegador (o chip do wizard mostra).
-- `uploadImages(keepFiles)`: publicação false, rascunho true — não inverter.
-- Migrations que substituem função: SEMPRE verbatim da última versão com adições marcadas (errei 1× com trigger antigo — o CI pegou).
-- O OPERADOR também escreve migrations — `git fetch` ANTES de substituir função/push (rodada 4 foi rejeitada por non-fast-forward, resolvida com rebase).
-- Página client-side nova com createPublicSupabaseClient PRECISA de layout force-dynamic.
-- Suíte que persiste estado redireciona o diretório ANTES do import dinâmico (BOT_DATA_DIR).
-- Atualizar `11_PENDING_WORK.md` e ESTE arquivo ao concluir qualquer item.
+## Histórico das rodadas anteriores (resumo)
+- R1-7: rascunhos (150000), hotfixes do bot (libsignal/dedup/sync 90s), brinde por carta (160000), variante/bandeira na legenda, drag só no ☰, pipeline de reconhecimento VISÍVEL (P-11 diagnóstico), DM ao participante REMOVIDA por decisão do operador (180000 reescrita in-place), figurinha+@todos com gatilho pela FILA (grace 15min), avisos no terminal em tempo real.

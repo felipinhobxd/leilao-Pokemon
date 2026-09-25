@@ -67,7 +67,7 @@ language sql stable security invoker set search_path='' as $body$
   -- (bounded 100, mais recentes primeiro; participant_warnings traz lote/carta/
   -- valores/horário denormalizados).
   'value_change_log',coalesce((select jsonb_agg(t order by occurred_at desc,id desc) from (select id,participant_id,auction_id,previous_amount,new_amount,difference,external_event_id,occurred_at from public.value_change_log order by occurred_at desc,id desc limit 100) t),'[]'::jsonb),
-  'participant_warnings',coalesce((select jsonb_agg(t order by occurred_at desc,id desc) from (select id,participant_id,auction_id,card_name,lot_number,previous_amount,new_amount,external_event_id,occurred_at from public.participant_warnings order by occurred_at desc,id desc limit 100) t),'[]'::jsonb)
+  'participant_warnings',coalesce((select jsonb_agg(t order by occurred_at desc,id desc) from (select id,participant_id,auction_id,card_name,lot_number,previous_amount,new_amount,external_event_id,occurred_at,created_at,cycle_closed from public.participant_warnings order by occurred_at desc,id desc limit 100) t),'[]'::jsonb)
  );
 $body$;
 revoke execute on function public.read_dashboard_snapshot() from public,anon,authenticated;

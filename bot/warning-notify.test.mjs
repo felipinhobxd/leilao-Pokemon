@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_ADMIN_JIDS, createAdminNotificationDrain, formatWarningNotification, parseAdminJids } from "./warning-notify.mjs";
+import { DEFAULT_ADMIN_JIDS, createAdminNotificationDrain, formatAdminNotification, formatDispatchFailedNotification, formatWarningNotification, parseAdminJids } from "./warning-notify.mjs";
 
 const PAYLOAD = {
   participant_name: "Exemplo",
@@ -22,7 +22,8 @@ test("formatWarningNotification: mensagem completa da regra dos 3 avisos", () =>
   assert.ok(text.includes("⚠️ USUÁRIO ATINGIU 3 AVISOS"));
   assert.ok(text.includes("Usuário: Exemplo"));
   assert.ok(text.includes("Total de avisos: 3"));
-  assert.ok(text.includes("GLOBAL"));
+  assert.ok(text.includes("ciclo atual"));
+  assert.ok(text.includes("reinicia"));
   assert.ok(text.includes("Carta: Charizard EX"));
   assert.ok(text.includes("184"));
   assert.ok(text.includes("R$ 100,00"));
@@ -121,4 +122,21 @@ test("drain: sem socket não faz nada", async () => {
   const db = fakeDb([{ id: "n1", payload: {}, external_event_id: "e1" }]);
   const drain = createAdminNotificationDrain({ db, getSocket: () => null, adminJids: ["a@s.whatsapp.net"], intervalMs: 0 });
   assert.equal(await drain.tick(1000), 0);
+});
+
+test("formatDispatchFailedNotification: DM de lote falho com lote, carta, tentativas e erro", () => {
+  const text = formatDispatchFailedNotification({ lot_number: 12, card_name: "Charizard EX", attempts: 5, error: "poll_send_failed" });
+  assert.ok(text.includes("PUBLICAÇÃO DE LOTE FALHOU"));
+  assert.ok(text.includes("Lote: 12"));
+  assert.ok(text.includes("Charizard EX"));
+  assert.ok(text.includes("Tentativas: 5"));
+  assert.ok(text.includes("poll_send_failed"));
+  assert.ok(text.includes("NÃO volta para a fila"));
+});
+
+test("formatAdminNotification: despacha por kind (WARNING_THRESHOLD vs DISPATCH_FAILED)", () => {
+  const failed = formatAdminNotification({ kind: "DISPATCH_FAILED", payload: { lot_number: 3, error: "x" } });
+  assert.ok(failed.includes("PUBLICAÇÃO DE LOTE FALHOU"));
+  const warning = formatAdminNotification({ kind: "WARNING_THRESHOLD", payload: PAYLOAD });
+  assert.ok(warning.includes("USUÁRIO ATINGIU 3 AVISOS"));
 });

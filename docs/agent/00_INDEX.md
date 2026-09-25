@@ -35,7 +35,7 @@ Com isso um agente deve conseguir trabalhar em ~2-5 minutos de leitura.
 | ----- | ----------------------- | ------------------- | ------ | ------------------ |
 | 01 | `01_PROJECT_CONTEXT.md` | Contexto geral | Estável — leitura obrigatória de todo agente novo | 2026-09-23 |
 | 02 | `02_ARCHITECTURE.md` | Arquitetura real | Estável | 2026-09-23 |
-| 03 | `03_DATABASE.md` | Supabase/PostgreSQL | ⚠️ Migration `20260924180000` (avisos no dashboard) pendente; 150000+160000 aplicadas ✓ | 2026-09-24 |
+| 03 | `03_DATABASE.md` | Supabase/PostgreSQL | ⚠️ Migrations 180000/200000/210000 pendentes (avisos no dashboard, ciclo de 3, edição de lote); 150000/160000 aplicadas ✓ | 2026-09-25 |
 | 04 | `04_API.md` | API Next.js (app/api) | Estável; rotas novas `/api/auctions/drafts` e `/api/quick-polls` | 2026-09-24 |
 | 05 | `05_FRONTEND.md` | Frontend (app/) | Estável; wizard com rascunhos + BRINDE POR CARTA + brinde avulso em `/auctions/brinde` | 2026-09-24 |
 | 06 | `06_WHATSAPP_BOT.md` | Bot Baileys (bot/) | Estável; aviso global SEM DM ao participante (só admins no 3º); figurinha+@todos com gatilho corrigido; terminal detalhado | 2026-09-24 |

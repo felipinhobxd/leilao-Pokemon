@@ -38,7 +38,7 @@ export function formatWarningNotification(payload) {
     "⚠️ USUÁRIO ATINGIU 3 AVISOS",
     "",
     `Usuário: ${name}`,
-    `Total de avisos: ${total} (contador GLOBAL — acumula em todos os leilões)`,
+    `Total de avisos: ${total} (ciclo atual — o contador reinicia após esta notificação)`,
     "",
     "Última ocorrência:",
     `Carta: ${String(data.card_name ?? "—")}`,
@@ -55,6 +55,29 @@ export function formatWarningNotification(payload) {
     });
   }
   return lines.join("\n");
+}
+
+/** Lote que falhou de vez — DM operacional aos admins (não é aviso de usuário). */
+export function formatDispatchFailedNotification(payload) {
+  const data = payload ?? {};
+  const lines = [
+    "🚨 PUBLICAÇÃO DE LOTE FALHOU",
+    "",
+    data.lot_number != null ? `Lote: ${data.lot_number}` : "Lote: —",
+    data.card_name ? `Carta: ${String(data.card_name)}` : null,
+    data.attempts != null ? `Tentativas: ${data.attempts}` : null,
+    `Erro: ${String(data.error ?? "desconhecido")}`,
+    "",
+    "O lote NÃO volta para a fila — verifique a tela da fila no painel e publique novamente se quiser.",
+  ].filter(Boolean);
+  return lines.join("\n");
+}
+
+/** Formato por tipo de notificação (o dreno entrega tudo que está pendente). */
+export function formatAdminNotification(notification) {
+  const kind = String(notification?.kind ?? "");
+  if (kind === "DISPATCH_FAILED") return formatDispatchFailedNotification(notification.payload);
+  return formatWarningNotification(notification.payload);
 }
 
 export function createAdminNotificationDrain({ db, getSocket, adminJids = DEFAULT_ADMIN_JIDS, intervalMs = 15_000 }) {
@@ -82,7 +105,7 @@ export function createAdminNotificationDrain({ db, getSocket, adminJids = DEFAUL
           const sentNow = [];
           for (const jid of remaining) {
             try {
-              await sock.sendMessage(jid, { text: formatWarningNotification(payload) });
+              await sock.sendMessage(jid, { text: formatAdminNotification(notification) });
               sentNow.push(jid);
             } catch (error) {
               console.error(`Aviso global: falha ao notificar ${jid}:`, error?.message || error);

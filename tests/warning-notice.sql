@@ -40,6 +40,33 @@ begin
   perform pg_temp.check_that((select jsonb_array_length(coalesce(snap->'participant_warnings','[]'::jsonb))=1),'dashboard snapshot exposes participant_warnings');
   perform pg_temp.check_that((select (snap->'participant_warnings'->0->>'lot_number') is not null and (snap->'participant_warnings'->0->>'card_name')='Gengar'),'snapshot warning carries lot and card');
   perform pg_temp.check_that((select jsonb_array_length(coalesce(snap->'value_change_log','[]'::jsonb))=2),'dashboard snapshot exposes value_change_log');
+
+  -- ------------------------------------------------------------------
+  -- CICLO DE 3 (20260924200000): o 3º aviso notifica os admins E FECHA o
+  -- ciclo; a partir daí o contador REINICIA — nova sequência de 3 gera
+  -- NOVA notificação. Histórico nunca é apagado.
+  -- Ciclo 1: avisos 2 e 3 (o 1º já existia) → notificação #1.
+  perform pg_temp.cmd(jsonb_build_object('type','BID_CHANGED','eventId','n-up2','auctionId',a1->>'id','participantId',p1->>'id','amount',26));
+  perform pg_temp.cmd(jsonb_build_object('type','BID_CHANGED','eventId','n-down2','auctionId',a1->>'id','participantId',p1->>'id','amount',24));
+  perform pg_temp.cmd(jsonb_build_object('type','BID_CHANGED','eventId','n-up3','auctionId',a1->>'id','participantId',p1->>'id','amount',28));
+  perform pg_temp.cmd(jsonb_build_object('type','BID_CHANGED','eventId','n-down3','auctionId',a1->>'id','participantId',p1->>'id','amount',23));
+  perform pg_temp.check_that((select count(*)=3 from public.participant_warnings where participant_id=(p1->>'id')::uuid),'cycle 1 complete: 3 warnings');
+  perform pg_temp.check_that((select count(*)=1 from public.admin_notifications where participant_id=(p1->>'id')::uuid),'first cycle fires ONE notification');
+  perform pg_temp.check_that((select count(*)=1 from public.participant_warnings where participant_id=(p1->>'id')::uuid and cycle_closed),'the 3rd warning is marked as cycle-closing');
+  -- Ciclo 2: 1º aviso do novo ciclo — nenhuma notificação nova.
+  perform pg_temp.cmd(jsonb_build_object('type','BID_CHANGED','eventId','n-up4','auctionId',a1->>'id','participantId',p1->>'id','amount',26));
+  perform pg_temp.cmd(jsonb_build_object('type','BID_CHANGED','eventId','n-down4','auctionId',a1->>'id','participantId',p1->>'id','amount',22));
+  perform pg_temp.check_that((select count(*)=4 from public.participant_warnings where participant_id=(p1->>'id')::uuid),'4th warning is kept in history');
+  perform pg_temp.check_that((select count(*)=1 from public.admin_notifications where participant_id=(p1->>'id')::uuid),'counter RESTARTED: 1st of new cycle fires nothing');
+  -- Ciclo 2 completa: avisos 5 e 6 → notificação #2.
+  perform pg_temp.cmd(jsonb_build_object('type','BID_CHANGED','eventId','n-up5','auctionId',a1->>'id','participantId',p1->>'id','amount',25));
+  perform pg_temp.cmd(jsonb_build_object('type','BID_CHANGED','eventId','n-down5','auctionId',a1->>'id','participantId',p1->>'id','amount',21));
+  perform pg_temp.cmd(jsonb_build_object('type','BID_CHANGED','eventId','n-up6','auctionId',a1->>'id','participantId',p1->>'id','amount',26));
+  perform pg_temp.cmd(jsonb_build_object('type','BID_CHANGED','eventId','n-down6','auctionId',a1->>'id','participantId',p1->>'id','amount',20));
+  perform pg_temp.check_that((select count(*)=6 from public.participant_warnings where participant_id=(p1->>'id')::uuid),'history keeps every warning row');
+  perform pg_temp.check_that((select count(*)=2 from public.admin_notifications where participant_id=(p1->>'id')::uuid),'second completed cycle fires a SECOND admin notification');
+  perform pg_temp.check_that((select count(*)=2 and bool_and(cycle_closed) from public.participant_warnings where participant_id=(p1->>'id')::uuid and cycle_closed),'both cycle-closing rows are marked');
+  perform pg_temp.check_that((select jsonb_array_length(payload->'warnings')=3 from public.admin_notifications where participant_id=(p1->>'id')::uuid order by created_at desc limit 1),'notification history carries only the cycle warnings');
 end $$;
 reset role;
 rollback;

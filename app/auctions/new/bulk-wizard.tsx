@@ -29,8 +29,8 @@ type QueueView = {
   group: { id: string; name: string } | null;
   summary: { total: number; published: number; failed: number; pending: number; nextScheduledAt: string | null };
   items: Array<{
-    dispatch: { id: string; status: string; scheduled_at: string; sent_at: string | null; attempts: number; last_error: string | null; queue_position: number } | null;
-    auction: { id: string; lot_number: number; status: string; scheduled_end_at: string | null; final_price: number | null; win_type: string | null } | null;
+    dispatch: { id: string; status: string; scheduled_at: string; sent_at: string | null; attempts: number; last_error: string | null; queue_position: number; duration_seconds?: number | null; poll_options?: Array<{ label: string; amount: number; isBuyout: boolean }> | null } | null;
+    auction: { id: string; lot_number: number; status: string; scheduled_end_at: string | null; final_price: number | null; win_type: string | null; starting_price?: number | null; bid_increment?: number | null; buyout_price?: number | null } | null;
     card: { id: string; name: string; image_url: string | null } | null;
     poll: { id: string; title: string; image_url: string | null; scheduled_at: string; sent_at: string | null; queue_position: number } | null;
   }>;
@@ -152,9 +152,40 @@ export default function BulkAuctionWizard() {
   const [draftBusy, setDraftBusy] = useState(false);
   const [draftNotice, setDraftNotice] = useState("");
   const [recognitionPipeline, setRecognitionPipeline] = useState<"checking" | RecognitionPipelineKind>("checking");
+  const [editingItem, setEditingItem] = useState<QueueView["items"][number] | null>(null);
   const previewUrls = useRef(new Set<string>());
   const recognitionInFlight = useRef(new Set<string>());
   const submission = useRef<{ fingerprint: string; eventId: string } | null>(null);
+  const lastSavedDraftFingerprint = useRef<string | null>(null);
+  const autoSaveDisabled = useRef(false);
+
+  // Auto-save do rascunho: fingerprint do estado atual vs o último salvo; um
+  // intervalo de 45s evita debounce no cada tecla. Mutações transientes de
+  // reconhecimento (stage/mensagens) NÃO contam — só o que muda o rascunho.
+  function currentDraftFingerprint() {
+    if (!cards.length) return null;
+    return auctionDraftJson(buildDraftState({
+      step, firstLot, groupId, intervalValue, intervalUnit, publication, scheduledInput,
+      cards: cards.map(card => ({
+        ...card,
+        imageUrl: card.imageUrl,
+        extraImages: card.extraImages.length ? card.extraImages : [],
+        recognitionStage: "idle",
+        recognitionMessage: "",
+        recognitionCandidates: [],
+      })),
+    }));
+  }
+  useEffect(() => {
+    if (!session || queueId) return;
+    const timer = setInterval(() => {
+      if (autoSaveDisabled.current || draftBusy || busy || !cards.length) return;
+      const fingerprint = currentDraftFingerprint();
+      if (!fingerprint || fingerprint === lastSavedDraftFingerprint.current) return;
+      void saveDraft(true);
+    }, 45_000);
+    return () => clearInterval(timer);
+  });
 
   async function authFetch(url: string, init?: RequestInit) {
     const { data } = await db.auth.getSession();
@@ -567,19 +598,25 @@ export default function BulkAuctionWizard() {
     } catch { /* lista desatualizada não é erro para o operador */ }
   }
 
-  async function saveDraft() {
+  async function saveDraft(auto = false) {
     if (draftBusy || busy) return;
-    if (!cards.length) { setError("Adicione pelo menos uma carta antes de salvar o rascunho."); return; }
-    setDraftBusy(true); setError(""); setDraftNotice("");
+    if (!cards.length) { if (!auto) setError("Adicione pelo menos uma carta antes de salvar o rascunho."); return; }
+    setDraftBusy(true); if (!auto) { setError(""); setDraftNotice(""); }
     try {
       // As fotos SOBEM no salvar — é isso que torna o rascunho restaurável em
       // qualquer navegador; a sessão atual mantém os Files (uploadImages(true)).
       const { urls, extraUrls, failures } = await uploadImages(true);
       if (failures.length) {
         const firstReason = failures[0].message;
-        const proceed = window.confirm(`${failures.length} imagem(ns) falharam e não ficam salvas no rascunho (elas continuam nesta sessão — salvar de novo reenvia só as que falharam).\n\nSalvar o rascunho sem essas imagens?`);
-        if (!proceed) {
-          setError(`${failures.length} imagem(ns) falharam (ex.: ${firstReason}). Tente salvar de novo para reenviar somente as que falharam.`);
+        if (!auto) {
+          const proceed = window.confirm(`${failures.length} imagem(ns) falharam e não ficam salvas no rascunho (elas continuam nesta sessão — salvar de novo reenvia só as que falharam).\n\nSalvar o rascunho sem essas imagens?`);
+          if (!proceed) {
+            setError(`${failures.length} imagem(ns) falharam (ex.: ${firstReason}). Tente salvar de novo para reenviar somente as que falharam.`);
+            return;
+          }
+        } else {
+          // Auto-save nunca interrompe o operador por causa de imagem: tenta de
+          // novo no próximo ciclo (as concluídas ficam preservadas).
           return;
         }
       }
@@ -597,9 +634,17 @@ export default function BulkAuctionWizard() {
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? "Não foi possível salvar o rascunho.");
       setActiveDraftId(draftId);
-      setDraftNotice(`Rascunho salvo às ${formatBrasiliaTime(new Date(), false)} — dá para fechar e continuar depois.`);
+      lastSavedDraftFingerprint.current = currentDraftFingerprint();
+      setDraftNotice(auto ? `Rascunho salvo automaticamente às ${formatBrasiliaTime(new Date(), false)}.` : `Rascunho salvo às ${formatBrasiliaTime(new Date(), false)} — dá para fechar e continuar depois.`);
       await refreshDrafts();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Falha ao salvar o rascunho."); }
+    } catch (reason) {
+      if (auto) {
+        // Auto-save falhou (ex.: migration ainda não aplicada): desliga pelo
+        // resto da sessão — o botão manual continua disponível e honesto.
+        autoSaveDisabled.current = true;
+        console.warn("Auto-save do rascunho desativado nesta sessão:", reason instanceof Error ? reason.message : reason);
+      } else setError(reason instanceof Error ? reason.message : "Falha ao salvar o rascunho.");
+    }
     finally { setDraftBusy(false); }
   }
 
@@ -727,8 +772,48 @@ export default function BulkAuctionWizard() {
     finally { setBusy(false); }
   }
 
-  async function control(action: "pause" | "resume" | "cancel") {
-    if (!queueId || busy) return;
+  // Edição de lote pendente: valores default do diálogo a partir do item atual.
+  function itemEditDefaults(item: NonNullable<QueueView["items"][number]["dispatch"]> extends never ? never : QueueView["items"][number]) {
+    const buyout = item.auction?.buyout_price != null ? String(item.auction.buyout_price) : "";
+    const durationMinutes = item.dispatch?.duration_seconds ? String(Number(item.dispatch.duration_seconds) / 60) : "2";
+    const optionCount = item.dispatch?.poll_options?.length ? String(item.dispatch.poll_options.length) : String(DEFAULT_POLL_OPTIONS);
+    return {
+      startingPrice: item.auction?.starting_price != null ? String(item.auction.starting_price) : "5",
+      bidIncrement: item.auction?.bid_increment != null ? String(item.auction.bid_increment) : "1",
+      buyout,
+      durationMinutes,
+      optionCount,
+      imageUrl: item.card?.image_url ?? "",
+    };
+  }
+
+  async function saveItemEdit(form: HTMLFormElement) {
+    if (!queueId || !editingItem?.dispatch || busy) return;
+    const fields = new FormData(form);
+    const buyout = String(fields.get("buyout_price") ?? "").trim();
+    const optionCount = String(fields.get("option_count") ?? "").trim();
+    setBusy(true); setError("");
+    try {
+      const response = await authFetch("/api/auctions/queue", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+        queueId, action: "edit_item", dispatchId: editingItem.dispatch.id,
+        updates: {
+          starting_price: Number(fields.get("starting_price")),
+          bid_increment: Number(fields.get("bid_increment")),
+          buyout_price: buyout ? Number(buyout) : null,
+          duration_minutes: Number(fields.get("duration_minutes")),
+          ...(buyout ? {} : { option_count: Number(optionCount || DEFAULT_POLL_OPTIONS) }),
+          image_url: String(fields.get("image_url") ?? "").trim(),
+        },
+      }) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? "Não foi possível editar o lote.");
+      setQueueView(body as QueueView);
+      setEditingItem(null);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Falha ao editar o lote."); }
+    finally { setBusy(false); }
+  }
+
+  async function control(action: "pause" | "resume" | "cancel") {    if (!queueId || busy) return;
     if (action === "cancel" && !window.confirm("Cancelar todas as cartas ainda não publicadas desta fila?")) return;
     setBusy(true); setError("");
     try {
@@ -754,8 +839,18 @@ export default function BulkAuctionWizard() {
     const pollSent = Boolean(item.poll.sent_at);
     return <article className={`queue-row ${pollSent ? "sent" : "scheduled"}`} key={item.poll.id}><span className="queue-icon">🎁</span><div><strong>{item.poll.title}</strong><p>{pollSent ? "brinde publicado" : `agendado`}{item.poll.image_url ? "" : " · sem foto"}</p></div><time>{formatBrasiliaTime(item.poll.scheduled_at)}</time></article>;
   }
-  const itemStatus = item.dispatch!.status, icon = itemStatus === "sent" ? "✅" : itemStatus === "sending" ? "🟢" : itemStatus === "failed" ? "❌" : itemStatus === "cancelled" ? "⛔" : "⏳", description = itemStatus === "sent" ? "publicado" : itemStatus === "sending" ? "publicando" : itemStatus === "failed" ? `erro após ${item.dispatch!.attempts} tentativa(s)` : itemStatus === "cancelled" ? "cancelado" : index === firstWaiting ? `em ${formatBrasiliaTime(item.dispatch!.scheduled_at)}` : "aguardando"; return <article className={`queue-row ${itemStatus}`} key={item.dispatch!.id}><span className="queue-icon">{icon}</span><div><strong>Lote {item.auction?.lot_number ?? "—"} — {item.card?.name ?? "Carta"}</strong><p>{description}{item.dispatch!.last_error ? ` · ${item.dispatch!.last_error}` : ""}</p></div><time>{formatBrasiliaTime(item.dispatch!.scheduled_at)}</time></article>; })}</div>
+  const itemStatus = item.dispatch!.status, icon = itemStatus === "sent" ? "✅" : itemStatus === "sending" ? "🟢" : itemStatus === "failed" ? "❌" : itemStatus === "cancelled" ? "⛔" : "⏳", description = itemStatus === "sent" ? "publicado" : itemStatus === "sending" ? "publicando" : itemStatus === "failed" ? `erro após ${item.dispatch!.attempts} tentativa(s)` : itemStatus === "cancelled" ? "cancelado" : index === firstWaiting ? `em ${formatBrasiliaTime(item.dispatch!.scheduled_at)}` : "aguardando"; return <article className={`queue-row ${itemStatus}`} key={item.dispatch!.id}><span className="queue-icon">{icon}</span><div><strong>Lote {item.auction?.lot_number ?? "—"} — {item.card?.name ?? "Carta"}</strong><p>{description}{item.dispatch!.last_error ? ` · ${item.dispatch!.last_error}` : ""}</p>{itemStatus === "scheduled" && <button className="secondary" style={{ marginTop: 6 }} onClick={() => setEditingItem(item)}>✏️ Editar lote</button>}</div><time>{formatBrasiliaTime(item.dispatch!.scheduled_at)}</time></article>; })}</div>
       </section>
+      {editingItem && <dialog open className="panel modal" aria-label="Editar lote"><h2>Editar lote {editingItem.auction?.lot_number ?? ""} — {editingItem.card?.name ?? "Carta"}</h2><p className="muted">Só lotes ainda não publicados. A enquete é re-gerada com os novos valores; a posição e o horário na fila não mudam.</p>
+        <form className="form-grid" onSubmit={event => { event.preventDefault(); void saveItemEdit(event.currentTarget); }}>
+          <label>Lance inicial (R$)<input name="starting_price" type="number" min="0" max="9999999999.99" step="0.01" defaultValue={itemEditDefaults(editingItem).startingPrice} required /></label>
+          <label>Incremento (R$)<input name="bid_increment" type="number" min="0.01" max="9999999999.99" step="0.01" defaultValue={itemEditDefaults(editingItem).bidIncrement} required /></label>
+          <label>ARREMATE (opcional)<input name="buyout_price" type="number" min="0" max="9999999999.99" step="0.01" defaultValue={itemEditDefaults(editingItem).buyout} /></label>
+          <label>Duração (min)<input name="duration_minutes" type="number" min="0.1" step="0.1" defaultValue={itemEditDefaults(editingItem).durationMinutes} required /></label>
+          {!itemEditDefaults(editingItem).buyout && <label>Opções da enquete<input name="option_count" type="number" min="2" max={MAX_POLL_OPTIONS} defaultValue={itemEditDefaults(editingItem).optionCount} /></label>}
+          <label className="wide">URL da imagem (HTTPS, opcional)<input name="image_url" type="url" defaultValue={itemEditDefaults(editingItem).imageUrl} /></label>
+          <div className="actions"><button disabled={busy}>{busy ? "Salvando…" : "Salvar lote"}</button><button type="button" disabled={busy} onClick={() => setEditingItem(null)}>Cancelar</button></div>
+        </form></dialog>}
     </main>;
   }
 

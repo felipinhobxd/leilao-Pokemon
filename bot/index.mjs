@@ -326,6 +326,35 @@ async function heartbeatDispatchClaim(dispatchId) {
     .eq("status", "sending");
 }
 
+async function notifyAdminsDispatchFailed(dispatch, error) {
+  // DM aos admins quando um lote falha DE VEZ (irrecuperável ou tentativas
+  // esgotadas): sem isso ninguém é avisado — o erro só fica visível olhando
+  // a fila. Idempotente por external_event_id (um aviso por dispatch).
+  try {
+    const { data: context } = await db.from("auctions")
+      .select("lot_number,card_id,cards(name)")
+      .eq("id", dispatch.auction_id)
+      .maybeSingle();
+    const lotFromTitle = String(dispatch.poll_title ?? "").split(".")[0].trim();
+    await db.from("admin_notifications").upsert({
+      participant_id: null,
+      kind: "DISPATCH_FAILED",
+      external_event_id: `dispatch-failed:${dispatch.id}`.slice(0, 200),
+      payload: {
+        lot_number: context?.lot_number ?? (lotFromTitle || null),
+        card_name: context?.cards?.name ?? null,
+        attempts: Number(dispatch.attempts) || null,
+        error: String(error?.message || error).slice(0, 500),
+        queue_id: dispatch.queue_id ?? null,
+        event_at: new Date().toISOString(),
+      },
+    }, { onConflict: "external_event_id", ignoreDuplicates: true });
+  } catch (reason) {
+    // Avisar os admins é complemento: nunca pode derrubar o fluxo de falha.
+    console.warn("Falha ao enfileirar aviso de lote falho:", reason?.message || reason);
+  }
+}
+
 async function markDispatchFailed(dispatch, error) {
   // Falha terminal (irrecuperável ou tentativas esgotadas): o lote NÃO volta
   // para a fila — o erro fica visível no painel para decisão humana.
@@ -336,6 +365,7 @@ async function markDispatchFailed(dispatch, error) {
     last_error: String(error?.message || error).slice(0, 1000),
     updated_at: new Date().toISOString(),
   }).eq("id", dispatch.id);
+  await notifyAdminsDispatchFailed(dispatch, error);
 }
 
 async function deliverDispatch(dispatch) {
@@ -364,6 +394,9 @@ async function markDispatchRetry(dispatch, error) {
     last_error: String(error?.message || error).slice(0, 1000),
     updated_at: new Date().toISOString(),
   }).eq("id", dispatch.id);
+  // Tentativas esgotadas = falha terminal: avisa os admins (mesma DM da
+  // falha irrecuperável — idempotente por dispatch).
+  if (failed) await notifyAdminsDispatchFailed(dispatch, error);
 }
 
 async function fetchAuctionContext(dispatch) {

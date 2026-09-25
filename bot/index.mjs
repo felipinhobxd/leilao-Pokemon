@@ -888,67 +888,21 @@ async function maybeCaptureAnnouncementSticker(message) {
 // opções livres com emoji, "quem clicar primeiro leva"). Tabela própria
 // (whatsapp_quick_polls) — dispatches exige auction_id. Idempotência:
 // sent_at só depois do envio confirmado; messageId estável por brinde.
-// REGRAS DO LEILÃO: enviadas ANTES da figurinha+"O leilão vai começar!" —
-// default 2 minutos antes do anúncio (BOT_RULES_MINUTES_BEFORE), texto da
-// operadora (sobreponível em bot/data/rules-message.json). Mesma janela de
-// grace e idempotência por announce-state.json.
-let rulesBusy = false;
-async function sendRulesAnnouncements() {
-  if (!sock || !socketReady || rulesBusy) return;
-  rulesBusy = true;
-  try {
-    const windowMs = (Math.max(0, ANNOUNCE_MINUTES_BEFORE) + Math.max(0, ANNOUNCE_RULES_MINUTES_BEFORE)) * 60_000;
-    const horizon = new Date(Date.now() + windowMs).toISOString();
-    const floor = new Date(Date.now() - ANNOUNCE_GRACE_MINUTES * 60_000).toISOString();
-    const { data: queues, error } = await db.from("auction_publish_queues")
-      .select("id,group_id,starts_at,status")
-      .in("status", ["scheduled", "running"])
-      .lte("starts_at", horizon)
-      .gte("starts_at", floor)
-      .order("starts_at", { ascending: true })
-      .limit(5);
-    if (error) throw new Error(error.message);
-    const announced = loadRulesAnnouncedQueueIds();
-    for (const queue of queues ?? []) {
-      if (announced.has(String(queue.id))) continue;
-      const { data: group } = await db.from("whatsapp_groups").select("group_jid,active").eq("id", queue.group_id).maybeSingle();
-      if (!group?.active) continue;
-      try {
-        await sock.sendMessage(group.group_jid, { text: loadRulesMessage() });
-        markQueueRulesAnnounced(queue.id, announced);
-        console.log(`📘 Regras do leilão enviadas (fila ${queue.id}).`);
-      } catch (error) {
-        // Sem marcar: o próximo tick tenta de novo enquanto a janela estiver aberta.
-        console.error(`Falha ao enviar as regras (fila ${queue.id}):`, error?.message || error);
-      }
-    }
-  } catch (error) {
-    console.error("Regras do leilão: falha no ciclo:", error?.message || error);
-  } finally {
-    rulesBusy = false;
-  }
-}
-
-// P-05 — Figurinha de abertura: quando uma fila está chegando (default 5 min
-// antes via BOT_ANNOUNCE_MINUTES_BEFORE) ou começou há pouco (janela de
-// ANNOUNCE_GRACE_MINUTES), retransmite a figurinha capturada + @all no
-// grupo, UMA vez por fila (estado em bot/data/announce-state.json).
+// SEQUÊNCIA DE ABERTURA (regras + figurinha + @all) — ATÔMICA: uma função,
+// uma chave de estado, uma janela. Nunca duplica, nunca inverte a ordem.
+// Regras primeiro, figurinha + menções reais depois (3s de intervalo).
+// A janela é a da figurinha (BOT_ANNOUNCE_MINUTES_BEFORE, default 5 min).
 let openingBusy = false;
-async function sendOpeningAnnouncements() {
+async function sendOpeningSequence() {
   if (!sock || !socketReady || openingBusy) return;
   const sticker = loadAnnouncementSticker();
-  if (!sticker) return; // nada capturado ainda — o recurso fica desligado
+  const rules = loadRulesMessage();
+  if (!sticker && !rules.trim()) return;
   openingBusy = true;
   try {
     const windowMs = Math.max(0, ANNOUNCE_MINUTES_BEFORE) * 60_000;
     const horizon = new Date(Date.now() + windowMs).toISOString();
     const floor = new Date(Date.now() - ANNOUNCE_GRACE_MINUTES * 60_000).toISOString();
-    // Gatilho pela FILA (starts_at), NÃO pelo dispatch: (1) filas "Agora"
-    // tinham o 1º lote claimado/enviado pelo runScheduler antes do anúncio
-    // consultar (o status 'scheduled' sumia e o anúncio nunca disparava);
-    // (2) fila começando com BRINDE nem tem dispatch na posição 1. Pausada
-    // fica fora (pausa = silêncio); retomada entra na janela só se ainda
-    // estiver dentro do grace.
     const { data: queues, error } = await db.from("auction_publish_queues")
       .select("id,group_id,starts_at,status")
       .in("status", ["scheduled", "running"])
@@ -963,7 +917,17 @@ async function sendOpeningAnnouncements() {
       const { data: group } = await db.from("whatsapp_groups").select("group_jid,active").eq("id", queue.group_id).maybeSingle();
       if (!group?.active) continue;
       try {
-        await sock.sendMessage(group.group_jid, { forward: sticker });
+        // 1. REGRAS (sempre primeiro, nunca depois da figurinha)
+        if (rules.trim()) {
+          await sock.sendMessage(group.group_jid, { text: rules });
+          console.log(`📘 Regras enviadas (fila ${queue.id}).`);
+        }
+        // 2. Figurinha (3s depois das regras)
+        if (sticker) {
+          await new Promise(resolve => setTimeout(resolve, 3_000));
+          await sock.sendMessage(group.group_jid, { forward: sticker });
+        }
+        // 3. @all com menções REAIS (@+número de cada participante)
         let mentions = [];
         try {
           const metadata = await sock.groupMetadata(group.group_jid);
@@ -971,16 +935,15 @@ async function sendOpeningAnnouncements() {
         } catch { /* sem metadata: mensagem sai sem menções */ }
         const opening = buildOpeningMessage(mentions);
         await sock.sendMessage(group.group_jid, { text: opening.text, mentions: opening.mentions });
+        // 4. Marca APÓS a sequência inteira — UMA chave, uma fila, sem duplicar.
         markQueueAnnounced(queue.id, announced);
-        console.log(`📣 Figurinha de abertura enviada (fila ${queue.id}, ${mentions.length} menção(ões)).`);
+        console.log(`📣 Abertura completa (fila ${queue.id}, ${mentions.length} menção(ões)).`);
       } catch (error) {
-        // Sem marcar como anunciado: o próximo tick tenta de novo (a janela
-        // ainda está aberta até o grace vencer).
-        console.error(`Falha ao enviar figurinha de abertura (fila ${queue.id}):`, error?.message || error);
+        console.error(`Falha na abertura (fila ${queue.id}):`, error?.message || error);
       }
     }
   } catch (error) {
-    console.error("Abertura de leilão: falha no ciclo:", error?.message || error);
+    console.error("Abertura: falha no ciclo:", error?.message || error);
   } finally {
     openingBusy = false;
   }
@@ -1127,7 +1090,7 @@ async function connect() {
 // estao abertas ao mesmo tempo (bot que subiu atrasado), disparar ambas em
 // paralelo nao garante a ordem no grupo — o encadeamento espera as regras
 // chegarem antes de soltar a figurinha + @all.
-schedulerTimer = setInterval(() => { void sendRulesAnnouncements().then(() => sendOpeningAnnouncements()); void runScheduler(); void finalizeDueAuctions(); void adminNotificationDrain.tick(); void sendDueQuickPolls(); void paymentReminderDrain.tick(); }, 3000);
+schedulerTimer = setInterval(() => { void sendOpeningSequence(); void runScheduler(); void finalizeDueAuctions(); void adminNotificationDrain.tick(); void sendDueQuickPolls(); void paymentReminderDrain.tick(); }, 3000);
       void syncOpenAuctionGroups().catch(error => console.warn("Falha ao sincronizar grupos abertos:", error?.message || error));
       void runScheduler();
       void finalizeDueAuctions();

@@ -1,39 +1,16 @@
--- 2026-09-25: prevent auction lot-number sequence drift.
---
--- Explicit lot numbers from the wizard/queue advance the shared sequence.
--- The normal AUCTION_CREATE path takes the same transaction advisory lock,
--- preventing an explicit lot from racing with nextval() and leaving the
--- sequence behind the real maximum lot.
+-- 2026-09-25: prevent auction lot-number sequence drift (OPERATOR intent).
+-- RECONCILIADO pelo agente (mesma data): a versao original copiava
+-- create_auction_wizard / create_auction_publish_queue /
+-- control_auction_publish_queue / sync_auction_publish_queue_status de bases
+-- ANTIGAS e derrubava extra_images (P-08), o brinde por carta na fila
+-- (20260924160000) e o trigger das quick_polls - o CI pegou
+-- (tests/quick-polls-reminders.sql "Expected invalid_extra_images").
+-- Esta versao preserva 100% do fix do operador (advisory lock + setval nos
+-- lotes explicitos do wizard/fila, e o lock no AUCTION_CREATE dentro do
+-- process_auction_command - copiado verbatim da copia dele, que ja era a
+-- ultima + fix) e regenera as demais funcoes a partir das ULTIMAS versoes
+-- (extração programática, sem transcrição manual).
 begin;
-
-create or replace function public.create_auction_wizard(p_payload jsonb,p_admin_user_id uuid) returns jsonb language plpgsql security invoker set search_path='' as $$
-declare eid text:=trim(coalesce(p_payload->>'eventId','')); cd jsonb:=coalesce(p_payload->'card','{}'::jsonb); ad jsonb:=coalesce(p_payload->'auction','{}'::jsonb); req jsonb; prior public.processed_commands; c public.cards; a public.auctions; d public.whatsapp_dispatches; g public.whatsapp_groups; result jsonb; lot bigint; start_price numeric; increment_value numeric; buyout numeric; schedule_at timestamptz; end_at timestamptz; group_id uuid; options jsonb;
-begin
- if not exists(select 1 from public.admin_profiles where user_id=p_admin_user_id and active and role in('admin','operator')) then raise exception 'forbidden'; end if;
- if length(eid)<1 or length(eid)>200 then raise exception 'invalid_event_id'; end if;
- req:=p_payload||jsonb_build_object('actor',p_admin_user_id,'type','AUCTION_WIZARD_CREATE'); perform pg_advisory_xact_lock(hashtextextended(eid,0));
- select * into prior from public.processed_commands where external_event_id=eid; if found then if prior.request<>req then raise exception 'event_id_conflict'; end if; return prior.result; end if;
- perform set_config('app.admin_user_id',p_admin_user_id::text,true);
- start_price:=(ad->>'starting_price')::numeric; increment_value:=(ad->>'bid_increment')::numeric; buyout:=nullif(ad->>'buyout_price','')::numeric; schedule_at:=(ad->>'scheduled_at')::timestamptz; end_at:=nullif(ad->>'scheduled_end_at','')::timestamptz; group_id:=(ad->>'group_id')::uuid; options:=ad->'poll_options'; lot:=nullif(ad->>'lot_number','')::bigint;
- if start_price<0 or increment_value<=0 or buyout is not null and buyout<start_price then raise exception 'invalid_auction_values'; end if;
- if end_at is not null and end_at<=schedule_at then raise exception 'invalid_end_time'; end if;
- if jsonb_typeof(options)<>'array' or jsonb_array_length(options)<1 or jsonb_array_length(options)>12 then raise exception 'invalid_poll_options'; end if;
- select * into g from public.whatsapp_groups where id=group_id and active for share; if not found then raise exception 'whatsapp_group_unavailable'; end if;
- perform pg_advisory_xact_lock(hashtextextended('auction_lot_number_seq',0));
- if lot is not null then
-  if lot<=0 or exists(select 1 from public.auctions where lot_number=lot) then raise exception 'lot_number_in_use'; end if;
-  perform setval('public.auction_lot_number_seq',greatest((select last_value from public.auction_lot_number_seq),lot),true);
- else
-  loop lot:=nextval('public.auction_lot_number_seq'); exit when not exists(select 1 from public.auctions where lot_number=lot); end loop;
- end if;
- insert into public.cards(name,collection,card_number,variant,language,condition,image_url,starting_price,buyout_price) values(trim(cd->>'name'),nullif(trim(coalesce(cd->>'collection','')),''),nullif(trim(coalesce(cd->>'card_number','')),''),nullif(trim(coalesce(cd->>'variant','')),''),coalesce(nullif(trim(coalesce(cd->>'language','')),''),'pt-BR'),nullif(trim(coalesce(cd->>'condition','')),''),nullif(trim(coalesce(cd->>'image_url','')),''),start_price,buyout) returning * into c;
- insert into public.auctions(card_id,lot_number,starting_price,bid_increment,buyout_price,scheduled_end_at,created_by) values(c.id,lot,start_price,increment_value,buyout,end_at,p_admin_user_id) returning * into a;
- insert into public.whatsapp_dispatches(auction_id,group_id,scheduled_at,poll_title,poll_options,status,created_by) values(a.id,g.id,schedule_at,lot::text||'. Lances',options,'scheduled',p_admin_user_id) returning * into d;
- insert into public.auction_events(auction_id,admin_user_id,event_type,external_event_id,payload) values(a.id,p_admin_user_id,'AUCTION_WIZARD_CREATED',eid,jsonb_build_object('card_id',c.id,'dispatch_id',d.id,'lot_number',lot,'group_id',g.id));
- result:=jsonb_build_object('card',to_jsonb(c),'auction',to_jsonb(a),'dispatch',to_jsonb(d)); insert into public.processed_commands(external_event_id,request,result) values(eid,req,result); return result;
-end $$;
-revoke execute on function public.create_auction_wizard(jsonb,uuid) from public,anon,authenticated;
-grant execute on function public.create_auction_wizard(jsonb,uuid) to service_role;
 
 create table if not exists public.auction_publish_queues (
   id uuid primary key default gen_random_uuid(),
@@ -72,6 +49,36 @@ create policy staff_read on public.auction_publish_queues
   for select to authenticated
   using (exists(select 1 from public.admin_profiles where user_id=(select auth.uid()) and active));
 
+create or replace function public.create_auction_wizard(p_payload jsonb,p_admin_user_id uuid) returns jsonb language plpgsql security invoker set search_path='' as $$
+declare eid text:=trim(coalesce(p_payload->>'eventId','')); cd jsonb:=coalesce(p_payload->'card','{}'::jsonb); ad jsonb:=coalesce(p_payload->'auction','{}'::jsonb); req jsonb; prior public.processed_commands; c public.cards; a public.auctions; d public.whatsapp_dispatches; g public.whatsapp_groups; result jsonb; lot bigint; start_price numeric; increment_value numeric; buyout numeric; schedule_at timestamptz; end_at timestamptz; group_id uuid; options jsonb; extras jsonb; -- ADDITION A
+begin
+ if not exists(select 1 from public.admin_profiles where user_id=p_admin_user_id and active and role in('admin','operator')) then raise exception 'forbidden'; end if;
+ if length(eid)<1 or length(eid)>200 then raise exception 'invalid_event_id'; end if;
+ req:=p_payload||jsonb_build_object('actor',p_admin_user_id,'type','AUCTION_WIZARD_CREATE'); perform pg_advisory_xact_lock(hashtextextended(eid,0));
+ select * into prior from public.processed_commands where external_event_id=eid; if found then if prior.request<>req then raise exception 'event_id_conflict'; end if; return prior.result; end if;
+ perform set_config('app.admin_user_id',p_admin_user_id::text,true);
+ start_price:=(ad->>'starting_price')::numeric; increment_value:=(ad->>'bid_increment')::numeric; buyout:=nullif(ad->>'buyout_price','')::numeric; schedule_at:=(ad->>'scheduled_at')::timestamptz; end_at:=nullif(ad->>'scheduled_end_at','')::timestamptz; group_id:=(ad->>'group_id')::uuid; options:=ad->'poll_options'; lot:=nullif(ad->>'lot_number','')::bigint;
+ extras:=coalesce(cd->'extra_images','[]'::jsonb); -- ADDITION A.1
+ if jsonb_typeof(extras)<>'array' or jsonb_array_length(extras)>4
+    or exists(select 1 from jsonb_array_elements(extras) e where jsonb_typeof(e)<>'string'
+              or not (e#>>'{}' ~ '^https://')
+              or char_length(e#>>'{}')>500) then raise exception 'invalid_extra_images'; end if;
+ if start_price<0 or increment_value<=0 or buyout is not null and buyout<=start_price then raise exception 'invalid_auction_values'; end if;
+ if end_at is not null and end_at<=schedule_at then raise exception 'invalid_end_time'; end if;
+ if jsonb_typeof(options)<>'array' or jsonb_array_length(options)<1 or jsonb_array_length(options)>12 then raise exception 'invalid_poll_options'; end if;
+ select * into g from public.whatsapp_groups where id=group_id and active for share; if not found then raise exception 'whatsapp_group_unavailable'; end if;
+ perform pg_advisory_xact_lock(hashtextextended('auction_lot_number_seq',0)); if lot is not null then if lot<=0 or exists(select 1 from public.auctions where lot_number=lot) then raise exception 'lot_number_in_use'; end if; perform setval('public.auction_lot_number_seq',greatest((select last_value from public.auction_lot_number_seq),lot),true); else loop lot:=nextval('public.auction_lot_number_seq'); exit when not exists(select 1 from public.auctions where lot_number=lot); end loop; end if;
+ insert into public.cards(name,collection,card_number,variant,language,condition,image_url,starting_price,buyout_price,extra_images) values(trim(cd->>'name'),nullif(trim(coalesce(cd->>'collection','')),''),nullif(trim(coalesce(cd->>'card_number','')),''),nullif(trim(coalesce(cd->>'variant','')),''),coalesce(nullif(trim(coalesce(cd->>'language','')),''),'pt-BR'),nullif(trim(coalesce(cd->>'condition','')),''),nullif(trim(coalesce(cd->>'image_url','')),''),start_price,buyout,extras) returning * into c; -- ADDITION A.2 (extra_images column + value)
+ insert into public.auctions(card_id,lot_number,starting_price,bid_increment,buyout_price,scheduled_end_at,created_by) values(c.id,lot,start_price,increment_value,buyout,end_at,p_admin_user_id) returning * into a;
+ insert into public.whatsapp_dispatches(auction_id,group_id,scheduled_at,poll_title,poll_options,status,created_by) values(a.id,g.id,schedule_at,lot::text||'. Lances',options,'scheduled',p_admin_user_id) returning * into d;
+ insert into public.auction_events(auction_id,admin_user_id,event_type,external_event_id,payload) values(a.id,p_admin_user_id,'AUCTION_WIZARD_CREATED',eid,jsonb_build_object('card_id',c.id,'dispatch_id',d.id,'lot_number',lot,'group_id',g.id));
+ result:=jsonb_build_object('card',to_jsonb(c),'auction',to_jsonb(a),'dispatch',to_jsonb(d)); insert into public.processed_commands(external_event_id,request,result) values(eid,req,result); return result;
+end $$;
+
+
+revoke execute on function public.create_auction_wizard(jsonb,uuid) from public,anon,authenticated;
+grant execute on function public.create_auction_wizard(jsonb,uuid) to service_role;
+
 create or replace function public.create_auction_publish_queue(p_payload jsonb,p_admin_user_id uuid)
 returns jsonb
 language plpgsql security invoker set search_path='' as $$
@@ -102,6 +109,9 @@ declare
   increment_value numeric;
   buyout numeric;
   options jsonb;
+  extras jsonb; -- ADDITION A
+  go jsonb; -- ADDITION (20260924160000): giveaway item payload
+  qp public.whatsapp_quick_polls; -- ADDITION (20260924160000): inserted giveaway row
   position_value integer:=0;
 begin
   if not exists(select 1 from public.admin_profiles where user_id=p_admin_user_id and active and role in('admin','operator')) then raise exception 'forbidden'; end if;
@@ -134,17 +144,48 @@ begin
     ad:=coalesce(item->'auction','{}'::jsonb);
     if length(trim(coalesce(cd->>'name','')))<1 then raise exception 'invalid_card_name'; end if;
 
+    -- ADDITION (20260924160000): giveaway item — foto + enquete de brinde no
+    -- lugar do leilão. Sem cards/auctions/dispatches (dispatches exige
+    -- auction_id NOT NULL); a posição SEGUE contando, então o próximo lote é
+    -- agendado DEPOIS do brinde. Título automático com o nome da carta.
+    go:=item->'giveaway';
+    if jsonb_typeof(go)='object' then
+      if jsonb_typeof(coalesce(go->'options','null'::jsonb))<>'array'
+         or jsonb_array_length(coalesce(go->'options','null'::jsonb))<2
+         or jsonb_array_length(coalesce(go->'options','null'::jsonb))>12
+         or exists(select 1 from jsonb_array_elements(coalesce(go->'options','[]'::jsonb)) e
+                   where jsonb_typeof(e)<>'string'
+                   or char_length(e#>>'{}')<1
+                   or char_length(e#>>'{}')>100) then raise exception 'invalid_giveaway_options'; end if;
+      if cd->>'image_url' is not null and cd->>'image_url' not like 'https://%' then raise exception 'invalid_giveaway_image'; end if;
+      schedule_at:=queue_start+make_interval(secs=>((position_value-1)*interval_value)::double precision);
+      insert into public.whatsapp_quick_polls(group_id,queue_id,queue_position,title,options,image_url,scheduled_at,external_event_id,created_by)
+      values(g.id,q.id,position_value,left('🎁 Brinde: '||trim(cd->>'name'),200),go->'options',nullif(cd->>'image_url',''),schedule_at,eid||':giveaway:'||position_value,p_admin_user_id)
+      returning * into qp;
+      result_items:=result_items||jsonb_build_array(jsonb_build_object('poll',to_jsonb(qp),'position',position_value));
+      continue;
+    end if;
+
     start_price:=(ad->>'starting_price')::numeric;
     increment_value:=(ad->>'bid_increment')::numeric;
     buyout:=nullif(ad->>'buyout_price','')::numeric;
     duration_value:=(ad->>'duration_seconds')::integer;
     options:=ad->'poll_options';
     lot:=nullif(ad->>'lot_number','')::bigint;
+    -- ADDITION A.1: extra detail photos (max 4, all HTTPS, array order kept).
+    extras:=coalesce(cd->'extra_images','[]'::jsonb);
+    if jsonb_typeof(extras)<>'array' or jsonb_array_length(extras)>4
+       or exists(select 1 from jsonb_array_elements(extras) e where jsonb_typeof(e)<>'string'
+                 or not (e#>>'{}' ~ '^https://')
+                 or char_length(e#>>'{}')>500) then raise exception 'invalid_extra_images'; end if;
 
     if start_price<0 or increment_value<=0 or buyout is not null and buyout<=start_price then raise exception 'invalid_auction_values'; end if;
     if duration_value<1 or duration_value>604800 then raise exception 'invalid_auction_duration'; end if;
     if jsonb_typeof(options)<>'array' or jsonb_array_length(options)<1 or jsonb_array_length(options)>12 then raise exception 'invalid_poll_options'; end if;
 
+    -- OPERATOR FIX (2026-09-25): lotes explicitos avancam a sequence
+    -- compartilhada (advisory lock + setval) para o nextval nunca ficar
+    -- atrasado do maximo real de lotes.
     perform pg_advisory_xact_lock(hashtextextended('auction_lot_number_seq',0));
     if lot is not null then
       if lot<=0 or exists(select 1 from public.auctions where lot_number=lot) then raise exception 'lot_number_in_use'; end if;
@@ -159,7 +200,7 @@ begin
     schedule_at:=queue_start+make_interval(secs=>((position_value-1)*interval_value)::double precision);
     end_at:=schedule_at+make_interval(secs=>duration_value::double precision);
 
-    insert into public.cards(name,collection,card_number,variant,language,condition,image_url,starting_price,buyout_price)
+    insert into public.cards(name,collection,card_number,variant,language,condition,image_url,starting_price,buyout_price,extra_images)
     values(
       trim(cd->>'name'),
       nullif(trim(coalesce(cd->>'collection','')),''),
@@ -168,7 +209,8 @@ begin
       coalesce(nullif(trim(coalesce(cd->>'language','')),''),'pt-BR'),
       nullif(trim(coalesce(cd->>'condition','')),''),
       nullif(trim(coalesce(cd->>'image_url','')),''),
-      start_price,buyout
+      start_price,buyout,
+      extras -- ADDITION A.2
     ) returning * into c;
 
     insert into public.auctions(card_id,lot_number,starting_price,bid_increment,buyout_price,scheduled_end_at,created_by)
@@ -199,6 +241,7 @@ exception
   when unique_violation then
     raise exception 'lot_number_in_use';
 end $$;
+
 
 revoke execute on function public.create_auction_publish_queue(jsonb,uuid) from public,anon,authenticated;
 grant execute on function public.create_auction_publish_queue(jsonb,uuid) to service_role;
@@ -236,28 +279,52 @@ begin
        where id=d.auction_id and status='draft';
       position_offset:=position_offset+1;
     end loop;
+    -- ADDITION (20260924160000): brindes pendentes são re-agendados DEPOIS dos
+    -- lotes pendentes (a ordem exata de posições é mantida entre leilões;
+    -- brindes vão para o fim da janela restante — sem duplicação).
+    update public.whatsapp_quick_polls qp
+      set scheduled_at=clock_timestamp()
+           +make_interval(secs=>((position_offset + pending_ordinal.ordinal - 1) * q.interval_seconds)::double precision)
+      from (
+        select qp2.id, row_number() over (order by qp2.queue_position, qp2.id) as ordinal
+        from public.whatsapp_quick_polls qp2
+        where qp2.queue_id=q.id and qp2.sent_at is null
+      ) pending_ordinal
+      where qp.id=pending_ordinal.id;
     update public.auction_publish_queues set status='running',paused_at=null,updated_at=clock_timestamp() where id=q.id returning * into q;
   elsif p_action='cancel' then
     if q.status in('completed','cancelled') then raise exception 'queue_not_cancellable'; end if;
     update public.whatsapp_dispatches
        set status='cancelled',locked_at=null,locked_by=null,updated_at=clock_timestamp()
      where queue_id=q.id and status in('scheduled','failed');
+    -- ADDITION (20260924160000): brindes pendentes morrem com a fila (nada
+    -- já enviado é perdido).
+    delete from public.whatsapp_quick_polls qp where qp.queue_id=q.id and qp.sent_at is null;
     update public.auction_publish_queues set status='cancelled',updated_at=clock_timestamp() where id=q.id returning * into q;
   else
     raise exception 'invalid_queue_action';
   end if;
-
   return to_jsonb(q);
 end $$;
+
 
 revoke execute on function public.control_auction_publish_queue(uuid,text,uuid) from public,anon,authenticated;
 grant execute on function public.control_auction_publish_queue(uuid,text,uuid) to service_role;
 
 create or replace function public.sync_auction_publish_queue_status()
 returns trigger language plpgsql security definer set search_path='' as $$
+declare
+  item_sent boolean; -- ADDITION (20260924160000)
 begin
   if new.queue_id is null then return new; end if;
-  if new.status='sent' then
+  -- ADDITION (20260924160000): dispatches falam `status`; quick_polls fala
+  -- `sent_at` (não tem coluna status).
+  if tg_table_name='whatsapp_quick_polls' then
+    item_sent:=new.sent_at is not null;
+  else
+    item_sent:=new.status='sent';
+  end if;
+  if item_sent then
     update public.auction_publish_queues
        set status=case when status='scheduled' then 'running' else status end,
            updated_at=clock_timestamp()
@@ -265,7 +332,11 @@ begin
   end if;
   if not exists(
     select 1 from public.whatsapp_dispatches
-    where queue_id=new.queue_id and status in('scheduled','sending','failed')
+    where queue_id=new.queue_id and status in('scheduled','sending')
+  ) -- ADDITION (20260924160000): brindes pendentes também seguram a conclusão
+  and not exists(
+    select 1 from public.whatsapp_quick_polls
+    where queue_id=new.queue_id and sent_at is null
   ) then
     update public.auction_publish_queues
        set status='completed',updated_at=clock_timestamp()
@@ -274,57 +345,21 @@ begin
   return new;
 end $$;
 
+
+revoke execute on function public.sync_auction_publish_queue_status() from public, anon, authenticated;
+grant execute on function public.sync_auction_publish_queue_status() to service_role;
+
 drop trigger if exists sync_auction_publish_queue_after_dispatch on public.whatsapp_dispatches;
 create trigger sync_auction_publish_queue_after_dispatch
   after update of status on public.whatsapp_dispatches
   for each row when (old.status is distinct from new.status)
   execute function public.sync_auction_publish_queue_status();
 
-create or replace function public.claim_whatsapp_dispatch(p_worker_id text)
-returns setof public.whatsapp_dispatches
-language plpgsql security invoker set search_path='' as $$
-declare v_id uuid; v_queue_id uuid;
-begin
-  if p_worker_id is null or length(trim(p_worker_id))=0 or length(p_worker_id)>200 then raise exception 'invalid_worker_id'; end if;
-
-  update public.whatsapp_dispatches d
-     set status=case
-       when exists(select 1 from public.auction_publish_queues q where q.id=d.queue_id and q.status='cancelled') then 'cancelled'
-       when attempts>=5 then 'failed'
-       else 'scheduled'
-     end,
-     locked_at=null,locked_by=null,
-     last_error=coalesce(last_error,'Recovered after stale worker lock'),
-     updated_at=clock_timestamp()
-   where d.status='sending' and d.locked_at<clock_timestamp()-interval '2 minutes';
-
-  select d.id,d.queue_id into v_id,v_queue_id
-    from public.whatsapp_dispatches d
-   where d.status='scheduled'
-     and d.scheduled_at<=clock_timestamp()
-     and d.attempts<5
-     and (
-       d.queue_id is null
-       or exists(select 1 from public.auction_publish_queues q where q.id=d.queue_id and q.status in('scheduled','running'))
-     )
-   order by d.scheduled_at,d.created_at
-   for update skip locked
-   limit 1;
-
-  if v_id is null then return; end if;
-  if v_queue_id is not null then
-    update public.auction_publish_queues set status='running',updated_at=clock_timestamp()
-     where id=v_queue_id and status='scheduled';
-  end if;
-
-  return query update public.whatsapp_dispatches
-     set status='sending',locked_at=clock_timestamp(),locked_by=p_worker_id,
-         attempts=attempts+1,last_error=null,updated_at=clock_timestamp()
-   where id=v_id returning *;
-end $$;
-
-revoke execute on function public.claim_whatsapp_dispatch(text) from public,anon,authenticated;
-grant execute on function public.claim_whatsapp_dispatch(text) to service_role;
+drop trigger if exists sync_auction_queue_after_quick_poll on public.whatsapp_quick_polls;
+create trigger sync_auction_queue_after_quick_poll
+  after update of sent_at on public.whatsapp_quick_polls
+  for each row when (old.sent_at is distinct from new.sent_at)
+  execute function public.sync_auction_publish_queue_status();
 
 do $$
 begin
@@ -332,9 +367,6 @@ begin
     alter publication supabase_realtime add table public.auction_publish_queues;
   end if;
 end $$;
-
--- A coluna cycle_closed nasce na 20260924180000 (o snapshot a seleciona e
--- ela aplica antes na ordem lexical); aqui fica apenas a logica do ciclo.
 
 create or replace function public.process_auction_command(p_command jsonb,p_admin_user_id uuid)
 returns jsonb language plpgsql security invoker set search_path='' as $$
@@ -525,6 +557,7 @@ begin
  insert into public.processed_commands(external_event_id,request,result) values(eid,request,result);
  return result;
 end $$;
+
 revoke execute on function public.process_auction_command(jsonb,uuid) from public,anon,authenticated;
 grant execute on function public.process_auction_command(jsonb,uuid) to service_role;
 

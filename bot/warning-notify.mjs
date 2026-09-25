@@ -111,3 +111,92 @@ export function createAdminNotificationDrain({ db, getSocket, adminJids = DEFAUL
     },
   };
 }
+
+// ---------------------------------------------------------------------------
+// DM do AVISO para o PRÓPRIO participante (pedido do operador 2026-09-24):
+// quem reduz o próprio lance recebe, na hora, qual enquete/lote, os valores e
+// o horário — e em que aviso está (de 3; aos 3 os admins são notificados).
+// A regra dos 3 em si não muda: o contador continua global e por redução.
+// ---------------------------------------------------------------------------
+export function formatParticipantWarning(warning, count) {
+  const data = warning ?? {};
+  const total = Number.isFinite(Number(count)) && Number(count) > 0 ? Number(count) : 1;
+  const lines = [
+    "⚠️ AVISO DE ALTERAÇÃO DE LANCE",
+    "",
+    data.lot_number != null
+      ? `Você diminuiu o seu lance na enquete do lote ${data.lot_number} (${String(data.card_name ?? "Carta")}):`
+      : `Você diminuiu o seu lance na enquete (${String(data.card_name ?? "Carta")}):`,
+    `• De: ${brl(data.previous_amount)}`,
+    `• Para: ${brl(data.new_amount)}`,
+    `• Horário: ${dateTime(data.occurred_at)}`,
+    "",
+    total >= 3
+      ? `Este é o seu aviso nº ${total}. Os administradores já foram notificados.`
+      : `Este é o seu aviso ${total} de 3 — ao atingir 3, os administradores são notificados.`,
+  ];
+  return lines.join("\n");
+}
+
+export function createParticipantWarningDrain({ db, getSocket, resolveJid, intervalMs = 15_000 }) {
+  let inFlight = false;
+  let lastTick = 0;
+  return {
+    async tick(nowMs = Date.now()) {
+      if (inFlight || nowMs - lastTick < intervalMs) return 0;
+      inFlight = true;
+      lastTick = nowMs;
+      try {
+        const sock = getSocket?.();
+        if (!sock) return 0;
+        // notificado=false: coluna notified_at adicionada na 20260924180000.
+        const { data: pending, error } = await db.from("participant_warnings")
+          .select("id,participant_id,auction_id,card_name,lot_number,previous_amount,new_amount,external_event_id,occurred_at")
+          .is("notified_at", null)
+          .order("occurred_at", { ascending: true })
+          .limit(3);
+        if (error) throw new Error(error.message);
+        let delivered = 0;
+        for (const warning of pending ?? []) {
+          // K = posição deste aviso no contador GLOBAL do usuário (mesma
+          // régua que dispara a notificação dos admins no 3º).
+          const { count, error: countError } = await db.from("participant_warnings")
+            .select("id", { count: "exact", head: true })
+            .eq("participant_id", warning.participant_id)
+            .lte("occurred_at", warning.occurred_at);
+          if (countError) throw new Error(countError.message);
+          let done = false;
+          const jid = resolveJid ? await resolveJid(warning.participant_id) : null;
+          if (jid) {
+            try {
+              await sock.sendMessage(jid, { text: formatParticipantWarning(warning, count) });
+              delivered += 1;
+              done = true;
+              console.log(`⚠️ DM de aviso entregue ao participante ${warning.participant_id} (${warning.external_event_id}).`);
+            } catch (error) {
+              console.error(`Aviso: falha na DM ao participante ${warning.participant_id}:`, error?.message || error);
+            }
+          } else {
+            // Sem JID de telefone resolvível a DM é impossível: marca para não
+            // rodar em círculo — o aviso CONTINUA contando (banco + admins).
+            console.warn(`Aviso: participante ${warning.participant_id} sem JID para DM — aviso registrado sem aviso direto.`);
+            done = true;
+          }
+          // notified_at só depois de decidir a entrega (crash → reenvio).
+          if (done) {
+            const { error: updateError } = await db.from("participant_warnings")
+              .update({ notified_at: new Date().toISOString() })
+              .eq("id", warning.id);
+            if (updateError) throw new Error(updateError.message);
+          }
+        }
+        return delivered;
+      } catch (error) {
+        console.error("Aviso: falha ao drenar avisos de participantes:", error?.message || error);
+        return 0;
+      } finally {
+        inFlight = false;
+      }
+    },
+  };
+}

@@ -1,37 +1,33 @@
 # SESSION HANDOFF
 
 ## Última atualização
-2026-09-24 (rodada 4: "verificação de cartas muito ruim de novo" — diagnóstico: painel da VERCEL degradando silenciosamente para o pipeline do NAVEGADOR (P-11, sem o secret); agora o wizard MOSTRA o pipeline ativo)
+2026-09-24 (rodada 5: avisos de alteração de valores — DM ao PARTICIPANTE que reduziu o lance + painel ao vivo no dashboard; migration 20260924180000)
 
-## Sessão atual (resumo das 4 rodadas)
-1. **Rascunhos do wizard em lote** (CI verde em 529c0f9d): salvar/abrir/excluir, fotos no Storage no salvar, apaga ao publicar; migration 20260924150000.
-2. **Hotfixes do bot** (04605f72 + e9c68aa0, verdes): spam libsignal (patch, privKeys não vazam), spam "enquete desconhecida" dedup, sync de grupos 30s→90s (justificativa medida), brinde avulso movido para /auctions/brinde (layout force-dynamic).
-3. **Brinde por carta** (270a9d74/cdbb8f1b, verdes): botão "🎁 Brinde" na EDIÇÃO da carta → foto + enquete no lugar do leilão (migration 20260924160000); + variante/bandeira "Outro" na legenda; + drag só no ☰ (seleção de texto volta a funcionar).
-4. **Rodada 4** (esta): qualidade do reconhecimento "muito ruim de novo" no painel publicado.
+## Sessão atual (resumo das 5 rodadas)
+1. **Rascunhos do wizard em lote** (529c0f9d): salvar/abrir/excluir, fotos no Storage, apaga ao publicar; migration 150000.
+2. **Hotfixes do bot** (04605f72 + e9c68aa0): spam libsignal (patch), spam "enquete desconhecida" dedup, sync de grupos 90s, brinde avulso /auctions/brinde.
+3. **Brinde por carta** (270a9d74/cdbb8f1b): botão na EDIÇÃO da carta → foto+enquete no lugar do leilão (migration 160000); variante/bandeira "Outro" na legenda; drag só no ☰. OPERADOR também publica (170000, backup do brinde — verificado correto).
+4. **Pipeline de reconhecimento VISÍVEL** (d5470f9c): chip no wizard; P-11 (secret na Vercel) era o motivo do "muito ruim de novo" no painel publicado.
+5. **Rodada 5** (esta): avisos — ver qual enquete/horário + DM ao participante + 3 → admins.
 
-## O que foi concluído (rodada 4)
-1. **Diagnóstico**: o operador usa o painel PUBLICADO (citou leilaopokemon.vercel.app). Sem `RECOGNITION_SERVICE_SHARED_SECRET` na Vercel (P-11 aberto), `/api/card-recognition/token` falha e TODA foto degrada silenciosamente para o pipeline do NAVEGADOR (~47 MB WASM, sem SIFT/índice) — o pipeline local (49% IDENTIFICADO no holdout real de 96 fotos) segue saudável no PC. Nada regrediu no código; era o fallback invisível.
-2. **Pipeline ativo VISÍVEL**: `probeRecognitionPipeline()` em lib/card-recognition-local.ts — probe + MINT de token (o probe sozinho MENTE no painel publicado: o navegador alcança 127.0.0.1:8765, mas o mint é server-side) → chip no wizard (etapa 1): "🔎 serviço local ✅" / "⚠ NAVEGADOR (pior)" com causa nomeada por host (PC: ligar npm run start; Vercel: configurar o secret) / "⏸️ desativado" / "verificando…". Resultados auto-corrigem o chip (`result.localPipeline`). Texto antigo "O reconhecimento roda localmente" (mentia na Vercel) corrigido.
-3. Teste estático novo (probe+mint+chip+auto-heal). Drifts de docs limpos: P-01 marcado CONCLUÍDO (07 já documentava o fix de 2026-09-23; 11 estava stale).
-
-## O que está em andamento
-- Nada de código. **O OPERADOR também publica no repo** (20260924170000_backup_giveaway_fields.sql, commit 1e85df8c — backup cobrindo os campos do brinde; verificado: partiu da versão mais recente, mantém auction_drafts, correto). Meu commit da rodada 4 rebaseado em cima. Push + CI desta rodada pendentes ao fechar a sessão.
-
-## Testes executados
-- Node 170 OK (novo teste de pipeline visível), bot 31 OK, typecheck OK, build OK. Python não tocado nesta rodada (252 no CI).
+## O que foi concluído (rodada 5)
+1. **Pedido do operador**: "ver qual enquete a pessoa mudou o voto, que horas; se deu valor maior e põe menor recebe um aviso; com 3 contata os admins (554197285978, 5519989759121)". A regra dos 3 → admins JÁ EXISTIA (20260923093000 aplicada + dreno warning-notify.mjs); faltavam a DM à PESSOA e a visibilidade ao vivo.
+2. **DM ao participante** (`bot/warning-notify.mjs::createParticipantWarningDrain`, migration 20260924180000): cada redução → DM direto nomeando a enquete/lote, carta, valores, horário e "aviso K de 3" (no 3º+ diz que os admins foram notificados). `participant_warnings.notified_at` só após enviar (crash → reenvio); sem JID resolvível marca sem DM (o aviso continua contando). Wired no ciclo de 3s do bot ao lado do dreno dos admins.
+3. **Dashboard ao vivo**: `read_dashboard_snapshot` agora traz `participant_warnings` (lote/carta/valores/horário/notified_at) + `value_change_log` (limit 100) — novo painel "Avisos de alteração de valores" entre Disputa e Cartas (participante, lote, carta, anterior→novo, horário, K de 3, DM pendente/enviada). Antes só o Excel tinha esses dados.
+4. **Testes**: `tests/warning-notice.sql` (novo, no ci.yml) + 6 testes do dreno em `bot/warning-notify.test.mjs`. Bot 37, site 170, typecheck, build — OK local.
 
 ## Ponto EXATO onde paramos
-A CORREÇÃO REAL da qualidade é ação do OPERADOR (2 min): copiar `RECOGNITION_SERVICE_SHARED_SECRET` do .env.local para a Vercel (Settings → Environment Variables, server-only) → Redeploy → o chip do wizard em /auctions/new deve virar "🔎 Reconhecimento: serviço local ✅". Sem isso, o painel publicado continua no pipeline do navegador.
+Código completo e testado localmente; push + CI desta rodada a caminho. **P-13 agora são QUATRO migrations** (150000→160000→170000→180000) — sem a 180000 o painel de avisos fica vazio (coluna notified_at) e o dreno do participante loga erro até aplicar. P-11 (secret na Vercel) segue pendente para o painel publicado.
 
 ## Próximo passo EXATO
-1. Push + CI verde desta rodada.
-2. OPERADOR (P-11): secret na Vercel + redeploy + conferir o chip "serviço local ✅" no painel publicado.
-3. P-13: aplicar migrations 20260924150000 + 20260924160000 + 20260924170000 no SQL Editor (ordem lexical) → `npm run doctor` → smoke (rascunho + brinde por carta).
-4. P-04 (SigLIP2 quantizado) no backlog. P-01 CONCLUÍDO (drift limpo).
+1. Push + CI verde.
+2. OPERADOR (P-13): colar as 4 migrations no SQL Editor (ordem lexical) → `npm run doctor` → smoke: reduzir um lance de teste → DM chega à pessoa + painel de avisos mostra lote/horário; 3 reduções → DM aos admins.
+3. OPERADOR (P-11): secret na Vercel + redeploy → chip "serviço local ✅" no painel publicado.
+4. P-04 (SigLIP2 quantizado) no backlog. P-01 CONCLUÍDO (drift limpo na rodada 4).
 
 ## Arquivos de código prioritários
-- `lib/card-recognition-local.ts` (probeRecognitionPipeline), `app/auctions/new/bulk-wizard.tsx` (chip + brinde + rascunhos + drag)
-- `supabase/migrations/20260924150000_auction_drafts.sql` + `20260924160000_giveaway_queue_items.sql`
+- `bot/warning-notify.mjs` (formatParticipantWarning + createParticipantWarningDrain), `supabase/migrations/20260924180000_participant_warning_notice.sql`
+- `app/dashboard.tsx` (painel de avisos), `bot/index.mjs` (wiring do dreno no ciclo de 3s)
 
 ## Comandos úteis
 ```bash
@@ -44,11 +40,11 @@ node --test bot/*.test.mjs
 ```
 
 ## Atenções
-- **P-11 é o gargalo da qualidade no painel publicado** — sem o secret, TODO reconhecimento roda no navegador. O chip do wizard agora torna isso visível.
-- Migrations 20260924150000+20260924160000+20260924170000 NÃO aplicadas em produção (P-13): rascunho/brinde-por-carta falham com erro claro até aplicar.
-- O operador escreve migrations também — ANTES de substituir função, verificar se o remoto tem commits novos (`git fetch`); o push desta rodada foi rejeitado por non-fast-forward e resolvido com rebase.
+- Migrations 150000..180000 NÃO aplicadas em produção (P-13): rascunho/brinde/avisos falham com erro claro até aplicar.
+- **P-11 é o gargalo da qualidade no painel publicado** — sem o secret, TODO reconhecimento roda no navegador (o chip do wizard mostra).
 - `uploadImages(keepFiles)`: publicação false, rascunho true — não inverter.
-- Migrations que substituem função: SEMPRE verbatim da última versão com adições marcadas (esta sessão errei 1× copiando trigger antigo — o CI pegou).
+- Migrations que substituem função: SEMPRE verbatim da última versão com adições marcadas (errei 1× com trigger antigo — o CI pegou).
+- O OPERADOR também escreve migrations — `git fetch` ANTES de substituir função/push (rodada 4 foi rejeitada por non-fast-forward, resolvida com rebase).
 - Página client-side nova com createPublicSupabaseClient PRECISA de layout force-dynamic.
 - Suíte que persiste estado redireciona o diretório ANTES do import dinâmico (BOT_DATA_DIR).
 - Atualizar `11_PENDING_WORK.md` e ESTE arquivo ao concluir qualquer item.

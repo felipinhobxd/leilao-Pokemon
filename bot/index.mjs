@@ -13,7 +13,7 @@ import { buildAuctionCaption } from "./format.mjs";
 import { phoneFromWhatsAppJid, syncGroupParticipants } from "./group-participants.mjs";
 import { isLidJid, isPhoneJid, normalizeUserJid } from "./poll-identities.mjs";
 import { decryptIncomingPollVote } from "./poll-votes.mjs";
-import { createAdminNotificationDrain, parseAdminJids } from "./warning-notify.mjs";
+import { createAdminNotificationDrain, createParticipantWarningDrain, parseAdminJids } from "./warning-notify.mjs";
 import { resolveParticipantJid, mentionMessage } from "./participant-contact.mjs";
 import { createPaymentReminderDrain } from "./payment-reminder.mjs";
 import { ANNOUNCE_MINUTES_BEFORE, buildOpeningMessage, loadAnnouncedQueueIds, loadAnnouncementSticker, markQueueAnnounced, saveAnnouncementSticker } from "./announce-sticker.mjs";
@@ -54,6 +54,13 @@ const adminNotificationDrain = createAdminNotificationDrain({
     const jids = parseAdminJids();
     return jids.length ? jids : undefined;
   })(),
+});
+// DM do aviso para o PRÓPRIO participante que reduziu o lance (qual enquete/
+// lote, valores, horário e o nº do aviso — de 3; aos 3 os admins são DMados).
+const participantWarningDrain = createParticipantWarningDrain({
+  db,
+  getSocket: () => (socketReady ? sock : null),
+  resolveJid: participantId => resolveParticipantJid(db, participantId),
 });
 // Lembretes de pagamento: DM a cada 7 dias (BOT_PAYMENT_REMINDER_DAYS) para
 // arrematantes sem baixa de pagamento; sem aviso/punição; para quando o
@@ -1043,7 +1050,7 @@ async function connect() {
       console.log(`\n✅ WhatsApp conectado. Worker: ${WORKER_ID}`);
       console.log("Aguardando agendamentos e votos...\n");
       clearInterval(schedulerTimer);
-      schedulerTimer = setInterval(() => { void runScheduler(); void finalizeDueAuctions(); void adminNotificationDrain.tick(); void sendDueQuickPolls(); void paymentReminderDrain.tick(); void sendOpeningAnnouncements(); }, 3000);
+      schedulerTimer = setInterval(() => { void runScheduler(); void finalizeDueAuctions(); void adminNotificationDrain.tick(); void participantWarningDrain.tick(); void sendDueQuickPolls(); void paymentReminderDrain.tick(); void sendOpeningAnnouncements(); }, 3000);
       void syncOpenAuctionGroups().catch(error => console.warn("Falha ao sincronizar grupos abertos:", error?.message || error));
       void runScheduler();
       void finalizeDueAuctions();

@@ -10,7 +10,7 @@
 | Funcionalidade | Arquivo |
 |---|---|
 | Login (Supabase Auth) | `app/page.tsx` |
-| Painel ao vivo (bot, grupo, leilão atual, maior lance, janela 30d, ações) | `app/dashboard.tsx` |
+| Painel ao vivo (bot, grupo, leilão atual, maior lance, janela 30d, ações, **avisos de alteração de valores**) | `app/dashboard.tsx` |
 | Cadastro em **lote** (drag & drop de fotos, IA, valores, fila, rascunhos, botão Brinde) | `app/auctions/new/page.tsx` → `app/auctions/new/bulk-wizard.tsx` |
 | Wizard de **carta única** | `app/auctions/new/single/page.tsx` → `app/auctions/new/wizard.tsx` |
 | **Brinde** (enquete rápida, movida da Central WhatsApp 2026-09-24) | `app/auctions/brinde/page.tsx` |
@@ -33,6 +33,11 @@
 - "Numerar lotes" pula brindes (brinde não consome número); extras ficam ocultos em brindes (a publicação usa só a foto principal); validação própria (2–12 opções, ≤100 chars).
 - A fila (pós-publicação) mostra os brindes entre os leilões (`poll` por posição, "🎁" com enviado/agendado); cancelar a fila apaga brindes pendentes.
 - O formulário avulso de brinde (enquete sem carta) continua em `/auctions/brinde` (botão "🎁 Brinde" no topbar).
+
+### Avisos de alteração de valores no dashboard (2026-09-24, migration `20260924180000`)
+
+- Painel "Avisos de alteração de valores" (entre Disputa e Cartas): cada redução de lance com participante, **lote/enquete**, carta, anterior → novo, **horário**, nº do aviso (K de 3, com "admins notificados" do 3º em diante) e o estado da DM à pessoa (✓ enviada / ⏳ pendente). Dados via `read_dashboard_snapshot` (agora inclui `participant_warnings` + `value_change_log`, limit 100 — antes só o Excel tinha).
+- A pessoa que reduz recebe DM direto do bot (nomeia enquete/lote, valores, horário e o nº do aviso); aos 3, os admins recebem a DM da regra (ver 06_WHATSAPP_BOT).
 
 ### Rascunhos (2026-09-24, migration `20260924150000`)
 

@@ -47,9 +47,10 @@
 - **P-08 (2026-09-24)**: fotos de detalhe (`cards.extra_images`, até 4) saem em sequência após a foto principal, ANTES de persistir `announcement_sent_at` (crash → reenvio com os MESMOS messageIds estáveis `extra-1..4`).
 - **P-09 (2026-09-24)**: `bot/payment-reminder.mjs` — DM ao arrematante a cada 7 dias (`BOT_PAYMENT_REMINDER_DAYS`) enquanto a entrega estiver `waiting_payment` sem payment `paid`; sem aviso/punição; máx. 5 por padrão (`BOT_PAYMENT_REMINDER_MAX`, 0 = ilimitado); idempotente por `payment_reminders.purchase_id` UNIQUE.
 
-## Avisos globais (warning-notify.mjs — commit 6b9e8a6e)
+## Avisos globais (warning-notify.mjs — commit 6b9e8a6e + rodada 2026-09-24)
 
 - O RPC grava avisos por **redução** de lance e, com 3 exatos, insere `admin_notifications` (idempotente).
+- **DM ao PARTICIPANTE (20260924180000, pedido do operador)**: `createParticipantWarningDrain` drena `participant_warnings.notified_at IS NULL` no ciclo de 3s — envia DM direto nomeando a enquete/lote, carta, valores e horário, e o nº do aviso ("aviso K de 3"; no 3º+ informa que os admins foram notificados). `notified_at` só após enviar (crash → reenvio); sem JID de telefone resolvível marca sem DM (o aviso continua contando). K = contador global do usuário (mesma régua dos admins).
 - O filho drena no ciclo de 3s: formata a DM (`formatWarningNotification`: usuário, total global, última ocorrência com carta/lote/valores/horário, histórico dos anteriores) e envia para `BOT_ADMIN_WA_JIDS` (default 554197285978 e 5519989759121).
 - `sent_at` só após TODOS os admins; `payload.sent_to` faz retry parcial reenviar SÓ ao que faltou (zero DM duplicada). Sem socket → não processa.
 - ⚠️ Enquanto a migration `20260923093000` não for aplicada, o dreno loga erro (tabela inexistente) e continua funcional — barulho esperado no console.

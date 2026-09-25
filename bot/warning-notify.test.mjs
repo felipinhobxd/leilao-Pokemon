@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_ADMIN_JIDS, createAdminNotificationDrain, formatWarningNotification, parseAdminJids } from "./warning-notify.mjs";
+import { DEFAULT_ADMIN_JIDS, createAdminNotificationDrain, createParticipantWarningDrain, formatParticipantWarning, formatWarningNotification, parseAdminJids } from "./warning-notify.mjs";
 
 const PAYLOAD = {
   participant_name: "Exemplo",
@@ -121,4 +121,113 @@ test("drain: sem socket não faz nada", async () => {
   const db = fakeDb([{ id: "n1", payload: {}, external_event_id: "e1" }]);
   const drain = createAdminNotificationDrain({ db, getSocket: () => null, adminJids: ["a@s.whatsapp.net"], intervalMs: 0 });
   assert.equal(await drain.tick(1000), 0);
+});
+
+// ---------------------------------------------------------------------------
+// DM do aviso para o PRÓPRIO participante (20260924180000): qual enquete/
+// lote, valores, horário e o nº do aviso (de 3).
+// ---------------------------------------------------------------------------
+const WARNING = {
+  id: "w1",
+  participant_id: "p1",
+  card_name: "Gengar",
+  lot_number: 7,
+  previous_amount: 30,
+  new_amount: 22,
+  external_event_id: "wa-vote:x:p:1:22",
+  occurred_at: "2026-09-24T23:10:00.000Z",
+};
+
+function fakeParticipantDb(rows) {
+  const state = { rows: rows.map(row => ({ notified_at: null, ...row })), count: 1 };
+  const chain = () => {
+    const c = {
+      head: false,
+      select: (_columns, options) => { c.head = Boolean(options?.head); return c; },
+      is: () => c,
+      order: () => c,
+      limit: () => (c.head
+        ? Promise.resolve({ data: [], count: state.count, error: null })
+        : Promise.resolve({ data: state.rows.filter(row => !row.notified_at).slice(), error: null })),
+      eq: () => c,
+      lte: () => Promise.resolve({ data: [], count: state.count, error: null }),
+      update: payload => ({ eq: (_col, value) => { const target = state.rows.find(row => row.id === value); if (target) Object.assign(target, payload); return Promise.resolve({ error: null }); } }),
+    };
+    return c;
+  };
+  return { state, from: () => chain() };
+}
+
+test("formatParticipantWarning: DM nomeia enquete/lote, valores, horário e o no do aviso", () => {
+  const text = formatParticipantWarning(WARNING, 1);
+  assert.ok(text.includes("AVISO DE ALTERAÇÃO DE LANCE"));
+  assert.ok(text.includes("lote 7 (Gengar)"));
+  assert.ok(text.includes("R$ 30,00"));
+  assert.ok(text.includes("R$ 22,00"));
+  assert.ok(text.includes("Horário"));
+  assert.ok(text.includes("aviso 1 de 3"));
+});
+
+test("formatParticipantWarning: no 3o aviso diz que os admins foram notificados; depois continua contando", () => {
+  assert.ok(formatParticipantWarning(WARNING, 3).includes("n\u00BA 3"));
+  const after = formatParticipantWarning(WARNING, 5);
+  assert.ok(after.includes("n\u00BA 5"));
+  assert.ok(after.includes("j\u00E1 foram notificados"));
+});
+
+test("participant drain: entrega a DM e marca notified_at (segunda passada nao reenvia)", async () => {
+  const db = fakeParticipantDb([{ ...WARNING }]);
+  const sent = [];
+  const drain = createParticipantWarningDrain({
+    db,
+    getSocket: () => ({ sendMessage: async (jid, payload) => { sent.push([jid, payload.text]); } }),
+    resolveJid: async () => "5511999999999@s.whatsapp.net",
+    intervalMs: 0,
+  });
+  assert.equal(await drain.tick(1000), 1);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0][0], "5511999999999@s.whatsapp.net");
+  assert.ok(sent[0][1].includes("lote 7 (Gengar)"));
+  assert.equal(db.state.rows[0].notified_at != null, true);
+  assert.equal(await drain.tick(9999), 0);
+  assert.equal(sent.length, 1);
+});
+
+test("participant drain: sem JID resolvivel marca sem DM (nao roda em circulo)", async () => {
+  const db = fakeParticipantDb([{ ...WARNING }]);
+  const sent = [];
+  const drain = createParticipantWarningDrain({
+    db,
+    getSocket: () => ({ sendMessage: async (jid, payload) => { sent.push([jid, payload.text]); } }),
+    resolveJid: async () => null,
+    intervalMs: 0,
+  });
+  assert.equal(await drain.tick(1000), 0);
+  assert.equal(sent.length, 0, "sem JID não há DM");
+  assert.equal(db.state.rows[0].notified_at != null, true, "marca para não travar o dreno");
+});
+
+test("participant drain: falha no envio deixa pendente e reenvia depois", async () => {
+  const db = fakeParticipantDb([{ ...WARNING }]);
+  const sent = [];
+  let fail = true;
+  const drain = createParticipantWarningDrain({
+    db,
+    getSocket: () => ({ sendMessage: async () => { if (fail) throw new Error("network"); sent.push("ok"); } }),
+    resolveJid: async () => "5511999999999@s.whatsapp.net",
+    intervalMs: 0,
+  });
+  await drain.tick(1000);
+  assert.equal(db.state.rows[0].notified_at, null, "falha mantém pendente");
+  fail = false;
+  assert.equal(await drain.tick(9999), 1);
+  assert.equal(sent.length, 1);
+  assert.equal(db.state.rows[0].notified_at != null, true);
+});
+
+test("participant drain: sem socket nao faz nada", async () => {
+  const db = fakeParticipantDb([{ ...WARNING }]);
+  const drain = createParticipantWarningDrain({ db, getSocket: () => null, resolveJid: async () => "x@s.whatsapp.net", intervalMs: 0 });
+  assert.equal(await drain.tick(1000), 0);
+  assert.equal(db.state.rows[0].notified_at, null);
 });

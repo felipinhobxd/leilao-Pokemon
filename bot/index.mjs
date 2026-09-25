@@ -1090,7 +1090,19 @@ async function connect() {
 // estao abertas ao mesmo tempo (bot que subiu atrasado), disparar ambas em
 // paralelo nao garante a ordem no grupo — o encadeamento espera as regras
 // chegarem antes de soltar a figurinha + @all.
-schedulerTimer = setInterval(() => { void sendOpeningSequence(); void runScheduler(); void finalizeDueAuctions(); void adminNotificationDrain.tick(); void sendDueQuickPolls(); void paymentReminderDrain.tick(); }, 3000);
+schedulerTimer = setInterval(() => {
+        // A sequência de abertura (regras + figurinha + @all) precisa TERMINAR
+        // antes de qualquer dispatch ser publicado — se rodarem em paralelo,
+        // o 1º lote chega no grupo antes do "O leilão vai começar!".
+        void (async () => {
+          await sendOpeningSequence();
+          void runScheduler();
+          void finalizeDueAuctions();
+          void adminNotificationDrain.tick();
+          void sendDueQuickPolls();
+          void paymentReminderDrain.tick();
+        })();
+      }, 3000);
       void syncOpenAuctionGroups().catch(error => console.warn("Falha ao sincronizar grupos abertos:", error?.message || error));
       void runScheduler();
       void finalizeDueAuctions();

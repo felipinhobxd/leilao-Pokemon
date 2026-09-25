@@ -36,9 +36,16 @@ import {
 import { createPublicSupabaseClient } from "./supabase";
 
 const SERVICE_BASE = "http://127.0.0.1:8765";
-const HEALTH_TIMEOUT_MS = 1200;
+// 5s (era 1,2s): durante o warmup pós-idle-unload o /health pode demorar
+// 2-3s enquanto o Python carrega modelos em background — 1,2s dava timeout
+// falso e jogava a sessão inteira pro navegador por 60s.
+const HEALTH_TIMEOUT_MS = 5_000;
 const STATUS_TTL_MS = 60_000;
-const OFFLINE_BACKOFF_MS = 60_000;
+// 5s quando o processo RESPONDEU (warming/ready=false), 30s quando nem
+// conectou (era 60s para ambos): o warmup pós-idle demora 15-30s, e o
+// cliente antigo ficava 60s cego esperando um serviço que já estava pronto.
+const OFFLINE_BACKOFF_MS = 30_000;
+const WARMING_BACKOFF_MS = 5_000;
 // Execution timeout only: a request starts when a scheduler slot frees, so
 // this never includes time spent waiting behind other cards (queueMs reports
 // that separately in the response payload).
@@ -76,7 +83,7 @@ export type LocalServiceStatus = "checking" | "online" | "offline";
 
 export type { ServiceCandidate, ServiceHealth, ServiceResult };
 
-type StatusCache = { status: LocalServiceStatus; checkedAt: number; health?: ServiceHealth };
+type StatusCache = { status: LocalServiceStatus; checkedAt: number; health?: ServiceHealth; warming?: boolean };
 let statusCache: StatusCache = { status: "checking", checkedAt: 0 };
 let probePromise: Promise<StatusCache> | null = null;
 
@@ -142,6 +149,10 @@ export function cachedLocalServiceStatus(): LocalServiceStatus {
   return statusCache.status;
 }
 
+export function cachedServiceWarming(): boolean {
+  return Boolean(statusCache.warming);
+}
+
 export function localServiceHealth(): ServiceHealth | undefined {
   return statusCache.health;
 }
@@ -172,10 +183,16 @@ export async function probeLocalService(force = false): Promise<LocalServiceStat
   const now = Date.now();
   if (!force) {
     if (now - statusCache.checkedAt < STATUS_TTL_MS && statusCache.status !== "checking") return statusCache.status;
-    if (statusCache.status === "offline" && now - statusCache.checkedAt < OFFLINE_BACKOFF_MS) return "offline";
+    // Processo RESPONDEU mas está aquecendo (warming): backoff CURTO — os
+    // modelos ficam prontos em 15-30s. Conexão recusada: backoff normal.
+    if (statusCache.status === "offline") {
+      const backoff = statusCache.warming ? WARMING_BACKOFF_MS : OFFLINE_BACKOFF_MS;
+      if (now - statusCache.checkedAt < backoff) return "offline";
+    }
   }
   if (probePromise) return (await probePromise).status;
   const pending = (async (): Promise<StatusCache> => {
+    let warming = false;
     try {
       const response = await fetch(`${SERVICE_BASE}/health`, { signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) });
       if (!response.ok) throw new Error(`health ${response.status}`);
@@ -186,10 +203,13 @@ export async function probeLocalService(force = false): Promise<LocalServiceStat
       // must be treated as NOT usable, never as ready.
       if (health?.status !== "ok") throw new Error("health inválido");
       if (health.authConfigured !== true) throw new Error("autenticação local não configurada");
+      // Processo vivo + auth ok: mesmo NÃO pronto ainda, é WARMUP — o serviço
+      // arma o warm em background no /health. Backoff curto na próxima.
+      warming = true;
       if (health.ready !== true) throw new Error("serviço não pronto (ready != true)");
-      statusCache = { status: "online", checkedAt: Date.now(), health };
+      statusCache = { status: "online", checkedAt: Date.now(), health, warming: false };
     } catch {
-      statusCache = { status: "offline", checkedAt: Date.now() };
+      statusCache = { status: "offline", checkedAt: Date.now(), warming };
     } finally {
       probePromise = null;
     }

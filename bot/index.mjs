@@ -16,7 +16,7 @@ import { decryptIncomingPollVote } from "./poll-votes.mjs";
 import { createAdminNotificationDrain, parseAdminJids } from "./warning-notify.mjs";
 import { resolveParticipantJid, mentionMessage } from "./participant-contact.mjs";
 import { createPaymentReminderDrain } from "./payment-reminder.mjs";
-import { ANNOUNCE_GRACE_MINUTES, ANNOUNCE_MINUTES_BEFORE, buildOpeningMessage, loadAnnouncedQueueIds, loadAnnouncementSticker, markQueueAnnounced, saveAnnouncementSticker } from "./announce-sticker.mjs";
+import { ANNOUNCE_GRACE_MINUTES, ANNOUNCE_MINUTES_BEFORE, ANNOUNCE_RULES_MINUTES_BEFORE, buildOpeningMessage, loadAnnouncedQueueIds, loadAnnouncementSticker, loadRulesAnnouncedQueueIds, loadRulesMessage, markQueueAnnounced, markQueueRulesAnnounced, saveAnnouncementSticker } from "./announce-sticker.mjs";
 import { queueEnabled, startQueueWorker } from "./queue-worker.mjs";
 
 const required = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "BOT_ADMIN_USER_ID"];
@@ -888,6 +888,47 @@ async function maybeCaptureAnnouncementSticker(message) {
 // opções livres com emoji, "quem clicar primeiro leva"). Tabela própria
 // (whatsapp_quick_polls) — dispatches exige auction_id. Idempotência:
 // sent_at só depois do envio confirmado; messageId estável por brinde.
+// REGRAS DO LEILÃO: enviadas ANTES da figurinha+"O leilão vai começar!" —
+// default 2 minutos antes do anúncio (BOT_RULES_MINUTES_BEFORE), texto da
+// operadora (sobreponível em bot/data/rules-message.json). Mesma janela de
+// grace e idempotência por announce-state.json.
+let rulesBusy = false;
+async function sendRulesAnnouncements() {
+  if (!sock || !socketReady || rulesBusy) return;
+  rulesBusy = true;
+  try {
+    const windowMs = (Math.max(0, ANNOUNCE_MINUTES_BEFORE) + Math.max(0, ANNOUNCE_RULES_MINUTES_BEFORE)) * 60_000;
+    const horizon = new Date(Date.now() + windowMs).toISOString();
+    const floor = new Date(Date.now() - ANNOUNCE_GRACE_MINUTES * 60_000).toISOString();
+    const { data: queues, error } = await db.from("auction_publish_queues")
+      .select("id,group_id,starts_at,status")
+      .in("status", ["scheduled", "running"])
+      .lte("starts_at", horizon)
+      .gte("starts_at", floor)
+      .order("starts_at", { ascending: true })
+      .limit(5);
+    if (error) throw new Error(error.message);
+    const announced = loadRulesAnnouncedQueueIds();
+    for (const queue of queues ?? []) {
+      if (announced.has(String(queue.id))) continue;
+      const { data: group } = await db.from("whatsapp_groups").select("group_jid,active").eq("id", queue.group_id).maybeSingle();
+      if (!group?.active) continue;
+      try {
+        await sock.sendMessage(group.group_jid, { text: loadRulesMessage() });
+        markQueueRulesAnnounced(queue.id, announced);
+        console.log(`📘 Regras do leilão enviadas (fila ${queue.id}).`);
+      } catch (error) {
+        // Sem marcar: o próximo tick tenta de novo enquanto a janela estiver aberta.
+        console.error(`Falha ao enviar as regras (fila ${queue.id}):`, error?.message || error);
+      }
+    }
+  } catch (error) {
+    console.error("Regras do leilão: falha no ciclo:", error?.message || error);
+  } finally {
+    rulesBusy = false;
+  }
+}
+
 // P-05 — Figurinha de abertura: quando uma fila está chegando (default 5 min
 // antes via BOT_ANNOUNCE_MINUTES_BEFORE) ou começou há pouco (janela de
 // ANNOUNCE_GRACE_MINUTES), retransmite a figurinha capturada + @all no
@@ -1082,7 +1123,7 @@ async function connect() {
       console.log(`\n✅ WhatsApp conectado. Worker: ${WORKER_ID}`);
       console.log("Aguardando agendamentos e votos...\n");
       clearInterval(schedulerTimer);
-      schedulerTimer = setInterval(() => { void sendOpeningAnnouncements(); void runScheduler(); void finalizeDueAuctions(); void adminNotificationDrain.tick(); void sendDueQuickPolls(); void paymentReminderDrain.tick(); }, 3000);
+      schedulerTimer = setInterval(() => { void sendRulesAnnouncements(); void sendOpeningAnnouncements(); void runScheduler(); void finalizeDueAuctions(); void adminNotificationDrain.tick(); void sendDueQuickPolls(); void paymentReminderDrain.tick(); }, 3000);
       void syncOpenAuctionGroups().catch(error => console.warn("Falha ao sincronizar grupos abertos:", error?.message || error));
       void runScheduler();
       void finalizeDueAuctions();

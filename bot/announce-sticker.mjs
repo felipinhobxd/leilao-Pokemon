@@ -34,6 +34,62 @@ export const ANNOUNCE_MINUTES_BEFORE = Number(process.env.BOT_ANNOUNCE_MINUTES_B
 // mentira. Desacoplado do dispatch: fila "Agora" tem o 1º lote claimado
 // antes do anúncio, e fila começando com BRINDE nem tem dispatch na pos. 1.
 export const ANNOUNCE_GRACE_MINUTES = Number(process.env.BOT_ANNOUNCE_GRACE_MINUTES ?? 15);
+// REGRAS DO LEILÃO: enviadas ANTES da figurinha+"O leilão vai começar!" —
+// o operador pediu "uns 2 minutos antes" (do anúncio), sempre antes dele.
+// O texto é o da operadora (verbatim); sobreponível em
+// bot/data/rules-message.json {"text": "..."} sem tocar no código.
+export const ANNOUNCE_RULES_MINUTES_BEFORE = Number(process.env.BOT_RULES_MINUTES_BEFORE ?? 2);
+
+// Texto padrão das regras (pedido do operador 2026-09-25, verbatim).
+export const DEFAULT_RULES_MESSAGE = `ㅤ𓈒ㅤ📘 REGRAS DO LEILÃO 🗯️ ♡ ┈─╯
+
+OLÁ, MINHA FAMÍLIA DE FOCAS! 🦭
+
+Estamos testando um bot para facilitar a dinâmica dos nossos leilões! Ele registra os votos e mostra os arremates na hora, deixando tudo mais organizado. Ainda estamos em fase de testes, então pedimos um pouquinho de paciência! Tudo continua sendo preparado com muito amor e carinho para vocês. ♡
+
+→ As fotos e enquetes serão enviadas com um intervalo de aproximadamente 30 a 40 segundos cada. Fiquem de olho! ;)
+
+♡ 1. A última opção da enquete sempre será o ARREMATE, acompanhada da nossa foquinha (🦭). Ao clicar nela, a carta é sua, e o bot mostra o arremate na hora!
+
+♡ 2. Se duas pessoas arrematarem juntas, vale o primeiro registro confirmado pelo bot. Caso haja alguma falha no registro, os ADMs vão conferir!
+
+♡ 3. Nos lances sem arremate, se você marcar um valor maior e depois mudar para um menor, sem que outra pessoa tenha dado lance, será considerado o maior valor selecionado. O bot registra todas as alterações e avisa sempre que alguém muda o voto! Isso não permite desfazer um arremate nem retirar um lance após o prazo de 1 minuto.
+
+♡ 4. Os lances valem até 1h da manhã, conforme o encerramento anunciado para cada leilão. No dia seguinte, enviamos os relatórios no privado de cada um.
+
+♡ 5. Os brindes vão para quem clicar primeiro, mas é obrigatório ter arrematado pelo menos uma carta no leilão. Caso contrário, o brinde passa para o próximo.
+
+╭── 💳 . ࣪ PAGAMENTOS ୭ ࣪♡
+
+♡ 6. Vocês têm até 10 dias para pagar. A data de vencimento será informada em cada leilão. Aceitamos PIX, OLX e cartão de crédito — consulte as taxas com a gente!
+
+♡ 7. A falta de pagamento, sem justificativa ou retorno após 3 tentativas de contato, resultará em banimento e inclusão na blacklist global de grupos de TCG.
+
+→ Teve algum problema ou imprevisto? Converse com a gente! Dúvidas sobre cobranças, lances, arremates, funcionamento do bot ou assuntos gerais do leilão devem ser encaminhadas ao ADM Murilo. ♡
+
+╭── 📦 . ࣪ ENVIO E CAIXINHA ୭ ࣪♡
+
+♡ 8. FRETE GRÁTIS para compras acima de R$ 300 (Sul/Sudeste) ou R$ 450 (demais regiões).
+
+♡ 9. Guardamos suas cartas por até 1 mês. Depois disso, chamamos você para combinar se prefere estender o prazo ou pedir o envio.
+
+♡ 10. Você pode pedir suas cartas a qualquer momento! Postamos em até 2 dias úteis após a solicitação e a confirmação dos pagamentos das cartas e do frete, quando houver.
+
+Obrigada por fazerem parte da nossa família de focas e acompanharem essa novidade com a gente! Bons lances! 🦭♡ e
+
+⚠️ LANCE/ARREMATE É COMPROMISSO!
+
+Dê lances apenas se tiver CERTEZA de que poderá pagar. Você tem até 1 minuto para cancelar: depois disso, não é permitido retirar o lance ou arremate! O bot registra tudo automaticamente, e desistências fora do prazo prejudicam nossa organização e os outros membros que também queriam a carta. ⚠️`;
+
+/** Texto das regras: arquivo em bot/data/rules-message.json vence o default
+ * (a operadora pode editar sem redeploy); ausente/corrompido = default. */
+export const RULES_MESSAGE_FILE = join(DATA_DIR, "rules-message.json");
+
+export function loadRulesMessage() {
+  const override = readJson(RULES_MESSAGE_FILE);
+  const text = typeof override?.text === "string" ? override.text.trim() : "";
+  return text || DEFAULT_RULES_MESSAGE;
+}
 
 function readJson(path) {
   try {
@@ -74,6 +130,21 @@ export function markQueueAnnounced(queueId, announced = loadAnnouncedQueueIds())
   // Compacta: listas enormes de filas antigas não justificam arquivo crescido.
   const list = [...announced].slice(-500);
   writeJson(ANNOUNCE_STATE_FILE, { announced: list });
+  return announced;
+}
+
+/** Filas que já receberam as REGRAS (mesmo arquivo, chave própria). */
+export function loadRulesAnnouncedQueueIds() {
+  const state = readJson(ANNOUNCE_STATE_FILE);
+  if (!Array.isArray(state?.rules_announced)) return new Set();
+  return new Set(state.rules_announced);
+}
+
+export function markQueueRulesAnnounced(queueId, announced = loadRulesAnnouncedQueueIds()) {
+  announced.add(String(queueId));
+  const state = readJson(ANNOUNCE_STATE_FILE) ?? {};
+  const stickers = Array.isArray(state?.announced) ? state.announced : [];
+  writeJson(ANNOUNCE_STATE_FILE, { announced: stickers, rules_announced: [...announced].slice(-500) });
   return announced;
 }
 

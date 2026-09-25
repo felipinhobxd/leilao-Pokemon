@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,7 +9,7 @@ import { join } from "node:path";
 const dataDir = mkdtempSync(join(tmpdir(), "announce-sticker-test-"));
 process.env.BOT_DATA_DIR = dataDir;
 
-const { loadAnnouncedQueueIds, loadAnnouncementSticker, saveAnnouncementSticker, markQueueAnnounced, buildOpeningMessage, STICKER_FILE, ANNOUNCE_GRACE_MINUTES, ANNOUNCE_MINUTES_BEFORE } = await import("./announce-sticker.mjs");
+const { loadAnnouncedQueueIds, loadAnnouncementSticker, saveAnnouncementSticker, markQueueAnnounced, markQueueRulesAnnounced, loadRulesAnnouncedQueueIds, loadRulesMessage, buildOpeningMessage, STICKER_FILE, ANNOUNCE_GRACE_MINUTES, ANNOUNCE_MINUTES_BEFORE } = await import("./announce-sticker.mjs");
 
 test.after(() => {
   rmSync(dataDir, { recursive: true, force: true });
@@ -61,4 +61,34 @@ test("estado de produção NÃO é tocado (BOT_DATA_DIR redirecionado)", () => {
 test("janela de grace: bot que sob atrasado ainda avisa; fila velha fica em silencio", () => {
   assert.ok(ANNOUNCE_GRACE_MINUTES > 0, "grace precisa existir");
   assert.ok(ANNOUNCE_MINUTES_BEFORE >= 0, "janela anterior precisa ser >= 0");
+});
+
+test("regras: mensagem padrao da operadora carrega integra", () => {
+  const text = loadRulesMessage();
+  assert.ok(text.includes("REGRAS DO LEILAO") || text.includes("REGRAS DO LEILÃO"), "titulo presente");
+  assert.ok(text.includes("FAMILIA DE FOCAS") || text.includes("FAMÍLIA DE FOCAS"));
+  assert.ok(text.includes("ARREMATE"));
+  assert.ok(text.includes("1 minuto"));
+  assert.ok(text.includes("LANCE/ARREMATE E COMPROMISSO") || text.includes("LANCE/ARREMATE É COMPROMISSO"));
+});
+
+test("regras: arquivo de override vence o padrao", () => {
+  writeFileSync(join(dataDir, "rules-message.json"), JSON.stringify({ text: "REGRAS NOVAS DE TESTE" }), "utf8");
+  assert.equal(loadRulesMessage(), "REGRAS NOVAS DE TESTE");
+});
+
+test("regras: override corrompido cai no padrao (nunca quebra o anuncio)", () => {
+  writeFileSync(join(dataDir, "rules-message.json"), "{isso nao e json", "utf8");
+  const text = loadRulesMessage();
+  assert.ok(text.includes("REGRAS DO LEILAO") || text.includes("REGRAS DO LEILÃO"));
+});
+
+test("regras: filas anunciadas persistem sem corromper o estado da figurinha", () => {
+  markQueueAnnounced("queue-fig");
+  markQueueRulesAnnounced("queue-rules");
+  const rules = loadRulesAnnouncedQueueIds();
+  assert.ok(rules.has("queue-rules"), "regras marcadas");
+  assert.ok(!rules.has("queue-fig"), "estado da figurinha nao vaza para o das regras");
+  assert.ok(loadAnnouncedQueueIds().has("queue-fig"), "figurinha preservada no mesmo arquivo");
+  assert.ok(loadAnnouncedQueueIds().has("queue-fig") && !loadRulesAnnouncedQueueIds().has("queue-fig"), "chaves independentes");
 });

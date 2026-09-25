@@ -74,6 +74,14 @@ test("parsePurgeRpcError: unknown failures surface the raw database message", ()
   assert.ok(empty.message.length > 0);
 });
 
+
+test("auction delete route: RPC receives the NORMALIZED confirmation phrase", () => {
+  const source = readFileSync(new URL("../app/api/auctions/delete/route.ts", import.meta.url), "utf8");
+  assert.match(source, /normalizePurgePhrase/);
+  assert.match(source, /const normalizedConfirm = normalizePurgePhrase\(confirm\)/);
+  assert.match(source, /p_confirm:\s*normalizedConfirm/);
+});
+
 test("route contract: RPC receives the NORMALIZED phrase (regression: raw mixed-case 500s)", () => {
   const source = readFileSync(new URL("../app/api/admin/purge/route.ts", import.meta.url), "utf8");
   assert.match(source, /normalizePurgePhrase\(body\.confirm\)/);

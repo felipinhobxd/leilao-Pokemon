@@ -121,12 +121,12 @@ Próximo passo: nenhum.
 
 ```text
 ID: P-13
-Título: Aplicar as migrations de rascunhos + brinde por carta (20260924150000 e 20260924160000) no Supabase
+Título: Aplicar as migrations de rascunhos + brinde por carta (20260924150000, 20260924160000 e 20260924170000) no Supabase
 Prioridade: Alta (o botão "Salvar rascunho" e o brinde por carta só funcionam após aplicar)
 Status: Aberto — ação do OPERADOR (SQL Editor), código e CI prontos
-Arquivos relacionados: supabase/migrations/20260924150000_auction_drafts.sql (tabela auction_drafts + RPCs upsert/delete + purge/backup atualizados), supabase/migrations/20260924160000_giveaway_queue_items.sql (quick_polls ganha image_url/queue_id/queue_position + RPCs da fila cientes de brinde), scripts/doctor.mjs (checa tabela/RPCs de rascunho), app/api/auctions/drafts/route.ts, app/auctions/new/bulk-wizard.tsx, lib/auction-draft.ts
+Arquivos relacionados: supabase/migrations/20260924150000_auction_drafts.sql (tabela auction_drafts + RPCs upsert/delete + purge/backup atualizados), supabase/migrations/20260924160000_giveaway_queue_items.sql (quick_polls ganha image_url/queue_id/queue_position + RPCs da fila cientes de brinde), supabase/migrations/20260924170000_backup_giveaway_fields.sql (backup cobre os campos do brinde — escrita pelo OPERADOR), scripts/doctor.mjs (checa tabela/RPCs de rascunho), app/api/auctions/drafts/route.ts, app/auctions/new/bulk-wizard.tsx, lib/auction-draft.ts
 Descrição: rascunhos do wizard em lote salvos no Supabase (fotos sobem ao Storage no salvar) + brinde por carta na fila. Sem as migrations aplicadas, salvar devolve erro de função ausente e itens de brinde são rejeitados.
-Próximo passo: operador colar os DOIS arquivos no SQL Editor (ordem lexical: 150000 → 160000) → `npm run doctor` → smoke: (1) salvar rascunho com 2 cartas, fechar, reabrir, Abrir, publicar fila de teste e conferir que o rascunho sumiu; (2) marcar uma carta como "🎁 Brinde" com opções, publicar fila e conferir foto+enquete no grupo.
+Próximo passo: operador colar os TRÊS arquivos no SQL Editor (ordem lexical: 150000 → 160000 → 170000) → `npm run doctor` → smoke: (1) salvar rascunho com 2 cartas, fechar, reabrir, Abrir, publicar fila de teste e conferir que o rascunho sumiu; (2) marcar uma carta como "🎁 Brinde" com opções, publicar fila e conferir foto+enquete no grupo.
 ```
 
 ```text

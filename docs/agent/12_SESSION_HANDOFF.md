@@ -15,7 +15,7 @@
 3. Teste estático novo (probe+mint+chip+auto-heal). Drifts de docs limpos: P-01 marcado CONCLUÍDO (07 já documentava o fix de 2026-09-23; 11 estava stale).
 
 ## O que está em andamento
-- Nada de código. Push + CI desta rodada pendente ao fechar a sessão.
+- Nada de código. **O OPERADOR também publica no repo** (20260924170000_backup_giveaway_fields.sql, commit 1e85df8c — backup cobrindo os campos do brinde; verificado: partiu da versão mais recente, mantém auction_drafts, correto). Meu commit da rodada 4 rebaseado em cima. Push + CI desta rodada pendentes ao fechar a sessão.
 
 ## Testes executados
 - Node 170 OK (novo teste de pipeline visível), bot 31 OK, typecheck OK, build OK. Python não tocado nesta rodada (252 no CI).
@@ -26,7 +26,7 @@ A CORREÇÃO REAL da qualidade é ação do OPERADOR (2 min): copiar `RECOGNITIO
 ## Próximo passo EXATO
 1. Push + CI verde desta rodada.
 2. OPERADOR (P-11): secret na Vercel + redeploy + conferir o chip "serviço local ✅" no painel publicado.
-3. P-13: aplicar migrations 20260924150000 + 20260924160000 no SQL Editor (ordem lexical) → `npm run doctor` → smoke (rascunho + brinde por carta).
+3. P-13: aplicar migrations 20260924150000 + 20260924160000 + 20260924170000 no SQL Editor (ordem lexical) → `npm run doctor` → smoke (rascunho + brinde por carta).
 4. P-04 (SigLIP2 quantizado) no backlog. P-01 CONCLUÍDO (drift limpo).
 
 ## Arquivos de código prioritários
@@ -45,7 +45,8 @@ node --test bot/*.test.mjs
 
 ## Atenções
 - **P-11 é o gargalo da qualidade no painel publicado** — sem o secret, TODO reconhecimento roda no navegador. O chip do wizard agora torna isso visível.
-- Migrations 20260924150000+20260924160000 NÃO aplicadas em produção (P-13): rascunho/brinde-por-carta falham com erro claro até aplicar.
+- Migrations 20260924150000+20260924160000+20260924170000 NÃO aplicadas em produção (P-13): rascunho/brinde-por-carta falham com erro claro até aplicar.
+- O operador escreve migrations também — ANTES de substituir função, verificar se o remoto tem commits novos (`git fetch`); o push desta rodada foi rejeitado por non-fast-forward e resolvido com rebase.
 - `uploadImages(keepFiles)`: publicação false, rascunho true — não inverter.
 - Migrations que substituem função: SEMPRE verbatim da última versão com adições marcadas (esta sessão errei 1× copiando trigger antigo — o CI pegou).
 - Página client-side nova com createPublicSupabaseClient PRECISA de layout force-dynamic.

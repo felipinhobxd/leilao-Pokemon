@@ -11,6 +11,11 @@
 begin;
 insert into auth.users(id) values('00000000-0000-0000-0000-000000000071');
 insert into public.admin_profiles(user_id,display_name) values('00000000-0000-0000-0000-000000000071','Test admin');
+-- O CI roda cada arquivo de teste em transação PRÓPRIA (rollback): nada de
+-- outros arquivos sobrevive. Sem esta fixture o select de grupo ativo na
+-- seção 6 (exclusão de item de fila) devolve NULL -> whatsapp_group_unavailable.
+insert into public.whatsapp_groups(id,group_jid,name,active,is_default)
+values('55555555-5555-5555-5555-555555555555','5555555555555@g.us','Grupo Delete Teste',true,false);
 create function pg_temp.check_that(ok boolean, message text) returns void language plpgsql as $$ begin if ok is distinct from true then raise exception 'ASSERT: %',message; end if; end $$;
 create function pg_temp.cmd(c jsonb) returns jsonb language sql as $$ select public.process_auction_command(c,'00000000-0000-0000-0000-000000000071') $$;
 create function pg_temp.rejects_delete(p uuid, phrase text, expected text) returns void language plpgsql as $$

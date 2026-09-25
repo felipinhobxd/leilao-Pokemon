@@ -120,12 +120,11 @@ Próximo passo: nenhum.
 
 ```text
 ID: P-13
-Título: Aplicar as migrations pendentes (170000 se faltar e a nova 20260924180000) no Supabase
-Prioridade: Alta (o painel "Avisos de alteração de valores" no dashboard só funciona com a 180000)
-Status: PARCIAL — 150000 (rascunhos) e 160000 (brinde) CONFIRMADAS APLICADAS ao vivo (2026-09-24, verificação direta no Supabase); 20260924180000 NÃO aplicada (renomeada/reescrita em 2026-09-24: agora é dashboard_warnings_snapshot — a versão anterior com a coluna notified_at foi substituída ANTES de qualquer aplicação; se você chegou a aplicar a antiga, não há conflito — a nova só substitui a função de snapshot, e a coluna notified_at sobrando é inofensiva)
-Arquivos relacionados: supabase/migrations/20260924170000_backup_giveaway_fields.sql (escrita pelo OPERADOR — confirmar aplicação), supabase/migrations/20260924180000_dashboard_warnings_snapshot.sql (snapshot do dashboard com avisos/alterações)
-Descrição: sem a 180000 o painel de avisos fica vazio e o snapshot não traz participant_warnings/value_change_log. Rascunhos e brinde por carta já funcionam.
-Próximo passo: operador aplicar `20260924180000_dashboard_warnings_snapshot.sql` no SQL Editor (e confirmar a 170000 se ainda não colou) → `npm run doctor` → smoke: reduzir um lance de teste → terminal do bot loga "🔄 Voto alterado … · lote N · ⚠️ redução" e o painel mostra lote/horário; 3 reduções do mesmo usuário → DM aos admins.
+Título: Aplicar as migrations pendentes no Supabase
+Prioridade: Alta (painel de avisos, ciclo de 3, edição de lote e exclusão de leilão só funcionam após aplicar)
+Status: PARCIAL — 150000 (rascunhos) e 160000 (brinde) CONFIRMADAS aplicadas; PENDENTES: 20260924180000_dashboard_warnings_snapshot.sql, 20260924200000_warning_cycle_reset.sql, 20260924210000_edit_queue_item.sql, 20260924220000_delete_auction.sql (ordem lexical; conferir também 170000/190000 do próprio operador)
+Arquivos relacionados: supabase/migrations/20260924*.sql (as quatro acima), scripts/doctor.mjs
+Próximo passo: colar as 4 no SQL Editor → `npm run doctor` → smokes: excluir leilão de teste ("sim quero") some do Excel; 3+3 reduções → 2 DMs de ciclo; editar lote pendente; backup com cloudPath; lote falho → DM.
 ```
 
 ```text

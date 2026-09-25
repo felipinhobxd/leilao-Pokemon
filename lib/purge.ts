@@ -66,3 +66,10 @@ export function parsePurgeRpcError(error: unknown): ParsedPurgeError {
     message: message ? `Falha ao excluir tudo: ${message}` : "Falha ao excluir tudo.",
   };
 }
+
+/** Excluir leilão de verdade: frase digitada "sim quero" - validada em
+ * TRIPLICE escala (UI -> API -> RPC), mesma disciplina do "Excluir TUDO". */
+export const AUCTION_DELETE_CONFIRM_PHRASE = "sim quero";
+export function isAuctionDeleteConfirm(value: unknown): boolean {
+  return normalizePurgePhrase(value) === AUCTION_DELETE_CONFIRM_PHRASE;
+}

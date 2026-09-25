@@ -45,10 +45,11 @@ test("filas anunciadas persistem entre leituras", () => {
 
 test("mensagem de abertura menciona participantes reais", () => {
   const message = buildOpeningMessage(["5541@s.whatsapp.net", "5519@s.whatsapp.net", "lixo", 42]);
-  assert.ok(message.text.includes("@todos"));
+  assert.ok(message.text.includes("@all"));
+  assert.ok(!message.text.includes("@todos"), "WhatsApp renderiza a menção coletiva como @all, não @todos");
   assert.deepEqual(message.mentions, ["5541@s.whatsapp.net", "5519@s.whatsapp.net"]);
   const solo = buildOpeningMessage(["5541@s.whatsapp.net"]);
-  assert.ok(!solo.text.includes("@todos"), "sem grupo não promete @todos");
+  assert.ok(!solo.text.includes("@all"), "sem grupo nao promete @all");
   assert.deepEqual(solo.mentions, ["5541@s.whatsapp.net"]);
 });
 

@@ -7,7 +7,7 @@ import type { Command } from "@/lib/commands";
 import type { Row, Snapshot } from "@/lib/backend";
 import { money } from "@/lib/domain";
 import { brasiliaInputToIso, formatBrasiliaTime, toBrasiliaInput } from "@/lib/brasilia-time";
-import { isPurgeFinalPhrase, isPurgeStep1 } from "@/lib/purge";
+import { isAuctionDeleteConfirm, isPurgeFinalPhrase, isPurgeStep1 } from "@/lib/purge";
 
 type Editor = { kind: "CARD" | "PARTICIPANT" | "AUCTION"; row?: Row };
 type DispatchStats = { successRate: number | null; sent: number; failed: number; pending: number; windowDays: number } | null;
@@ -44,6 +44,8 @@ export default function Dashboard() {
   const [clock, setClock] = useState(Date.now());
   const [purgeOpen, setPurgeOpen] = useState(false);
   const [purgeStep1, setPurgeStep1] = useState("");
+  const [deleteAuctionOpen, setDeleteAuctionOpen] = useState(false);
+  const [deleteAuctionConfirm, setDeleteAuctionConfirm] = useState("");
   const [purgeStep2, setPurgeStep2] = useState("");
   const revision = useRef(0);
   const fullLoadedAt = useRef(0);
@@ -166,8 +168,7 @@ export default function Dashboard() {
   }
   async function purgeEverything() {
     if (mutationLock.current) return;
-    mutationLock.current = true; setBusy(true); setError(""); setNotice("");
-    try {
+    mutationLock.current = true; setBusy(true); setError(""); setNotice("");    try {
       const response = await request("/api/admin/purge", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: purgeStep2 }) });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error);
@@ -178,6 +179,21 @@ export default function Dashboard() {
     } catch (e) { setError(e instanceof Error ? e.message : "Falha ao excluir tudo."); }
     finally { mutationLock.current = false; setBusy(false); }
   }
+  async function deleteAuctionForever() {
+    if (mutationLock.current || !auction) return;
+    mutationLock.current = true; setBusy(true); setError(""); setNotice("");
+    try {
+      const response = await request("/api/auctions/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ auctionId: str(auction, "id"), confirm: deleteAuctionConfirm }) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error);
+      const result = body.data ?? {};
+      setDeleteAuctionOpen(false); setDeleteAuctionConfirm(""); setSelected("");
+      setNotice(`Leilão ${result.lot_number ?? "—"} (${result.card_name ?? "Carta"}) excluído definitivamente — lances, publicações e compras dele foram removidos.${result.card_deleted ? " A carta também (não havia outro leilão dela)." : ""}`);
+      await refresh();
+    } catch (e) { setError(e instanceof Error ? e.message : "Falha ao excluir o leilão."); }
+    finally { mutationLock.current = false; setBusy(false); }
+  }
+
   const writable = role !== "viewer" && !busy && !retry;
   const auctions = data ? [...data.auctions].sort((a,b) => str(b,"created_at").localeCompare(str(a,"created_at"))) : [];
   const auction = auctions.find(a => a.id === selected) ?? auctions.find(a => a.status === "open") ?? auctions[0];
@@ -220,6 +236,7 @@ export default function Dashboard() {
         {!auction ? <p className="muted">Crie seu primeiro leilão em “Novo leilão”.</p> : <><h2>#{Number(auction.lot_number)||"—"} {str(card,"name")}</h2><p className="muted">{str(card,"collection")} · {str(card,"card_number")}</p><div className="card-content">{str(card,"image_url").startsWith("https://") && <div className="card-image-wrap"><img className="card-image" src={str(card,"image_url")} alt={str(card,"name")} referrerPolicy="no-referrer" /></div>}<div className="bid-box"><span>{auction.status==="sold" ? "Vencedor" : "Líder elegível"}</span><strong>{str(winner,"display_name") || "Sem lances"}</strong><b>{price(amount)}</b><span>Inicial: {price(auction.starting_price)} · ARREMATE: {price(auction.buyout_price)}</span><p className="muted">{auction.status === "open" ? `Tempo restante: ${remainingLabel(auction.scheduled_end_at, clock)}` : `Status: ${labelStatus[str(auction,"status")] ?? str(auction,"status")} · Tipo: ${saleType(auction.win_type)}`}</p></div></div>
           {bids.length > 0 && <div className="table-wrap" style={{marginTop:14}}><table><thead><tr><th>Participante</th><th>Telefone / WhatsApp</th><th>Lance atual</th><th>Posição</th></tr></thead><tbody>{bids.map((bid,index)=>{const person=participant(bid.participant_id);return <tr key={str(bid,"id")}><td>{str(person,"display_name")}</td><td>{str(person,"phone_e164") || str(person,"whatsapp_id")}</td><td>{price(bid.amount)}</td><td>{index===0?"🏆 Ganhando":`${index+1}º`}</td></tr>;})}</tbody></table></div>}
           {auction.status==="draft" && <div className="actions"><button disabled={!writable} onClick={()=>command("AUCTION_OPEN",{auctionId:str(auction,"id")})}>Abrir leilão</button><button disabled={!writable} onClick={()=>setEditor({kind:"AUCTION",row:auction})}>Editar</button><button disabled={!writable} onClick={()=>{if(confirm("Cancelar este rascunho?"))command("AUCTION_DELETE",{auctionId:str(auction,"id")});}}>Remover</button></div>}
+          {auction.status!=="open" && <div className="actions" style={{marginTop:10}}><button className="danger-btn" disabled={!writable} onClick={()=>{setDeleteAuctionConfirm("");setDeleteAuctionOpen(true);}}>🗑 Excluir leilão definitivamente</button></div>}
           {auction.status==="open" && <form className="form-grid" onSubmit={e=>{e.preventDefault();const f=new FormData(e.currentTarget);const type=String(f.get("type")) as Command["type"];if(type==="BUYOUT_CONFIRMED"&&!confirm("Confirmar ARREMATE e encerrar a disputa imediatamente?"))return;command(type,{auctionId:str(auction,"id"),participantId:String(f.get("participant")),...(["BID_PLACED","BID_CHANGED"].includes(type)?{amount:Number(f.get("amount"))}:{})});}}><label>Participante<select name="participant" required>{data.participants.filter(p=>p.status==="active").map(p=><option key={str(p,"id")} value={str(p,"id")}>{str(p,"display_name")}</option>)}</select></label><label>Ação<select name="type"><option value="BID_PLACED">Registrar lance</option><option value="BID_CHANGED">Trocar lance</option><option value="BID_WITHDRAWN">Retirar lance</option><option value="BUYOUT_REQUESTED">Solicitar ARREMATE</option><option value="BUYOUT_CONFIRMED">Confirmar ARREMATE</option></select></label><label>Valor do lance<input name="amount" type="number" min="0" max="9999999999.99" step="0.01" defaultValue={Number(auction.starting_price)} /></label><div className="actions"><button disabled={!writable}>Confirmar ação</button><button type="button" disabled={!writable} onClick={()=>{if(confirm("Finalizar agora e gerar a compra do maior lance elegível?"))command("AUCTION_FINALIZE",{auctionId:str(auction,"id")});}}>Finalizar leilão</button></div></form>}
         </>}
       </article><aside className="panel timeline"><h2>Atividade recente</h2><div className="events">{[...data.auction_events].sort((a,b)=>str(b,"created_at").localeCompare(str(a,"created_at"))).slice(0,15).map(e=><div className="event" key={str(e,"id")}><time>{formatBrasiliaTime(str(e,"created_at"))}</time><div><strong>{str(e,"event_type")}</strong><p>{str(participant(e.participant_id),"display_name") || "Administração"}</p></div></div>)}</div></aside></section>
@@ -234,7 +251,14 @@ export default function Dashboard() {
       {editor.kind==="PARTICIPANT"&&editor.row&&<>{input("display_name","Nome","text",true)}{input("whatsapp_id","Identificador WhatsApp","text",true)}{input("phone_e164","Telefone internacional")}{input("notes","Observações")}<label>Status<select name="status" defaultValue={str(editor.row,"status")||"active"}><option value="active">Ativo</option><option value="suspended">Suspenso</option><option value="banned">Bloqueado</option></select></label></>}
       {editor.kind==="AUCTION"&&<>{input("starting_price","Preço inicial","number",true)}{input("buyout_price","ARREMATE (opcional)","number")}{input("scheduled_end_at","Prazo (horário de Brasília)","datetime-local")}</>}
       <div className="actions"><button disabled={!writable}>Salvar</button><button type="button" disabled={busy} onClick={()=>setEditor(null)}>Cancelar</button></div></form></dialog>}
-    {purgeOpen && <dialog ref={purgeDialog} className="panel modal" aria-label="Excluir tudo" onCancel={event => { if (busy) event.preventDefault(); else setPurgeOpen(false); }}><h2>Excluir TUDO</h2><p className="muted">Apaga definitivamente os dados de operação e solicita o logout completo da sessão do WhatsApp no PC do bot. Não há como desfazer. A conta administrativa, os grupos e a memória de reconhecimento são mantidos.</p>
+    {deleteAuctionOpen && auction && <dialog open className="panel modal" aria-label="Excluir leilão" onCancel={event => { if (busy) event.preventDefault(); else setDeleteAuctionOpen(false); }}><h2>Excluir leilão definitivamente</h2>
+      <p>Você quer mesmo excluir o leilão <strong>#{Number(auction.lot_number) || "—"}</strong> da carta <strong>{str(card, "name")}</strong>?</p>
+      <p className="muted">Todos os dados dele (lances, votos, publicações, eventos, compras, pagamentos) são apagados e ele sai da exportação do Excel. {str(card, "name") && "A carta também é excluída quando não há outro leilão dela. "}Não há como desfazer.</p>
+      <form className="form-grid" onSubmit={event => { event.preventDefault(); void deleteAuctionForever(); }}>
+        <label>Confirmação — digite <strong>sim quero</strong><input value={deleteAuctionConfirm} onChange={event => setDeleteAuctionConfirm(event.target.value)} placeholder="sim quero" autoComplete="off" spellCheck={false} /></label>
+        <div className="actions"><button className="danger-btn" type="submit" disabled={!isAuctionDeleteConfirm(deleteAuctionConfirm) || busy}>{busy ? "Excluindo…" : "Excluir definitivamente"}</button><button type="button" disabled={busy} onClick={()=>setDeleteAuctionOpen(false)}>Cancelar</button></div>
+      </form></dialog>}
+{purgeOpen && <dialog ref={purgeDialog} className="panel modal" aria-label="Excluir tudo" onCancel={event => { if (busy) event.preventDefault(); else setPurgeOpen(false); }}><h2>Excluir TUDO</h2><p className="muted">Apaga definitivamente os dados de operação e solicita o logout completo da sessão do WhatsApp no PC do bot. Não há como desfazer. A conta administrativa, os grupos e a memória de reconhecimento são mantidos.</p>
       <form className="form-grid" onSubmit={event => { event.preventDefault(); void purgeEverything(); }}>
         <label>1ª confirmação — digite <strong>excluir tudo</strong><input value={purgeStep1} onChange={event => setPurgeStep1(event.target.value)} placeholder="excluir tudo" autoComplete="off" spellCheck={false} /></label>
         {isPurgeStep1(purgeStep1) && <label>2ª confirmação — digite <strong>quero excluir mesmo</strong><input value={purgeStep2} onChange={event => setPurgeStep2(event.target.value)} placeholder="quero excluir mesmo" autoComplete="off" spellCheck={false} /></label>}

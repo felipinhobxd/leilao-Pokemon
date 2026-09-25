@@ -880,7 +880,7 @@ async function maybeCaptureAnnouncementSticker(message) {
     return;
   }
   saveAnnouncementSticker(sticker.key, sticker.message);
-  await sock.sendMessage(chatJid, { text: `✅ Figurinha de abertura salva!\n\nEla será enviada ${ANNOUNCE_MINUTES_BEFORE > 0 ? `${ANNOUNCE_MINUTES_BEFORE} minuto(s) antes` : "junto"} do primeiro lote de cada fila de leilão, seguida da mensagem com @todos.` });
+  await sock.sendMessage(chatJid, { text: `✅ Figurinha de abertura salva!\n\nEla será enviada ${ANNOUNCE_MINUTES_BEFORE > 0 ? `${ANNOUNCE_MINUTES_BEFORE} minuto(s) antes` : "junto"} do primeiro lote de cada fila de leilão, seguida da mensagem com @all.` });
   console.log(`🖼️  Figurinha de abertura capturada (chat ${chatJid}, msg ${sticker.key.id}).`);
 }
 
@@ -890,7 +890,7 @@ async function maybeCaptureAnnouncementSticker(message) {
 // sent_at só depois do envio confirmado; messageId estável por brinde.
 // P-05 — Figurinha de abertura: quando uma fila está chegando (default 5 min
 // antes via BOT_ANNOUNCE_MINUTES_BEFORE) ou começou há pouco (janela de
-// ANNOUNCE_GRACE_MINUTES), retransmite a figurinha capturada + @todos no
+// ANNOUNCE_GRACE_MINUTES), retransmite a figurinha capturada + @all no
 // grupo, UMA vez por fila (estado em bot/data/announce-state.json).
 let openingBusy = false;
 async function sendOpeningAnnouncements() {

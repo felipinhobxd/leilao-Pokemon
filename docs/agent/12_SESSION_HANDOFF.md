@@ -1,23 +1,41 @@
 # SESSION HANDOFF
 
 ## Última atualização
-2026-09-25 (rodada 8: CICLO de 3 avisos com reset + auto-save de rascunho + backup na nuvem + DM de lote falho + edição de lote pendente na fila)
+2026-09-25 (rodada 9: excluir leilão DE VERDADE com frase "sim quero" + @all no lugar de @todos)
 
-## Rodada 8 (o que foi feito)
-1. **Ciclo de 3 avisos com RESET (decisão do operador)**: migration `20260924200000_warning_cycle_reset.sql` — coluna `cycle_closed` em participant_warnings + `process_auction_command` copiado VERBATIM por EXTRAÇÃO programática (gerador node; zero transcrição manual) com a única mudança marcada no hook: o contador considera apenas avisos APÓS o último cycle_closed; o 3º do ciclo notifica os admins E marca a linha (baseline do próximo ciclo); nova sequência de 3 → nova notificação. Histórico nunca é apagado. DM aos admins: "ciclo atual — o contador reinicia após esta notificação". Dashboard mostra K do CICLO + "contador reiniciado" na linha que fechou. Teste SQL: 2 ciclos completos → 2 notificações, ambas marcadas, histórico com 6 linhas.
-2. **Auto-save de rascunho**: intervalo de 45s no wizard; fingerprint (transições de reconhecimento NÃO contam); silencioso (sem banner de erro — desativa na sessão se falhar, ex. migration pendente); "salvo automaticamente às HH:MM". Botão manual continua.
-3. **Backup fora do disco**: `uploadBackupToCloud` (bot/backup.mjs) sobe o JSON diário ao Storage Supabase (bucket privado `business-backups`, cria se não existir, upsert por stamp, retenção nuvem `BOT_BACKUP_CLOUD_KEEP`=7 vs local 30); falha na nuvem NUNCA derruba o local (warn).
-4. **DM aos admins quando um lote FALHA de vez**: `notifyAdminsDispatchFailed` (idempotente por `dispatch-failed:{id}`) nos dois caminhos terminais (markDispatchFailed irrecuperável + markDispatchRetry esgotando 5 tentativas); dreno dos admins formata por kind (`formatDispatchFailedNotification`): lote, carta, tentativas, erro, "NÃO volta para a fila".
-5. **Edição de lote PENDENTE na fila**: migration `20260924210000_edit_queue_item.sql` (`update_pending_queue_item`: só dispatch scheduled de fila não-terminal; reescreve preços/duração/foto + REGENERA poll_options + recompute de scheduled_end_at; audita previous/next — capturados ANTES dos updates; variável `new_image_url` por causa do PERIGOS 42702). API: `POST /api/auctions/queue {action:"edit_item"}` (valida + buildPollPlan igual à criação; readQueue agora traz duration_seconds/poll_options/prices). UI: botão "✏️ Editar lote" em lotes scheduled + diálogo (inicial, incremento, ARREMATE, duração, opções, URL da foto). Teste SQL tests/edit-queue-item.sql (+ci.yml).
-6. Reconhecimento verificado SÃO ao vivo (lote de 12 fotos do zap: PROVAVEL/IDENTIFICADO corretos, 0 crash — o "piorou" era a fila/estado do serviço na hora).
+## Rodada 9 (o que foi feito)
+1. **Excluir leilão definitivamente (pedido do operador — testes sujando o Excel)**: migration `20260924220000_delete_auction.sql` (RPC `delete_auction(p_auction_id, p_confirm, p_admin)`): frase "sim quero" validada em TRIPLICE escala (UI → API `POST /api/auctions/delete` → RPC); leilão ABERTO não pode (auction_not_deletable); apaga a árvore FK-safe (payments, reminders, deliveries, purchases, votes, value_change_log, dispatches, events [immutable_audit drop/recreate na transação], bids, auction); **carta órfã vai junto** (com outro leilão fica); **participant_warnings SOBREVIVE** (auction_id SET NULL — contador global intacto). Botão "🗑 Excluir leilão definitivamente" na Disputa (não-open) + diálogo "Você quer mesmo excluir o leilão #N da carta X?" + digitar "sim quero". Teste SQL tests/delete-auction.sql (frase errada, aberto, árvore, carta órfã/kept, aviso sobrevive, trigger restaurado) + ci.yml.
+2. **@todos → @all (correção do operador)**: `buildOpeningMessage` em announce-sticker.mjs (e comentários do index/docs) — o WhatsApp renderiza a menção coletiva como @all. Teste atualizado (asserta @all e proíbe @todos).
+3. Helpers da frase em `lib/purge.ts` (client-safe — dashboard não pode importar lib/backend [server-only], pego pelo build).
 
 ## Migrations pendentes do operador (P-13)
-`20260924180000_dashboard_warnings_snapshot.sql` (avisos no dashboard — snapshot agora inclui created_at/cycle_closed), `20260924200000_warning_cycle_reset.sql`, `20260924210000_edit_queue_item.sql` (+ confirmar 170000/190000 se ainda não colou). 150000/160000 confirmadas aplicadas.
+180000 (avisos no dashboard) → 200000 (ciclo de 3) → 210000 (edição de lote) → **220000 (excluir leilão)** — ordem lexical, colar no SQL Editor → `npm run doctor`. 150000/160000 aplicadas ✓ (170000/190000 conferir).
 
 ## Próximo passo EXATO
 1. Push + CI verde.
-2. OPERADOR: aplicar as migrations pendentes no SQL Editor (ordem lexical) → `npm run doctor` → smoke: editar um lote pendente; 3+3 reduções → 2 DMs de ciclo; backup diário com cloudPath no log; lote forçado a falhar → DM.
+2. OPERADOR: aplicar as 4 migrations pendentes → doctor → smoke: excluir um leilão de teste (digitar "sim quero") e conferir que sumiu do Excel; @all na próxima abertura.
 3. P-11 (secret na Vercel) segue pendente.
 
+## Arquivos de código prioritários
+- `supabase/migrations/20260924220000_delete_auction.sql`, `app/api/auctions/delete/route.ts`, `app/dashboard.tsx` (botão+diálogo)
+- `bot/announce-sticker.mjs` (@all), `lib/purge.ts` (frase "sim quero")
+
+## Comandos úteis
+```bash
+npm run doctor
+npm run start
+npm test && npm run typecheck && npm run build
+node --test bot/*.test.mjs
+```
+
+## Atenções
+- Migrations 180000..220000 NÃO aplicadas em produção: painel de avisos/ciclo/edição/exclusão falham com erro claro até aplicar.
+- **P-11 é o gargalo da qualidade no painel publicado** (secret na Vercel).
+- Migrations que substituem função: verbatim da última versão com adições marcadas (extração programática quando possível).
+- O OPERADOR também escreve migrations — `git fetch` ANTES de substituir função/push.
+- Página client-side nova com createPublicSupabaseClient PRECISA de layout force-dynamic; client components NUNCA importam lib/backend (server-only).
+- Suíte que persiste estado redireciona o diretório ANTES do import (BOT_DATA_DIR).
+- Atualizar `11_PENDING_WORK.md` e ESTE arquivo ao concluir qualquer item.
+
 ## Histórico das rodadas anteriores (resumo)
-- R1-7: rascunhos (150000), hotfixes do bot (libsignal/dedup/sync 90s), brinde por carta (160000), variante/bandeira na legenda, drag só no ☰, pipeline de reconhecimento VISÍVEL (P-11 diagnóstico), DM ao participante REMOVIDA por decisão do operador (180000 reescrita in-place), figurinha+@todos com gatilho pela FILA (grace 15min), avisos no terminal em tempo real.
+R1-8: rascunhos (150000), hotfixes do bot (libsignal/dedup/sync), brinde por carta (160000), legenda com variante/bandeira, drag só no ☰, pipeline VISÍVEL, DM ao participante removida por decisão do operador, figurinha+@all com gatilho pela FILA, avisos no terminal em tempo real, ciclo de 3 com reset (200000), auto-save de rascunho, backup na nuvem, DM de lote falho, edição de lote pendente (210000).

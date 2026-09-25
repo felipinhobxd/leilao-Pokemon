@@ -77,9 +77,10 @@ export function markQueueAnnounced(queueId, announced = loadAnnouncedQueueIds())
   return announced;
 }
 
-/** Mensagem de texto do anúncio com @todos (menção real de cada JID). */
+/** Mensagem de texto do anúncio com @all (menção real de cada JID — o
+ * WhatsApp renderiza a marcação de todos como @all). */
 export function buildOpeningMessage(participantJids = []) {
   const jids = participantJids.filter(jid => typeof jid === "string" && jid.includes("@"));
-  const text = `📣 ${jids.length > 1 ? "@todos " : ""}O leilão vai começar!\nPreparem os lances — o primeiro lote chega em instantes. 🃏🔥`;
+  const text = `📣 ${jids.length > 1 ? "@all " : ""}O leilão vai começar!\nPreparem os lances — o primeiro lote chega em instantes. 🃏🔥`;
   return { text, mentions: jids };
 }

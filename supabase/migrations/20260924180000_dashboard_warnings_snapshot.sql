@@ -1,35 +1,23 @@
--- 2026-09-24 round: the participant NOW receives the warning DM.
+-- 2026-09-24 round: the live dashboard SEES bid-value changes and warnings.
 --
 -- The 3-warning rule already existed end-to-end (20260923093000): each REAL
 -- reduction writes 1 row in participant_warnings (global counter per user)
 -- and, at EXACTLY 3, one admin_notifications row that the bot DMs to the
--- admins. What was missing (operator request 2026-09-24):
---  1. the PARTICIPANT gets a DM naming which poll/lot, values and time;
---  2. the operator SEES the changes/warnings live in the dashboard (the
---     dashboard snapshot had neither table — only the Excel export did).
+-- admins. The PARTICIPANT does NOT get a DM (operator decision 2026-09-24,
+-- re-confirmed: warnings are counted silently; only the admins are contacted
+-- at 3). What was missing: the operator seeing which poll/lot, prices and
+-- times LIVE in the dashboard (only the Excel export had them) and in the
+-- bot terminal (logged at vote time, see bot/index.mjs).
 --
 -- Conventions (docs/agent/03_DATABASE.md): additive; replaced functions are
 -- copied VERBATIM from their LATEST versions with ONLY the marked additions.
 begin;
 
 -- ---------------------------------------------------------------------------
--- 1) participant_warnings.notified_at: DM delivery state for the participant
---    (same pattern as admin_notifications.sent_at / payment flow). NULL =
---    pending; the bot marks it ONLY after the WhatsApp DM is sent (crash →
---    retry). A participant with no resolvable phone JID is also marked, so an
---    undeliverable DM can never wedge the drain — the warning still counts.
--- ----------------------------------------------------------------------------
-alter table public.participant_warnings
-  add column if not exists notified_at timestamptz;
-create index if not exists participant_warnings_unnotified_idx
-  on public.participant_warnings (occurred_at) where notified_at is null;
-
--- ---------------------------------------------------------------------------
--- 2) read_dashboard_snapshot: LATEST body is 20260924120000 (ADDITION C
---    round: real payments + payment_reminders). Copied VERBATIM with ONLY the
---    marked addition: value_change_log + participant_warnings (bounded 100,
---    most recent first) so the live dashboard shows which poll/lot, values
---    and times — 'warnings' (legacy per-auction table) stays as is.
+-- read_dashboard_snapshot: LATEST body is 20260924120000 (ADDITION C round:
+-- real payments + payment_reminders). Copied VERBATIM with ONLY the marked
+-- addition: value_change_log + participant_warnings (bounded 100, most
+-- recent first) — 'warnings' (legacy per-auction table) stays as is.
 -- ----------------------------------------------------------------------------
 create or replace function public.read_dashboard_snapshot() returns jsonb
 language sql stable security invoker set search_path='' as $body$
@@ -76,10 +64,10 @@ language sql stable security invoker set search_path='' as $body$
   'deliveries','[]'::jsonb,
   'warnings','[]'::jsonb,
   -- ADDITION (20260924180000): alterações de valores + avisos globais ao vivo
-  -- (bounded 100, mais recentes primeiro; participant_warnings traz lote/
-  -- carta/horário denormalizados e o estado do DM ao participante).
+  -- (bounded 100, mais recentes primeiro; participant_warnings traz lote/carta/
+  -- valores/horário denormalizados).
   'value_change_log',coalesce((select jsonb_agg(t order by occurred_at desc,id desc) from (select id,participant_id,auction_id,previous_amount,new_amount,difference,external_event_id,occurred_at from public.value_change_log order by occurred_at desc,id desc limit 100) t),'[]'::jsonb),
-  'participant_warnings',coalesce((select jsonb_agg(t order by occurred_at desc,id desc) from (select id,participant_id,auction_id,card_name,lot_number,previous_amount,new_amount,external_event_id,occurred_at,notified_at from public.participant_warnings order by occurred_at desc,id desc limit 100) t),'[]'::jsonb)
+  'participant_warnings',coalesce((select jsonb_agg(t order by occurred_at desc,id desc) from (select id,participant_id,auction_id,card_name,lot_number,previous_amount,new_amount,external_event_id,occurred_at from public.participant_warnings order by occurred_at desc,id desc limit 100) t),'[]'::jsonb)
  );
 $body$;
 revoke execute on function public.read_dashboard_snapshot() from public,anon,authenticated;

@@ -13,7 +13,7 @@ import { buildAuctionCaption } from "./format.mjs";
 import { phoneFromWhatsAppJid, syncGroupParticipants } from "./group-participants.mjs";
 import { isLidJid, isPhoneJid, normalizeUserJid } from "./poll-identities.mjs";
 import { decryptIncomingPollVote } from "./poll-votes.mjs";
-import { createAdminNotificationDrain, createParticipantWarningDrain, parseAdminJids } from "./warning-notify.mjs";
+import { createAdminNotificationDrain, parseAdminJids } from "./warning-notify.mjs";
 import { resolveParticipantJid, mentionMessage } from "./participant-contact.mjs";
 import { createPaymentReminderDrain } from "./payment-reminder.mjs";
 import { ANNOUNCE_GRACE_MINUTES, ANNOUNCE_MINUTES_BEFORE, buildOpeningMessage, loadAnnouncedQueueIds, loadAnnouncementSticker, markQueueAnnounced, saveAnnouncementSticker } from "./announce-sticker.mjs";
@@ -54,13 +54,6 @@ const adminNotificationDrain = createAdminNotificationDrain({
     const jids = parseAdminJids();
     return jids.length ? jids : undefined;
   })(),
-});
-// DM do aviso para o PRÓPRIO participante que reduziu o lance (qual enquete/
-// lote, valores, horário e o nº do aviso — de 3; aos 3 os admins são DMados).
-const participantWarningDrain = createParticipantWarningDrain({
-  db,
-  getSocket: () => (socketReady ? sock : null),
-  resolveJid: participantId => resolveParticipantJid(db, participantId),
 });
 // Lembretes de pagamento: DM a cada 7 dias (BOT_PAYMENT_REMINDER_DAYS) para
 // arrematantes sem baixa de pagamento; sem aviso/punição; para quando o
@@ -706,7 +699,12 @@ async function handlePollVote(dispatch, pollUpdate, originalMessageOverride) {
       const winnerMention = mentionMessage(participant.display_name, participant.id, winnerJid, who => who);
       await sock.sendMessage(group.group_jid, { text: `🏆 *ARREMATADO!*\n\n🃏 ${card.name}\n👤 ${winnerMention.text}\n💰 ${brl(result?.auction?.final_price ?? amount)}`, mentions: winnerMention.mentions });
     } else if (previous?.active) {
-      console.log(`🔄 Voto alterado: ${participant.display_name}${contact} → ${brl(previous.amount)} → ${brl(amount)}`);
+      // Redução de lance = aviso global registrado (regra dos 3, decisão do
+      // operador: a PESSOA não recebe DM — só conta; aos 3 os admins são
+      // acionados). O terminal mostra quem, em qual enquete/lote e os preços.
+      const lot = String(dispatch.poll_title ?? "—").split(".")[0].trim() || "—";
+      const reduced = amount < Number(previous.amount);
+      console.log(`🔄 Voto alterado: ${participant.display_name}${contact} → ${brl(previous.amount)} → ${brl(amount)} · lote ${lot}${reduced ? " · ⚠️ redução: aviso global registrado" : ""}`);
       await logCurrentLeader(dispatch.auction_id);
     } else {
       console.log(`🗳️ Voto recebido: ${participant.display_name}${contact} → ${brl(amount)}`);
@@ -1051,7 +1049,7 @@ async function connect() {
       console.log(`\n✅ WhatsApp conectado. Worker: ${WORKER_ID}`);
       console.log("Aguardando agendamentos e votos...\n");
       clearInterval(schedulerTimer);
-      schedulerTimer = setInterval(() => { void sendOpeningAnnouncements(); void runScheduler(); void finalizeDueAuctions(); void adminNotificationDrain.tick(); void participantWarningDrain.tick(); void sendDueQuickPolls(); void paymentReminderDrain.tick(); }, 3000);
+      schedulerTimer = setInterval(() => { void sendOpeningAnnouncements(); void runScheduler(); void finalizeDueAuctions(); void adminNotificationDrain.tick(); void sendDueQuickPolls(); void paymentReminderDrain.tick(); }, 3000);
       void syncOpenAuctionGroups().catch(error => console.warn("Falha ao sincronizar grupos abertos:", error?.message || error));
       void runScheduler();
       void finalizeDueAuctions();

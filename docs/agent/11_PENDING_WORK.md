@@ -120,12 +120,12 @@ Próximo passo: nenhum.
 
 ```text
 ID: P-13
-Título: Aplicar as migrations de rascunhos + brinde + avisos (20260924150000 a 20260924180000) no Supabase
-Prioridade: Alta (rascunhos, brinde por carta E o painel de avisos no dashboard + DM ao participante só funcionam após aplicar)
-Status: Aberto — ação do OPERADOR (SQL Editor), código e CI prontos
-Arquivos relacionados: supabase/migrations/20260924150000_auction_drafts.sql, supabase/migrations/20260924160000_giveaway_queue_items.sql, supabase/migrations/20260924170000_backup_giveaway_fields.sql (escrita pelo OPERADOR), supabase/migrations/20260924180000_participant_warning_notice.sql (notified_at + avisos no snapshot do dashboard), scripts/doctor.mjs
-Descrição: rascunhos do wizard em lote + brinde por carta na fila + avisos de alteração ao vivo no dashboard com DM ao participante. Sem as migrations aplicadas: salvar rascunho devolve erro de função ausente, itens de brinde são rejeitados e o painel de avisos fica vazio (coluna notified_at inexistente).
-Próximo passo: operador colar os QUATRO arquivos no SQL Editor (ordem lexical: 150000 → 160000 → 170000 → 180000) → `npm run doctor` → smoke: (1) salvar rascunho com 2 cartas, fechar, reabrir, Abrir, publicar fila de teste e conferir que o rascunho sumiu; (2) carta marcada como "🎁 Brinde" → foto + enquete no grupo; (3) reduzir um lance de teste → DM chega para a pessoa + painel "Avisos de alteração de valores" mostra lote/horário.
+Título: Aplicar as migrations pendentes (170000 se faltar e a nova 20260924180000) no Supabase
+Prioridade: Alta (o painel "Avisos de alteração de valores" no dashboard só funciona com a 180000)
+Status: PARCIAL — 150000 (rascunhos) e 160000 (brinde) CONFIRMADAS APLICADAS ao vivo (2026-09-24, verificação direta no Supabase); 20260924180000 NÃO aplicada (renomeada/reescrita em 2026-09-24: agora é dashboard_warnings_snapshot — a versão anterior com a coluna notified_at foi substituída ANTES de qualquer aplicação; se você chegou a aplicar a antiga, não há conflito — a nova só substitui a função de snapshot, e a coluna notified_at sobrando é inofensiva)
+Arquivos relacionados: supabase/migrations/20260924170000_backup_giveaway_fields.sql (escrita pelo OPERADOR — confirmar aplicação), supabase/migrations/20260924180000_dashboard_warnings_snapshot.sql (snapshot do dashboard com avisos/alterações)
+Descrição: sem a 180000 o painel de avisos fica vazio e o snapshot não traz participant_warnings/value_change_log. Rascunhos e brinde por carta já funcionam.
+Próximo passo: operador aplicar `20260924180000_dashboard_warnings_snapshot.sql` no SQL Editor (e confirmar a 170000 se ainda não colou) → `npm run doctor` → smoke: reduzir um lance de teste → terminal do bot loga "🔄 Voto alterado … · lote N · ⚠️ redução" e o painel mostra lote/horário; 3 reduções do mesmo usuário → DM aos admins.
 ```
 
 ```text

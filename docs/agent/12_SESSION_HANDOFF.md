@@ -1,7 +1,23 @@
 # SESSION HANDOFF
 
 ## Última atualização
-2026-09-24 (rodada 6: figurinha+@todos de abertura NÃO disparava — gatilho reescrito pela FILA; avisos detalhados no terminal; revisão geral a pedidos)
+2026-09-24 (rodada 7: CORREÇÃO de produto — participante NÃO recebe DM de aviso; só conta e aos 3 os admins são DMados. Migration 180000 reescrita ANTES da aplicação)
+
+## Rodada 7 (o que foi feito)
+1. **Correção do operador**: "o aviso não é mandando para a pessoa que trocou os valores, só para os admins". Removida a DM ao participante (dreno + formatParticipantWarning + wiring no ciclo + 6 testes + coluna notified_at). A regra volta ao desenho original: redução CONTA silenciosamente; 3 exatos → DM aos admins (554197285978 + 5519989759121, já funcionando).
+2. **Migration 20260924180000 reescrita e renomeada** (`dashboard_warnings_snapshot.sql`): só o snapshot do dashboard (`participant_warnings` + `value_change_log`, limit 100, sem notified_at). Verificação ao vivo ANTES da decisão: coluna notified_at NÃO existia no Supabase (não foi aplicada) → edição in-place é segura; se o operador tivesse aplicado a versão antiga, a nova roda sem conflito (só substitui a função; coluna sobrando é inofensiva).
+3. **Terminal em tempo real**: o log do voto agora traz o LOTE e marca redução — "🔄 Voto alterado: Ana (+55…) → R$ 30,00 → R$ 22,00 · lote 7 · ⚠️ redução: aviso global registrado" (no processamento do voto, sem polling). O log resumido do 3º aviso aos admins continua.
+4. **Dashboard**: painel "Avisos de alteração de valores" mantido (coluna DM removida) — participante, lote, carta, anterior→novo, horário, K de 3.
+5. **Verificação ao vivo de migrations** (novo aprendizado, via PostgREST com a service key do .env.local — read-only): 150000 APLICADA, 160000 APLICADA, 180000 pendente. Doctor continua confirmando rascunhos.
+6. Testes: warning-notice.sql reescrito (sem notified_at/DM), bot warning-notify limpo (32 testes), site 170, typecheck, build — verdes.
+
+## Decisão de produto (definitiva — não reverter)
+- **Avisos globais**: redução = +1 no contador (global, sem reset, idempotente por evento); 3 exatos = DM aos admins; SEM DM ao participante, sem punição. Visibilidade: terminal (log do voto em tempo real + resumo do 3º) + dashboard (painel) + Excel (abas).
+
+## Pendências do operador
+- **P-13 (atualizado)**: aplicar `20260924180000_dashboard_warnings_snapshot.sql` no SQL Editor (150000/160000 já estão aplicadas ✓; confirmar a 170000 do próprio operador) → `npm run doctor` → smoke: reduzir lance de teste → terminal loga com lote + painel mostra.
+- **P-11**: `RECOGNITION_SERVICE_SHARED_SECRET` na Vercel (painel publicado).
+- Próxima fila: conferir figurinha + @todos no grupo (gatilho corrigido na rodada 6).
 
 ## Rodada 6 (o que foi feito)
 1. **Figurinha + @todos (P-05, gatilho corrigido)**: o recurso JÁ existia (figurinha capturada 2026-09-23, arquivo em bot/data/announcement-sticker.json ✓) mas NUNCA disparava: (a) filas "Agora" — o runScheduler claimava o lote 1 antes do anúncio consultar (status scheduled sumia); (b) fila começando com BRINDE nem tem dispatch na posição 1. Gatilho novo: pela FILA (`auction_publish_queues.starts_at`), janela 5 min antes (`BOT_ANNOUNCE_MINUTES_BEFORE`) até 15 min depois (`ANNOUNCE_GRACE_MINUTES` — cobre bot que subiu atrasado; fila velha fica em silêncio); pausada não anuncia; idempotente (announce-state.json); **o anúncio agora roda PRIMEIRO no ciclo de 3s**. P-05 marcado CONCLUÍDO (11_PENDING_WORK).

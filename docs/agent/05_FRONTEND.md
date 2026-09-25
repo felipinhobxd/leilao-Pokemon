@@ -36,8 +36,7 @@
 
 ### Avisos de alteração de valores no dashboard (2026-09-24, migration `20260924180000`)
 
-- Painel "Avisos de alteração de valores" (entre Disputa e Cartas): cada redução de lance com participante, **lote/enquete**, carta, anterior → novo, **horário**, nº do aviso (K de 3, com "admins notificados" do 3º em diante) e o estado da DM à pessoa (✓ enviada / ⏳ pendente). Dados via `read_dashboard_snapshot` (agora inclui `participant_warnings` + `value_change_log`, limit 100 — antes só o Excel tinha).
-- A pessoa que reduz recebe DM direto do bot (nomeia enquete/lote, valores, horário e o nº do aviso); aos 3, os admins recebem a DM da regra (ver 06_WHATSAPP_BOT).
+- Painel "Avisos de alteração de valores" (entre Disputa e Cartas): cada redução de lance com participante, **lote/enquete**, carta, anterior → novo, **horário** e nº do aviso (K de 3, com "admins notificados" do 3º em diante). O participante NÃO recebe DM (decisão do operador — só conta); o terminal do bot loga cada troca em tempo real. Dados via `read_dashboard_snapshot` (agora inclui `participant_warnings` + `value_change_log`, limit 100 — antes só o Excel tinha).
 
 ### Rascunhos (2026-09-24, migration `20260924150000`)
 

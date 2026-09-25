@@ -10,7 +10,7 @@
 begin;
 
 create or replace function public.delete_auction(p_auction_id uuid,p_confirm text,p_admin_user_id uuid)
-returns jsonb language plpgsql security invoker set search_path='' as $$
+returns jsonb language plpgsql security definer set search_path='' as $$
 declare
   a public.auctions;
   c public.cards;

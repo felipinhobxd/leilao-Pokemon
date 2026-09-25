@@ -37,7 +37,7 @@ begin
 
   -- 1) frase errada rejeitada; 2) aberto não exclui (novo leilão aberto).
   perform pg_temp.rejects_delete(aid,'nao quero','delete_not_confirmed');
-  perform pg_temp.rejects_delete(aid,'sim quero ','delete_not_confirmed');
+  perform pg_temp.rejects_delete(aid,'Sim Quero','delete_not_confirmed');
   card:=pg_temp.cmd('{"type":"CARD_CREATE","eventId":"d-card2","data":{"name":"Aberto","starting_price":5}}');
   a2:=pg_temp.cmd(jsonb_build_object('type','AUCTION_CREATE','eventId','d-a2','data',jsonb_build_object('card_id',card->>'id')));
   perform pg_temp.cmd(jsonb_build_object('type','AUCTION_OPEN','eventId','d-open2','auctionId',a2->>'id'));

@@ -43,17 +43,13 @@ test("filas anunciadas persistem entre leituras", () => {
   assert.ok(loadAnnouncedQueueIds().has("q2"));
 });
 
-test("mensagem de abertura menciona participantes reais com @+numero (menção REAL do WhatsApp)", () => {
+test("mensagem de abertura usa @all com TODOS os JIDs no mentions (menção coletiva nativa do WhatsApp)", () => {
   const message = buildOpeningMessage(["5541@s.whatsapp.net", "5519@s.whatsapp.net", "lixo", 42]);
-  // Menção REAL: o texto precisa conter @+número de cada participante para o
-  // WhatsApp renderizar o tag azul e notificar (texto "@all" puro não notifica).
-  assert.ok(message.text.includes("@5541"), "menciona @5541");
-  assert.ok(message.text.includes("@5519"), "menciona @5519");
-  assert.ok(!message.text.includes("@all"), "não usa @all literal (não notifica ninguém)");
-  assert.ok(message.text.includes("O leilão vai começar"));
+  // @all é o texto visual; os JIDs no mentions é o que NOTIFICA cada pessoa.
+  assert.ok(message.text.includes("@all"));
   assert.deepEqual(message.mentions, ["5541@s.whatsapp.net", "5519@s.whatsapp.net"]);
   const solo = buildOpeningMessage(["5541@s.whatsapp.net"]);
-  assert.ok(solo.text.includes("@5541"), "uma pessoa também é mencionada");
+  assert.ok(!solo.text.includes("@all"), "uma pessoa só não promete @all");
   assert.deepEqual(solo.mentions, ["5541@s.whatsapp.net"]);
 });
 

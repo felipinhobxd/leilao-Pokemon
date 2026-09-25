@@ -148,12 +148,11 @@ export function markQueueRulesAnnounced(queueId, announced = loadRulesAnnouncedQ
   return announced;
 }
 
-/** Mensagem de abertura com menções REAIS: o WhatsApp só marca @pessoa quando
- * o texto contém @+número de cada participante (menção "@all" em texto puro
- * NÃO notifica ninguém). Para grupos pequenos (<200) isso é o padrão de bots. */
+/** Mensagem de abertura com @all: o WhatsApp notifica cada participante quando
+ * TODOS os JIDs do grupo estão no array `mentions`, mesmo o texto dizendo só
+ * "@all" (é assim que o app nativo implementa a menção coletiva). */
 export function buildOpeningMessage(participantJids = []) {
-  const jids = participantJids.filter(jid => typeof jid === "string" && jid.includes("@s.whatsapp.net"));
-  const tags = jids.map(jid => `@${jid.split("@")[0]}`).join(" ");
-  const text = `📣 ${jids.length >= 1 ? `${tags} ` : ""}O leilão vai começar!\nPreparem os lances — o primeiro lote chega em instantes. 🃏🔥`;
+  const jids = participantJids.filter(jid => typeof jid === "string" && jid.includes("@"));
+  const text = `📣 ${jids.length >= 2 ? "@all " : ""}O leilão vai começar!\nPreparem os lances — o primeiro lote chega em instantes. 🃏🔥`;
   return { text, mentions: jids };
 }

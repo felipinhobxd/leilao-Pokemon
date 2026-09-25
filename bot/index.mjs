@@ -1123,7 +1123,11 @@ async function connect() {
       console.log(`\n✅ WhatsApp conectado. Worker: ${WORKER_ID}`);
       console.log("Aguardando agendamentos e votos...\n");
       clearInterval(schedulerTimer);
-      schedulerTimer = setInterval(() => { void sendRulesAnnouncements(); void sendOpeningAnnouncements(); void runScheduler(); void finalizeDueAuctions(); void adminNotificationDrain.tick(); void sendDueQuickPolls(); void paymentReminderDrain.tick(); }, 3000);
+      // REGRAS antes da FIGURINHA, SEQUENCIALMENTE: quando as duas janelas
+// estao abertas ao mesmo tempo (bot que subiu atrasado), disparar ambas em
+// paralelo nao garante a ordem no grupo — o encadeamento espera as regras
+// chegarem antes de soltar a figurinha + @all.
+schedulerTimer = setInterval(() => { void sendRulesAnnouncements().then(() => sendOpeningAnnouncements()); void runScheduler(); void finalizeDueAuctions(); void adminNotificationDrain.tick(); void sendDueQuickPolls(); void paymentReminderDrain.tick(); }, 3000);
       void syncOpenAuctionGroups().catch(error => console.warn("Falha ao sincronizar grupos abertos:", error?.message || error));
       void runScheduler();
       void finalizeDueAuctions();

@@ -158,6 +158,7 @@ export default function BulkAuctionWizard() {
   const submission = useRef<{ fingerprint: string; eventId: string } | null>(null);
   const lastSavedDraftFingerprint = useRef<string | null>(null);
   const autoSaveDisabled = useRef(false);
+  const saveDraftRef = useRef<(auto?: boolean) => Promise<void>>(async () => {});
 
   // Auto-save do rascunho: fingerprint do estado atual vs o último salvo; um
   // intervalo de 45s evita debounce no cada tecla. Mutações transientes de
@@ -176,16 +177,19 @@ export default function BulkAuctionWizard() {
       })),
     }));
   }
+  saveDraftRef.current = saveDraft;
+
+
+  // Auto-save ESTAVEL: o timer nasce UMA vez por sessao/fila (nao a cada
+  // render — o efeito antigo sem deps resetava os 45s a cada tecla e a cada
+  // progresso de reconhecimento, e o save so disparava depois de 45s de
+  // silencio total). O ref garante que o intervalo chama sempre o saveDraft
+  // mais recente (closure fresca com o estado atual).
   useEffect(() => {
     if (!session || queueId) return;
-    const timer = setInterval(() => {
-      if (autoSaveDisabled.current || draftBusy || busy || !cards.length) return;
-      const fingerprint = currentDraftFingerprint();
-      if (!fingerprint || fingerprint === lastSavedDraftFingerprint.current) return;
-      void saveDraft(true);
-    }, 45_000);
+    const timer = setInterval(() => { void saveDraftRef.current(true); }, 45_000);
     return () => clearInterval(timer);
-  });
+  }, [session?.user.id, queueId]);
 
   async function authFetch(url: string, init?: RequestInit) {
     const { data } = await db.auth.getSession();
@@ -600,6 +604,11 @@ export default function BulkAuctionWizard() {
 
   async function saveDraft(auto = false) {
     if (draftBusy || busy) return;
+    if (auto) {
+      // Nada mudou desde o ultimo save (ou sem cartas): o intervalo e inerte.
+      const fingerprint = currentDraftFingerprint();
+      if (!fingerprint || fingerprint === lastSavedDraftFingerprint.current) return;
+    }
     if (!cards.length) { if (!auto) setError("Adicione pelo menos uma carta antes de salvar o rascunho."); return; }
     setDraftBusy(true); if (!auto) { setError(""); setDraftNotice(""); }
     try {
@@ -634,7 +643,7 @@ export default function BulkAuctionWizard() {
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? "Não foi possível salvar o rascunho.");
       setActiveDraftId(draftId);
-      lastSavedDraftFingerprint.current = currentDraftFingerprint();
+      lastSavedDraftFingerprint.current = auctionDraftJson(state);
       setDraftNotice(auto ? `Rascunho salvo automaticamente às ${formatBrasiliaTime(new Date(), false)}.` : `Rascunho salvo às ${formatBrasiliaTime(new Date(), false)} — dá para fechar e continuar depois.`);
       await refreshDrafts();
     } catch (reason) {

@@ -15,7 +15,7 @@
 - **Avisos globais**: redução = +1 no contador (global, sem reset, idempotente por evento); 3 exatos = DM aos admins; SEM DM ao participante, sem punição. Visibilidade: terminal (log do voto em tempo real + resumo do 3º) + dashboard (painel) + Excel (abas).
 
 ## Pendências do operador
-- **P-13 (atualizado)**: aplicar `20260924180000_dashboard_warnings_snapshot.sql` no SQL Editor (150000/160000 já estão aplicadas ✓; confirmar a 170000 do próprio operador) → `npm run doctor` → smoke: reduzir lance de teste → terminal loga com lote + painel mostra.
+- **P-13 (atualizado)**: aplicar `20260924180000_dashboard_warnings_snapshot.sql` no SQL Editor (150000/160000 já estão aplicadas ✓; confirmar a 170000 e a 190000_repair_auction_lot_sequence — esta última escrita pelo OPERADOR em 2026-09-24 para consertar drift real da sequence de lotes) → `npm run doctor` → smoke: reduzir lance de teste → terminal loga com lote + painel mostra.
 - **P-11**: `RECOGNITION_SERVICE_SHARED_SECRET` na Vercel (painel publicado).
 - Próxima fila: conferir figurinha + @todos no grupo (gatilho corrigido na rodada 6).
 

@@ -9,14 +9,11 @@
 
 ```text
 ID: P-01
-Título: /memory/confirm recebe chamada SEM Authorization → 401 "Token do reconhecimento local ausente"
+Título: /memory/confirm recebia chamada SEM Authorization → 401/500
 Prioridade: Alta
-Status: Aberto
-Arquivos relacionados: recognition/recognition_server.py (memory_confirm), lib/card-recognition-local.ts (confirmRecognitionMemory), app/auctions/new/bulk-wizard.tsx (chamada de confirmação)
-Descrição: Log do operador (2026-09-22) mostra 8 ASGI tracebacks seguidos de ServiceAuthError 401 "Token do reconhecimento local ausente" no endpoint /memory/confirm. As chamadas chegam sem o header Bearer — suspeita: algum caminho do wizard chama o endpoint direto (sem passar por confirmRecognitionMemory) ou o retry 401 não reanexa o header.
-O que já foi investigado: confirmRecognitionMemory (lib/card-recognition-local.ts) SEMPRE anexa headers.Authorization; o retry após 401 também. Nada confirmado além disso — a origem da chamada sem header não foi localizada.
-O que falta: reproduzir (abrir wizard, identificar carta, confirmar carta) capturando a stack do chamador; verificar se há fetch direto em algum componente; corrigir e testar E2E.
-Próximo passo: procurar no frontend chamadas a "memory/confirm" que não usem confirmRecognitionMemory (grep) e reproduzir com o serviço logando o Origin/referer.
+Status: CONCLUÍDO 2026-09-23 (registrado em 07_CARD_RECOGNITION.md; item em 11 era drift de documentação, limpo em 2026-09-24): endpoints de memória/catálogo usam `require_service_auth` (401/503 limpos em vez de 500+traceback).
+Arquivos relacionados: recognition/recognition_server.py (require_service_auth), lib/card-recognition-local.ts (confirmRecognitionMemory)
+Próximo passo: nenhum.
 ```
 
 ```text
@@ -137,9 +134,9 @@ ID: P-11
 Título: Vercel — RECOGNITION_SERVICE_SHARED_SECRET como env server-only
 Prioridade: Alta para quem usa o painel publicado (senão pipeline do navegador no Vercel)
 Status: Aguardando configuração do operador (feito localmente; falta na Vercel)
-Arquivos relacionados: .env.local (valor de referência local), painel Vercel → Settings → Environment Variables
-Descrição: sem o env na Vercel, o painel publicado não minta token e cai no pipeline do navegador (~47 MB WASM por visitante frio).
-Próximo passo: operador copiar o valor do .env.local para a Vercel (server-only) e revalidar o wizard no domínio publicado.
+Arquivos relacionados: .env.local (valor de referência local), painel Vercel → Settings → Environment Variables, lib/card-recognition-local.ts::probeRecognitionPipeline
+Descrição: sem o env na Vercel, o painel publicado não minta token e cai no pipeline do navegador (~47 MB WASM por visitante frio, sem SIFT/índice). SINTOMA REAL (2026-09-24): operador relatou "verificação de cartas muito ruim de novo" usando https://leilaopokemon.vercel.app — era exatamente este fallback silencioso. Desde 2026-09-24 o wizard MOSTRA o pipeline ativo (chip "⚠ Reconhecimento pelo NAVEGADOR … configure RECOGNITION_SERVICE_SHARED_SECRET na Vercel").
+Próximo passo: operador copiar o valor de RECOGNITION_SERVICE_SHARED_SECRET do .env.local para a Vercel (Settings → Environment Variables, server-only) → Redeploy → conferir no wizard o chip "🔎 Reconhecimento: serviço local ✅".
 ```
 
 ## Investigações

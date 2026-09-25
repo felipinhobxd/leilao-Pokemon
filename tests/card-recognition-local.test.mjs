@@ -33,6 +33,22 @@ test("local service client probes health, degrades to browser pipeline, never fa
   assert.match(local, /queueStatusMessage/);
 });
 
+test("active pipeline is probed AND shown: silent browser degradation is a visible symptom (P-11)", () => {
+  // The health probe alone lies on the published panel (browser reaches
+  // 127.0.0.1 fine, but the token mint is server-side): the truth requires
+  // minting the token.
+  assert.match(local, /probeRecognitionPipeline/);
+  assert.match(local, /await localServiceToken\(\);/);
+  assert.match(local, /RECOGNITION_SERVICE_SHARED_SECRET/);
+  // The wizard shows which pipeline is running and names the fix per host.
+  assert.match(wizard, /recognition-pipeline/);
+  assert.match(wizard, /probeRecognitionPipeline\(\)\.then\(setRecognitionPipeline\)/);
+  assert.match(wizard, /Reconhecimento pelo NAVEGADOR/);
+  assert.match(wizard, /RECOGNITION_SERVICE_SHARED_SECRET na Vercel/);
+  // Results self-heal the indicator: degradation mid-session flips the chip.
+  assert.match(wizard, /result\.localPipeline \? "local" : "browser"/);
+});
+
 test("OCR is never the gatekeeper in the local pipeline: visual route runs independently", () => {
   // Route A (visual retrieval) executes before OCR and never requires OCR hints.
   assert.match(pipeline, /route_a_candidates, orientation, view_embeddings, raw_rows = self\.route_a\(card, return_views=True\)/);

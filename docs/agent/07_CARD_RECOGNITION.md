@@ -41,6 +41,7 @@ Duas rotas independentes + fusão + decisão honesta (`IDENTIFICADO | PROVAVEL |
 ## Integração com o Next.js
 
 - Cliente: `lib/card-recognition-local.ts` (probe/strict ready, token com retry 401, scheduler de concorrência, timeouts: health 1,2s; recognize 120s de EXECUÇÃO).
+- **Pipeline ativo VISÍVEL (2026-09-24)**: `probeRecognitionPipeline()` faz probe + MINT de token (o probe sozinho MENTE no painel publicado: o navegador do operador alcança 127.0.0.1:8765, mas o mint é server-side — Vercel sem `RECOGNITION_SERVICE_SHARED_SECRET` não minta nada e cada foto degrada em silêncio para o NAVEGADOR). O wizard mostra o chip: serviço local ✅ / ⚠ NAVEGADOR (com a causa: `npm run start` desligado no PC OU secret ausente na Vercel — P-11); resultados auto-corrigem o chip (`result.localPipeline`). Sintoma real que motivou (2026-09-24): "verificação de cartas muito ruim de novo" no painel da Vercel = browser fallback.
 - Contrato de tipos: `lib/card-recognition-service-contract.ts` (`languageStatus: confirmed|uncertain|conflict|pt-br-pre-2011`; decisão → `IDENTIFICADA|PROVÁVEL|REVISAR|SEM RESULTADO`).
 - Wizard consome `mapServiceResult` e nunca bloqueia cadastro por falha de IA (regra de projeto nº 1 do recognition/README: OCR nunca é gatekeeper).
 

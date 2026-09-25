@@ -146,6 +146,28 @@ export function localServiceHealth(): ServiceHealth | undefined {
   return statusCache.health;
 }
 
+export type RecognitionPipelineKind = "disabled" | "local" | "browser";
+
+/**
+ * Which pipeline ACTUALLY runs. The health probe alone LIES on the published
+ * panel: the operator's browser reaches 127.0.0.1:8765 fine (service ready,
+ * authConfigured), but the token mint happens SERVER-SIDE — Vercel without
+ * RECOGNITION_SERVICE_SHARED_SECRET mints nothing and every photo silently
+ * degrades to the browser pipeline (~47 MB WASM, no SIFT verification, no
+ * 37.917-card index). Minting the token here tells the truth; the wizard
+ * shows it (P-11 symptom: "verificação muito ruim de novo").
+ */
+export async function probeRecognitionPipeline(): Promise<RecognitionPipelineKind> {
+  if (!imageRecognitionEnabled()) return "disabled";
+  if ((await probeLocalService()) !== "online") return "browser";
+  try {
+    await localServiceToken();
+    return "local";
+  } catch {
+    return "browser";
+  }
+}
+
 export async function probeLocalService(force = false): Promise<LocalServiceStatus> {
   const now = Date.now();
   if (!force) {

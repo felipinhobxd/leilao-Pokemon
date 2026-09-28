@@ -240,16 +240,26 @@ async function launchConfiguredApp() {
 
     await mainWindow.loadURL(htmlProgress("Iniciando o Leilão Pokémon…", "Abrindo o painel e os serviços locais."));
     if (await isServerRunning()) {
-      void mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
-      return;
+      await mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
+    } else {
+      startStack();
+      const ok = await waitForServer();
+      if (ok && mainWindow && !mainWindow.isDestroyed()) {
+        await mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
+      } else if (mainWindow && !mainWindow.isDestroyed()) {
+        await mainWindow.loadURL(htmlError("O servidor local não respondeu. Confira a configuração e tente novamente."));
+        return;
+      }
     }
 
-    startStack();
-    const ok = await waitForServer();
-    if (ok && mainWindow && !mainWindow.isDestroyed()) {
-      void mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
-    } else if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.loadURL(htmlError("O servidor local não respondeu. Confira a configuração e tente novamente."));
+    // Never leave the user with a blank Chromium surface. Verify that the
+    // renderer produced actual visible content after navigating to the app.
+    const rendered = await waitForRendererContent(20_000);
+    if (!rendered && mainWindow && !mainWindow.isDestroyed()) {
+      startupLog("[renderer] conteúdo vazio após 20s; exibindo diagnóstico.");
+      await mainWindow.loadURL(htmlError(
+        "O servidor respondeu, mas o painel não renderizou conteúdo. Abra o menu Recarregar. O diagnóstico foi salvo no log do aplicativo."
+      ));
     }
   } catch (error) {
     startupLog(`[init] erro: ${error?.stack || error}`);
@@ -384,6 +394,13 @@ async function createWindow() {
     shell.openExternal(url);
     return { action: "deny" };
   });
+  mainWindow.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+    startupLog(`[renderer] level=${level} ${message} (${sourceId}:${line})`);
+  });
+  mainWindow.webContents.on("unresponsive", () => startupLog("[renderer] Chromium ficou sem responder."));
+  mainWindow.webContents.on("responsive", () => startupLog("[renderer] Chromium voltou a responder."));
+  mainWindow.webContents.on("dom-ready", () => startupLog("[renderer] DOM pronto."));
+  mainWindow.webContents.on("did-finish-load", () => startupLog("[renderer] página terminou de carregar."));
   mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
     if (mainWindow && !mainWindow.isDestroyed() && !validatedURL.startsWith("data:") && errorCode !== -3) {
       mainWindow.loadURL(htmlError(`Não foi possível carregar o painel (${errorCode}): ${errorDescription}`));

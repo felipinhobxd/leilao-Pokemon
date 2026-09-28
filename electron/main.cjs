@@ -328,6 +328,7 @@ async function waitForRendererContent(timeoutMs = 60_000) {
 
 async function runSmokeMode() {
   let smokeWindow = null;
+  const rendererErrors = [];
   try {
     startupLog("[smoke] iniciando Chromium + runtime empacotado...");
     smokeWindow = new BrowserWindow({
@@ -342,6 +343,11 @@ async function runSmokeMode() {
       },
     });
     mainWindow = smokeWindow;
+
+    smokeWindow.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+      startupLog(`[smoke-renderer] level=${level} ${message} (${sourceId}:${line})`);
+      if (Number(level) >= 3) rendererErrors.push(String(message));
+    });
 
     startStack();
 
@@ -358,9 +364,29 @@ async function runSmokeMode() {
     if (!String(state.text || "").includes("Leilão Pokémon")) {
       throw new Error("Chromium carregou a página, mas o texto esperado não apareceu no DOM.");
     }
-    startupLog("[smoke] renderer OK: conteúdo visível confirmado no Chromium.");
 
+    const ai = await smokeWindow.webContents.executeJavaScript(`
+      (async () => {
+        const response = await fetch("/card-recognition/ppocrv6-loader.mjs", { cache: "no-store" });
+        const source = await response.text();
+        return {
+          ok: response.ok,
+          status: response.status,
+          expectedSdk: source.includes("web-sdk-pp-ocrv6@0.2.0"),
+          expectedRuntime: source.includes("__LEILAO_PPOCRV6__"),
+        };
+      })()
+    `, true);
+    if (!ai?.ok || ai.status !== 200 || !ai.expectedSdk || !ai.expectedRuntime) {
+      throw new Error(`O loader de IA não carregou corretamente no Chromium: ${JSON.stringify(ai)}`);
+    }
+    if (rendererErrors.length) {
+      throw new Error(`Chromium registrou erro(s) de renderer: ${rendererErrors.join(" | ")}`);
+    }
+
+    startupLog("[smoke] renderer OK: conteúdo visível confirmado no Chromium.");
     startupLog(`[smoke] renderer OK: title="${state.title}", html=${state.htmlLength}, text=${state.text.length} chars.`);
+    startupLog("[smoke] browser AI OK: PP-OCRv6 loader servido e lido dentro do Chromium.");
     try { smokeWindow.destroy(); } catch {}
     mainWindow = null;
     killStack();

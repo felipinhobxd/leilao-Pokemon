@@ -51,6 +51,8 @@ jobs:
           NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
           SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_URL=${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          BOT_ADMIN_USER_ID=${{ secrets.BOT_ADMIN_USER_ID }}
+          BOT_ADMIN_WA_JIDS=${{ secrets.BOT_ADMIN_WA_JIDS }}
           RECOGNITION_SERVICE_SHARED_SECRET=${{ secrets.RECOGNITION_SERVICE_SHARED_SECRET }}
           "@ | Out-File -FilePath bot/.env -Encoding utf8
         shell: pwsh
@@ -81,6 +83,7 @@ jobs:
           try {
             $healthOk = $false
             for ($i = 0; $i -lt 90; $i++) {
+              if ($process.HasExited) { throw "Desktop executable exited early with code $($process.ExitCode)." }
               try {
                 $health = Invoke-WebRequest -Uri "http://127.0.0.1:3000/api/health" -UseBasicParsing -TimeoutSec 3
                 if ($health.StatusCode -eq 200) {

@@ -15,6 +15,12 @@ const BUNDLED_ROOT = app.isPackaged ? path.join(process.resourcesPath, "app") : 
 const isElectron = Boolean(process.versions.electron);
 const nodeBin = isElectron ? process.execPath : "node";
 
+// The desktop panel is an embedded Chromium renderer. Hardware acceleration
+// can produce a blank white surface on some Windows GPU/driver combinations;
+// the application is an admin dashboard, so reliable rendering is preferable.
+app.disableHardwareAcceleration();
+app.commandLine.appendSwitch("disable-gpu");
+
 function readDotEnv(file) {
   try {
     const values = {};
@@ -123,6 +129,21 @@ const htmlError = msg => `data:text/html;charset=utf-8,
     </div>
   </body>`;
 
+const SMOKE_MODE = process.env.LEILAO_DESKTOP_SMOKE === "1";
+
+async function runSmokeMode() {
+  console.log("[smoke] iniciando o mesmo runtime usado pelo instalador...");
+  startStack();
+  const ok = await waitForServer(180_000);
+  if (!ok) {
+    console.error("[smoke] /api/health não respondeu.");
+    app.exit(1);
+    return;
+  }
+  console.log("[smoke] /api/health respondeu com sucesso.");
+  // Keep the Electron process alive until the CI job terminates the executable.
+}
+
 async function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -163,11 +184,12 @@ async function createWindow() {
 
   // Carrega a UI de inicialização ANTES de qualquer await. Assim a janela
   // nunca fica presa em about:blank branco enquanto o servidor responde.
-  await mainWindow.loadURL(htmlProgress("Iniciando o Leilão Pokémon…", "Abrindo o painel já preparado e os serviços locais."));
+  void mainWindow.loadURL(htmlProgress("Iniciando o Leilão Pokémon…", "Abrindo o painel já preparado e os serviços locais."))
+    .catch(error => console.error("[ui] falha ao carregar tela inicial:", error?.message || error));
 
   try {
     if (await isServerRunning()) {
-      await mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
+      void mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
       return;
     }
 
@@ -175,7 +197,7 @@ async function createWindow() {
 
     const ok = await waitForServer();
     if (ok && mainWindow && !mainWindow.isDestroyed()) {
-      await mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
+      void mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
     } else if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.loadURL(htmlError("O servidor não respondeu. Abra novamente o Leilão Pokémon ou use Recarregar."));
     }
@@ -195,7 +217,7 @@ if (!gotLock) {
       mainWindow.focus();
     }
   });
-  app.whenReady().then(createWindow);
+  app.whenReady().then(() => SMOKE_MODE ? runSmokeMode() : createWindow());
 }
 
 app.on("window-all-closed", () => { killStack(); app.quit(); });

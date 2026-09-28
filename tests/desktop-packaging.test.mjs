@@ -6,7 +6,7 @@ const read = file => readFileSync(new URL(file, import.meta.url), "utf8").replac
 
 test("desktop main uses the packaged standalone server instead of first-run next build", () => {
   const source = read("../electron/main.cjs");
-  assert.match(source, /\.next[\\/]standalone[\\/]server\.js/);
+  assert.match(source, /path\.join\(BUNDLED_ROOT, "\.next", "standalone", "server\.js"\)/);
   assert.match(source, /LEILAO_DESKTOP_STANDALONE/);
   assert.doesNotMatch(source, /\\bbuildProcess\\b|\\brunBuild\\b|function needsBuild/);
   assert.doesNotMatch(source, /BUILD_ID/);
@@ -27,8 +27,8 @@ test("start-all has a dedicated standalone runtime path", () => {
 test("desktop build script prepares the files Next standalone does not copy", () => {
   const source = read("../scripts/build-desktop.mjs");
   assert.match(source, /DESKTOP_BUILD:\s*"1"/);
-  assert.match(source, /\.next[\\/]static/);
-  assert.match(source, /\.next[\\/]standalone[\\/].*static/);
+  assert.match(source, /path\.join\(root, "\.next", "static"\)/);
+  assert.match(source, /path\.join\(standalone, "\.next", "static"\)/);
   assert.match(source, /public/);
 });
 

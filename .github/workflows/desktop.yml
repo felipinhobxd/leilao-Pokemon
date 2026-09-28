@@ -105,6 +105,49 @@ jobs:
           Write-Host "Bundled Node runtime: $nodeVersion"
           if ($nodeVersion -notmatch "^v2[2-9]\.") { throw "Desktop package requires bundled Node 22+; got $nodeVersion." }
 
+      - name: Smoke-test bundled Node + Next standalone directly
+        shell: pwsh
+        run: |
+          $resources = Join-Path $PWD "dist-electron\win-unpacked\resources"
+          $node = Join-Path $resources "node\node.exe"
+          $serverRoot = Join-Path $resources "app\.next\standalone"
+          $stdoutLog = Join-Path $env:TEMP "leilao-pokemon-next-smoke.out.log"
+          $stderrLog = Join-Path $env:TEMP "leilao-pokemon-next-smoke.err.log"
+          Remove-Item $stdoutLog,$stderrLog -Force -ErrorAction SilentlyContinue
+
+          $env:HOSTNAME = "127.0.0.1"
+          $env:PORT = "3010"
+          $env:NODE_ENV = "production"
+          $env:NEXT_PUBLIC_SUPABASE_URL = "${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}"
+          $env:NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY = "${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}"
+
+          $server = Start-Process -FilePath $node -WorkingDirectory $serverRoot -ArgumentList @("server.js") -PassThru -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
+
+          try {
+            $ok = $false
+            for ($i = 0; $i -lt 30; $i++) {
+              if ($server.HasExited) {
+                if (Test-Path $stdoutLog) { Get-Content $stdoutLog | Write-Host }
+                if (Test-Path $stderrLog) { Get-Content $stderrLog | Write-Host }
+                throw "Standalone Next process exited early with code $($server.ExitCode)."
+              }
+              try {
+                $health = Invoke-WebRequest -Uri "http://127.0.0.1:3010/api/health" -UseBasicParsing -TimeoutSec 3
+                if ($health.StatusCode -eq 200) { $ok = $true; break }
+              } catch {}
+              Start-Sleep -Seconds 2
+            }
+            if (!$ok) {
+              if (Test-Path $stdoutLog) { Get-Content $stdoutLog | Write-Host }
+              if (Test-Path $stderrLog) { Get-Content $stderrLog | Write-Host }
+              throw "Bundled Node + standalone Next did not answer /api/health within 60 seconds."
+            }
+            Write-Host "Standalone server smoke test OK."
+          } finally {
+            if (Test-Path $stdoutLog) { Get-Content $stdoutLog | Write-Host }
+            if (Test-Path $stderrLog) { Get-Content $stderrLog | Write-Host }
+            if (!$server.HasExited) { taskkill.exe /PID $server.Id /T /F | Out-Null }
+          }
       - name: Smoke-test the actual packaged executable
         shell: pwsh
         run: |

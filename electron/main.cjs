@@ -15,6 +15,21 @@ const BUNDLED_ROOT = app.isPackaged ? path.join(process.resourcesPath, "app") : 
 const isElectron = Boolean(process.versions.electron);
 const nodeBin = isElectron ? process.execPath : "node";
 
+function startupLogFile() {
+  const configured = String(process.env.LEILAO_DESKTOP_LOG_FILE ?? "").trim();
+  if (configured) return configured;
+  try { return path.join(app.getPath("logs"), "desktop-startup.log"); } catch { return null; }
+}
+
+function startupLog(message) {
+  const line = `[${new Date().toISOString()}] ${message}`;
+  console.log(line);
+  try {
+    const file = startupLogFile();
+    if (file) fs.appendFileSync(file, line + "\n", "utf8");
+  } catch {}
+}
+
 // The desktop panel is an embedded Chromium renderer. Hardware acceleration
 // can produce a blank white surface on some Windows GPU/driver combinations;
 // the application is an admin dashboard, so reliable rendering is preferable.
@@ -81,7 +96,7 @@ function startStack() {
   const standaloneServer = path.join(BUNDLED_ROOT, ".next", "standalone", "server.js");
   if (!fs.existsSync(script)) throw new Error("O launcher do aplicativo não foi encontrado.");
   if (!fs.existsSync(standaloneServer)) throw new Error("O instalador não contém o servidor Next.js standalone.");
-  console.log("[stack] iniciando stack desktop via start-all.mjs");
+  startupLog("[stack] iniciando stack desktop via start-all.mjs");
   stackProcess = spawn(nodeBin, [script], {
     cwd: BUNDLED_ROOT,
     env: nodeEnv,
@@ -90,12 +105,12 @@ function startStack() {
   });
   const log = chunk => {
     const line = chunk.toString().trim();
-    if (line) console.log(`[stack] ${line}`);
+    if (line) startupLog(`[stack] ${line}`);
   };
   stackProcess.stdout.on("data", log);
   stackProcess.stderr.on("data", log);
-  stackProcess.on("error", error => console.error("[stack] erro:", error));
-  stackProcess.on("exit", code => console.log(`[stack] saiu (code ${code})`));
+  stackProcess.on("error", error => startupLog(`[stack] erro: ${error?.message || error}`));
+  stackProcess.on("exit", code => startupLog(`[stack] saiu (code ${code})`));
 }
 
 function killStack() {
@@ -132,16 +147,21 @@ const htmlError = msg => `data:text/html;charset=utf-8,
 const SMOKE_MODE = process.env.LEILAO_DESKTOP_SMOKE === "1";
 
 async function runSmokeMode() {
-  console.log("[smoke] iniciando o mesmo runtime usado pelo instalador...");
-  startStack();
-  const ok = await waitForServer(180_000);
-  if (!ok) {
-    console.error("[smoke] /api/health não respondeu.");
+  try {
+    startupLog("[smoke] iniciando o mesmo runtime usado pelo instalador...");
+    startStack();
+    const ok = await waitForServer(180_000);
+    if (!ok) {
+      startupLog("[smoke] /api/health não respondeu.");
+      app.exit(1);
+      return;
+    }
+    startupLog("[smoke] /api/health respondeu com sucesso.");
+    // Keep the Electron process alive until the CI job terminates the executable.
+  } catch (error) {
+    startupLog(`[smoke] erro de inicialização: ${error?.stack || error}`);
     app.exit(1);
-    return;
   }
-  console.log("[smoke] /api/health respondeu com sucesso.");
-  // Keep the Electron process alive until the CI job terminates the executable.
 }
 
 async function createWindow() {
@@ -202,7 +222,7 @@ async function createWindow() {
       mainWindow.loadURL(htmlError("O servidor não respondeu. Abra novamente o Leilão Pokémon ou use Recarregar."));
     }
   } catch (error) {
-    console.error("[init] erro:", error);
+    startupLog(`[init] erro: ${error?.stack || error}`);
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.loadURL(htmlError(String(error?.message || error)));
   }
 }

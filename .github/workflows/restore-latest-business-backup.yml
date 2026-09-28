@@ -129,5 +129,5 @@ jobs:
             checks[table] = count ?? 0;
           }
           console.log("RESTORE_VERIFY", JSON.stringify(checks));
-          console.log("RESTORE_OK", backup.name); // one-time recovery checkpoint
+          console.log("RESTORE_OK", backup.name); // one-time recovery checkpoint; enum-safe
           NODE

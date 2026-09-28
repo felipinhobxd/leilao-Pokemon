@@ -51,8 +51,6 @@ jobs:
           NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
           SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_URL=${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
-          BOT_ADMIN_USER_ID=${{ secrets.BOT_ADMIN_USER_ID }}
-          BOT_ADMIN_WA_JIDS=${{ secrets.BOT_ADMIN_WA_JIDS }}
           RECOGNITION_SERVICE_SHARED_SECRET=${{ secrets.RECOGNITION_SERVICE_SHARED_SECRET }}
           "@ | Out-File -FilePath bot/.env -Encoding utf8
         shell: pwsh

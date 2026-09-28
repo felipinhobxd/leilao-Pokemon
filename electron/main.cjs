@@ -152,58 +152,64 @@ const htmlError = msg => `data:text/html;charset=utf-8,
 
 const SMOKE_MODE = process.env.LEILAO_DESKTOP_SMOKE === "1";
 
-async function waitForRendererContent(timeoutMs = 60_000) {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    if (!mainWindow || mainWindow.isDestroyed()) return null;
-    try {
-      const state = await mainWindow.webContents.executeJavaScript(
-        \`(() => {
-          const body = document.body;
-          return {
-            readyState: document.readyState,
-            title: document.title,
-            text: String(body?.innerText || "").trim(),
-            htmlLength: body?.innerHTML?.length || 0,
-          };
-        })()\`,
-        true,
-      );
-      if (
-        state?.readyState === "complete" &&
-        Number(state.htmlLength) > 500 &&
-        String(state.text || "").length > 20
-      ) {
-        return state;
-      }
-    } catch {}
-    await new Promise(resolve => setTimeout(resolve, 1000));
-  }
-  return null;
-}
-
 async function runSmokeMode() {
+  let smokeWindow = null;
   try {
-    startupLog("[smoke] iniciando a mesma janela + runtime usados pelo instalador...");
-    await createWindow();
-    const state = await waitForRendererContent();
-    if (!state) {
-      startupLog("[smoke] o Chromium não renderizou conteúdo da aplicação.");
-      app.exit(1);
-      return;
-    }
-    if (!String(state.text).includes("Leilão Pokémon")) {
-      startupLog("[smoke] a página carregou, mas o conteúdo esperado não apareceu.");
-      app.exit(1);
-      return;
-    }
-    startupLog(
-      \`[smoke] renderer OK: title="${state.title}", html=${state.htmlLength}, text=${state.text.length} chars.\`,
+    startupLog("[smoke] iniciando Chromium + runtime empacotado...");
+    smokeWindow = new BrowserWindow({
+      width: 1280,
+      height: 800,
+      show: false,
+      backgroundColor: "#0f1115",
+      webPreferences: {
+        preload: path.join(__dirname, "preload.js"),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+    mainWindow = smokeWindow;
+
+    startStack();
+
+    const serverOk = await waitForServer(180_000);
+    if (!serverOk) throw new Error("/api/health não respondeu em 3 minutos.");
+
+    startupLog("[smoke] servidor Next respondeu. Carregando a UI no Chromium...");
+    await smokeWindow.loadURL(`http://127.0.0.1:${PORT}/`);
+
+    const state = await smokeWindow.webContents.executeJavaScript(
+      \`(() => {
+        const body = document.body;
+        return {
+          readyState: document.readyState,
+          title: document.title,
+          text: String(body?.innerText || "").trim(),
+          htmlLength: body?.innerHTML?.length || 0,
+        };
+      })()\`,
+      true,
     );
-    // Keep the Electron process alive until the CI job terminates the executable.
+
+    if (state?.readyState !== "complete") throw new Error("Documento Electron não chegou a readyState=complete.");
+    if (Number(state?.htmlLength) <= 500) throw new Error(`DOM muito pequeno: ${state?.htmlLength ?? 0} bytes.`);
+    if (!String(state?.text || "").includes("Leilão Pokémon")) {
+      throw new Error("Chromium carregou a página, mas o texto esperado não apareceu no DOM.");
+    }
+
+    startupLog(
+      `[smoke] renderer OK: title="${state.title}", html=${state.htmlLength}, text=${state.text.length} chars.`,
+    );
+
+    try { smokeWindow.destroy(); } catch {}
+    mainWindow = null;
+    killStack();
+    setTimeout(() => app.exit(0), 500);
   } catch (error) {
-    startupLog(`[smoke] erro de inicialização: ${error?.stack || error}`);
-    app.exit(1);
+    startupLog(`[smoke] erro: ${error?.stack || error}`);
+    try { smokeWindow?.destroy(); } catch {}
+    mainWindow = null;
+    killStack();
+    setTimeout(() => app.exit(1), 500);
   }
 }
 

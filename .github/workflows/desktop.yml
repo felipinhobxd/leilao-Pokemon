@@ -17,6 +17,10 @@ on:
       - "public/**"
   workflow_dispatch:
 
+concurrency:
+  group: desktop-release
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -76,6 +80,8 @@ jobs:
           if (!(Test-Path $exe)) { throw "Desktop executable not found: $exe" }
 
           $env:LEILAO_DESKTOP_SMOKE = "1"
+          $env:LEILAO_DESKTOP_LOG_FILE = Join-Path $env:TEMP "leilao-pokemon-desktop-smoke.log"
+          Remove-Item $env:LEILAO_DESKTOP_LOG_FILE -Force -ErrorAction SilentlyContinue
           $process = Start-Process -FilePath $exe -PassThru
 
           try {
@@ -91,7 +97,10 @@ jobs:
               } catch {}
               Start-Sleep -Seconds 2
             }
-            if (!$healthOk) { throw "Desktop smoke test failed: /api/health did not answer within 3 minutes." }
+            if (!$healthOk) {
+              if (Test-Path $env:LEILAO_DESKTOP_LOG_FILE) { Get-Content $env:LEILAO_DESKTOP_LOG_FILE | Write-Host }
+              throw "Desktop smoke test failed: /api/health did not answer within 3 minutes."
+            }
 
             $home = Invoke-WebRequest -Uri "http://127.0.0.1:3000/" -UseBasicParsing -TimeoutSec 10
             if ($home.StatusCode -ne 200) { throw "Desktop smoke test failed: homepage status $($home.StatusCode)." }
@@ -100,6 +109,7 @@ jobs:
 
             Write-Host "Desktop smoke test OK: packaged .exe started Next.js and served the application."
           } finally {
+            if (Test-Path $env:LEILAO_DESKTOP_LOG_FILE) { Get-Content $env:LEILAO_DESKTOP_LOG_FILE | Write-Host }
             if (!$process.HasExited) {
               taskkill.exe /PID $process.Id /T /F | Out-Null
               Start-Sleep -Seconds 2

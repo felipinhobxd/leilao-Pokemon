@@ -129,23 +129,21 @@ jobs:
               if (Test-Path $stderrLog) { Get-Content $stderrLog | Write-Host }
               throw "Bundled Node + standalone Next did not answer /api/health within 60 seconds."
             }
+            $loader = Invoke-WebRequest -Uri "http://127.0.0.1:3010/card-recognition/ppocrv6-loader.mjs" -UseBasicParsing -TimeoutSec 10
+            if ($loader.StatusCode -ne 200) { throw "AI loader returned HTTP $($loader.StatusCode)." }
+            if ($loader.Content -notmatch "web-sdk-pp-ocrv6@0\.2\.0") { throw "AI loader is not the expected PP-OCRv6 SDK build." }
+            if ($loader.Content -notmatch "__LEILAO_PPOCRV6__") { throw "AI loader does not expose the expected OCR runtime." }
+            $cdn = Invoke-WebRequest -Uri "https://cdn.jsdelivr.net/npm/web-sdk-pp-ocrv6@0.2.0/+esm" -UseBasicParsing -TimeoutSec 20
+            if ($cdn.StatusCode -ne 200) { throw "PP-OCRv6 CDN returned HTTP $($cdn.StatusCode)." }
+            if ($cdn.Content -notmatch "createOCR") { throw "PP-OCRv6 SDK does not expose createOCR." }
+            Write-Host "Standalone + browser AI smoke test OK: Next serves the loader and PP-OCRv6 SDK is reachable."
+
             Write-Host "Standalone server smoke test OK."
           } finally {
             if (Test-Path $stdoutLog) { Get-Content $stdoutLog | Write-Host }
             if (Test-Path $stderrLog) { Get-Content $stderrLog | Write-Host }
             if (!$server.HasExited) { taskkill.exe /PID $server.Id /T /F | Out-Null }
           }
-      - name: Validate browser AI resources
-        shell: pwsh
-        run: |
-          $loader = Invoke-WebRequest -Uri "http://127.0.0.1:3010/card-recognition/ppocrv6-loader.mjs" -UseBasicParsing -TimeoutSec 10
-          if ($loader.StatusCode -ne 200) { throw "AI loader returned HTTP $($loader.StatusCode)." }
-          if ($loader.Content -notmatch "web-sdk-pp-ocrv6@0\.2\.0") { throw "AI loader is not the expected PP-OCRv6 SDK build." }
-          if ($loader.Content -notmatch "__LEILAO_PPOCRV6__") { throw "AI loader does not expose the expected OCR runtime." }
-          $cdn = Invoke-WebRequest -Uri "https://cdn.jsdelivr.net/npm/web-sdk-pp-ocrv6@0.2.0/+esm" -UseBasicParsing -TimeoutSec 20
-          if ($cdn.StatusCode -ne 200) { throw "PP-OCRv6 CDN returned HTTP $($cdn.StatusCode)." }
-          if ($cdn.Content -notmatch "createOCR") { throw "PP-OCRv6 SDK does not expose createOCR." }
-          Write-Host "Browser AI resources OK: packaged app serves the loader and the PP-OCRv6 SDK is reachable."
 
       - name: Smoke-test the actual packaged executable
         shell: pwsh

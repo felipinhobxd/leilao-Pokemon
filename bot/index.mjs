@@ -6,6 +6,7 @@ import makeWASocket, {
   useMultiFileAuthState,
 } from "@whiskeysockets/baileys";
 import { createClient } from "@supabase/supabase-js";
+import { WebSocket } from "ws";
 import pino from "pino";
 import qrcode from "qrcode-terminal";
 import { dispatchMessageId, dispatchPollSecret } from "./dispatch-id.mjs";
@@ -31,6 +32,8 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const WORKER_ID = process.env.BOT_WORKER_ID || `bot-${process.pid}`;
 const SESSION_DIR = process.env.WHATSAPP_SESSION_DIR || "./sessao";
+
+if (!globalThis.WebSocket) globalThis.WebSocket = WebSocket;
 
 const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },

@@ -127,7 +127,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
         cwd: path.join(root, 'bot'),
         args: ['--env-file=.env', 'service.mjs'],
         optional: desktopStandalone,
-        restart: false,
         label: 'bot WhatsApp',
       },
     ];

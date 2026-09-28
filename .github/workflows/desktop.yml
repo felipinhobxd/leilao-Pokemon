@@ -75,7 +75,9 @@ jobs:
           $exe = Join-Path $PWD "dist-electron\win-unpacked\Leilão Pokémon.exe"
           if (!(Test-Path $exe)) { throw "Desktop executable not found: $exe" }
 
+          $env:LEILAO_DESKTOP_SMOKE = "1"
           $process = Start-Process -FilePath $exe -PassThru
+
           try {
             $healthOk = $false
             for ($i = 0; $i -lt 90; $i++) {

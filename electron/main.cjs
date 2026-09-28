@@ -1,44 +1,52 @@
 // LEILÃO POKÉMON — Desktop (Electron)
-// TOTALMENTE autônomo com prioridade inteligente:
-//   1. Servidor já rodando? Conecta.
-//   2. Projeto LOCAL no PC (D:\LeilaoPokemon)? Usa ELE (tem IA, sessão, tudo).
-//   3. Nada encontrado? Usa o embutido no .exe (build na primeira vez).
+// O instalador traz o Next.js standalone já compilado. O primeiro uso NÃO
+// executa `next build`: o aplicativo só sobe a stack local e abre a UI.
 const { app, BrowserWindow, Menu, shell } = require("electron");
 const { spawn } = require("child_process");
 const path = require("path");
 const http = require("http");
 const fs = require("fs");
 
-const PORT = 3000;
+const PORT = Number(process.env.LEILAO_DESKTOP_PORT || 3000);
 let mainWindow = null;
 let stackProcess = null;
-let buildProcess = null;
 
 const BUNDLED_ROOT = app.isPackaged ? path.join(process.resourcesPath, "app") : path.join(__dirname, "..");
 const isElectron = Boolean(process.versions.electron);
 const nodeBin = isElectron ? process.execPath : "node";
-const nodeEnv = { ...process.env };
-if (isElectron) nodeEnv.ELECTRON_RUN_AS_NODE = "1";
 
-// --- Procura o projeto LOCAL no PC (prioridade sobre o bundled) ---------------
-function findProjectDir() {
-  const candidates = [
-    "D:\\LeilaoPokemon",
-    "C:\\LeilaoPokemon",
-    path.join(app.getPath("home"), "LeilaoPokemon"),
-    path.join(app.getPath("documents"), "LeilaoPokemon"),
-  ];
-  for (const dir of candidates) {
-    if (fs.existsSync(path.join(dir, "package.json")) &&
-        fs.existsSync(path.join(dir, "scripts", "start-all.mjs"))) {
-      console.log("[init] projeto local encontrado:", dir);
-      return dir;
+function readDotEnv(file) {
+  try {
+    const values = {};
+    for (const raw of fs.readFileSync(file, "utf8").split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith("#")) continue;
+      const content = line.startsWith("export ") ? line.slice(7).trim() : line;
+      const separator = content.indexOf("=");
+      if (separator <= 0) continue;
+      const key = content.slice(0, separator).trim();
+      let value = content.slice(separator + 1).trim();
+      if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1);
+      values[key] = value;
     }
+    return values;
+  } catch {
+    return {};
   }
-  return null;
 }
 
-// --- Helpers -----------------------------------------------------------------------
+// Secrets configurados no build ficam no bot/.env do runtime empacotado.
+// process.env tem prioridade para permitir override local sem recompilar.
+const nodeEnv = {
+  ...readDotEnv(path.join(BUNDLED_ROOT, "bot", ".env")),
+  ...readDotEnv(path.join(BUNDLED_ROOT, ".env.local")),
+  ...process.env,
+  NODE_ENV: "production",
+  LEILAO_DESKTOP_STANDALONE: "1",
+  LEILAO_DESKTOP_PORT: String(PORT),
+};
+if (isElectron) nodeEnv.ELECTRON_RUN_AS_NODE = "1";
+
 function isServerRunning() {
   return new Promise(resolve => {
     const req = http.get(`http://127.0.0.1:${PORT}/api/health`, res => {
@@ -62,41 +70,17 @@ function waitForServer(timeoutMs = 180_000) {
   });
 }
 
-function needsBuild(root) {
-  return !fs.existsSync(path.join(root, ".next", "BUILD_ID"));
-}
-
-// --- Build Next.js (bundled, primeira vez) ---------------------------------------------
-function runBuild(root) {
-  return new Promise((resolve, reject) => {
-    const nextCli = path.join(root, "node_modules", "next", "dist", "bin", "next");
-    if (!fs.existsSync(nextCli)) { reject(new Error("next CLI não encontrado")); return; }
-    console.log("[build] next build em", root);
-    buildProcess = spawn(nodeBin, [nextCli, "build"], {
-      cwd: root, env: nodeEnv,
-      stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
-    });
-    buildProcess.stdout.on("data", chunk => console.log("[build]", chunk.toString().trim()));
-    buildProcess.stderr.on("data", chunk => console.log("[build-err]", chunk.toString().trim()));
-    buildProcess.on("exit", code => {
-      buildProcess = null;
-      code === 0 ? resolve() : reject(new Error(`next build falhou (code ${code})`));
-    });
-  });
-}
-
-// --- Sobe o stack (start-all.mjs) a partir do diretório dado -------------------------
-function startStack(root) {
-  const script = path.join(root, "scripts", "start-all.mjs");
-  if (!fs.existsSync(script)) {
-    console.log("[stack] start-all.mjs não encontrado em", root);
-    return;
-  }
-  console.log("[stack] iniciando via start-all.mjs em", root);
+function startStack() {
+  const script = path.join(BUNDLED_ROOT, "scripts", "start-all.mjs");
+  const standaloneServer = path.join(BUNDLED_ROOT, ".next", "standalone", "server.js");
+  if (!fs.existsSync(script)) throw new Error("O launcher do aplicativo não foi encontrado.");
+  if (!fs.existsSync(standaloneServer)) throw new Error("O instalador não contém o servidor Next.js standalone.");
+  console.log("[stack] iniciando stack desktop via start-all.mjs");
   stackProcess = spawn(nodeBin, [script], {
-    cwd: root,
-    env: { ...nodeEnv, NODE_ENV: "production" },
-    stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+    cwd: BUNDLED_ROOT,
+    env: nodeEnv,
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
   });
   const log = chunk => {
     const line = chunk.toString().trim();
@@ -104,22 +88,21 @@ function startStack(root) {
   };
   stackProcess.stdout.on("data", log);
   stackProcess.stderr.on("data", log);
+  stackProcess.on("error", error => console.error("[stack] erro:", error));
   stackProcess.on("exit", code => console.log(`[stack] saiu (code ${code})`));
 }
 
 function killStack() {
-  if (buildProcess) { try { buildProcess.kill("SIGKILL"); } catch {} buildProcess = null; }
-  if (stackProcess) {
-    try { stackProcess.kill("SIGTERM"); } catch {}
-    setTimeout(() => { try { stackProcess.kill("SIGKILL"); } catch {} }, 3_000);
-    stackProcess = null;
-  }
+  if (!stackProcess) return;
+  try { stackProcess.kill("SIGTERM"); } catch {}
+  const child = stackProcess;
+  setTimeout(() => { try { if (child.exitCode === null) child.kill("SIGKILL"); } catch {} }, 3_000);
+  stackProcess = null;
 }
 
-// --- Telas ----------------------------------------------------------------------------
 const htmlProgress = (title, sub) => `data:text/html;charset=utf-8,
   <body style="font-family:sans-serif;background:#1a1a2e;color:#eee;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
-    <div style="text-align:center;max-width:500px;padding:40px">
+    <div style="text-align:center;max-width:560px;padding:40px">
       <div style="font-size:48px;margin-bottom:16px">🦭</div>
       <h2 style="color:#e74c3c;margin:0 0 8px">${title}</h2>
       <p style="color:#aaa;font-size:14px">${sub}</p>
@@ -130,26 +113,30 @@ const htmlProgress = (title, sub) => `data:text/html;charset=utf-8,
     </div>
   </body>`;
 
-const htmlError = (msg) => `data:text/html;charset=utf-8,
+const htmlError = msg => `data:text/html;charset=utf-8,
   <body style="font-family:sans-serif;background:#1a1a2e;color:#eee;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
-    <div style="text-align:center;max-width:500px;padding:40px">
+    <div style="text-align:center;max-width:620px;padding:40px">
       <div style="font-size:48px;margin-bottom:16px">⚠️</div>
       <h2 style="color:#e74c3c;margin:0 0 10px">Falha ao iniciar</h2>
-      <p style="color:#aaa;font-size:14px">${msg}</p>
-      <p style="color:#777;font-size:13px;margin-top:20px">Clique em "Recarregar" para tentar de novo.</p>
+      <p style="color:#aaa;font-size:14px;line-height:1.5">${msg}</p>
+      <p style="color:#777;font-size:13px;margin-top:20px">Clique em "Recarregar" para tentar novamente.</p>
     </div>
   </body>`;
 
-// --- Janela e fluxo principal -----------------------------------------------------------
 async function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1400, height: 900, minWidth: 1024, minHeight: 700,
+    width: 1400,
+    height: 900,
+    minWidth: 1024,
+    minHeight: 700,
     title: "Leilão Pokémon",
+    show: true,
+    backgroundColor: "#0f1115",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
-      contextIsolation: true, nodeIntegration: false,
+      contextIsolation: true,
+      nodeIntegration: false,
     },
-    show: false,
   });
 
   Menu.setApplicationMenu(Menu.buildFromTemplate([
@@ -157,59 +144,44 @@ async function createWindow() {
     { role: "quit", label: "Sair" },
   ]));
 
-  mainWindow.once("ready-to-show", () => { mainWindow.show(); mainWindow.maximize(); });
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: "deny" }; });
+  mainWindow.maximize();
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: "deny" };
+  });
+  mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
+    if (mainWindow && !mainWindow.isDestroyed() && !validatedURL.startsWith("data:") && errorCode !== -3) {
+      mainWindow.loadURL(htmlError(`Não foi possível carregar o painel (${errorCode}): ${errorDescription}`));
+    }
+  });
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.loadURL(htmlError(`A interface fechou inesperadamente (${details.reason}). Clique em Recarregar.`));
+    }
+  });
   mainWindow.on("closed", () => { mainWindow = null; });
 
   try {
-    // 1. Já rodando? Conecta.
     if (await isServerRunning()) {
-      mainWindow.loadURL(`http://localhost:${PORT}`);
+      await mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
       return;
     }
 
-    // 2. Projeto LOCAL no PC? Usa ele (tem IA de 7GB, sessão WhatsApp, .env completo)
-    const localDir = findProjectDir();
-    if (localDir) {
-      mainWindow.loadURL(htmlProgress("Iniciando...", "Usando o projeto local (reconhecimento com IA local)"));
-      startStack(localDir);
-      const ok = await waitForServer();
-      if (ok && mainWindow && !mainWindow.isDestroyed()) mainWindow.loadURL(`http://localhost:${PORT}`);
-      return;
-    }
-
-    // 3. Sem projeto local: usa o embutido (build na primeira vez)
-    if (needsBuild(BUNDLED_ROOT)) {
-      mainWindow.loadURL(htmlProgress("Configurando o Leilão Pokémon...", "Compilando o painel (só na primeira vez)"));
-      await runBuild(BUNDLED_ROOT);
-    }
-
-    mainWindow.loadURL(htmlProgress("Iniciando servidor...", "Bot WhatsApp + reconhecimento"));
-    startStack(BUNDLED_ROOT);
+    mainWindow.loadURL(htmlProgress("Iniciando o Leilão Pokémon…", "Abrindo o painel já preparado e os serviços locais."));
+    startStack();
 
     const ok = await waitForServer();
     if (ok && mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.loadURL(`http://localhost:${PORT}`);
+      await mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
     } else if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.loadURL(htmlError("O servidor não respondeu em 3 minutos."));
+      mainWindow.loadURL(htmlError("O servidor não respondeu. Abra novamente o Leilão Pokémon ou use Recarregar."));
     }
   } catch (error) {
     console.error("[init] erro:", error);
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.loadURL(htmlError(String(error.message || error)));
-    }
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.loadURL(htmlError(String(error?.message || error)));
   }
 }
 
-// --- Reconecta sozinho se a página cair ----------------------------------------------------
-setInterval(async () => {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  if (mainWindow.webContents.getURL().startsWith("data:")) {
-    if (await isServerRunning()) mainWindow.loadURL(`http://localhost:${PORT}`);
-  }
-}, 5_000);
-
-// --- Uma instância SÓ ------------------------------------------------------------------------
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();

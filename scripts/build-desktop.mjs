@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { cp, mkdir, access } from "node:fs/promises";
+import { cp, mkdir, access, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -31,6 +31,15 @@ await access(nextCli);
 const standalone = path.join(root, ".next", "standalone");
 const standaloneServer = path.join(standalone, "server.js");
 await access(standaloneServer);
+
+await writeFile(
+  path.join(standalone, "desktop-public-config.json"),
+  JSON.stringify({
+    url: process.env.NEXT_PUBLIC_SUPABASE_URL ?? "",
+    publishableKey: process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? "",
+  }),
+  "utf8",
+);
 
 await mkdir(path.join(standalone, ".next"), { recursive: true });
 const staticDir = path.join(root, ".next", "static");

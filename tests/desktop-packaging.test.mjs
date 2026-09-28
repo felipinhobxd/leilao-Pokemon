@@ -37,7 +37,9 @@ test("desktop package configuration contains the standalone runtime and per-user
   assert.equal(pkg.main, "electron/main.cjs");
   const resources = pkg.build?.extraResources ?? [];
   assert.ok(resources.some(item => item.from === ".next/standalone" && item.to === "app/.next/standalone"));
-  assert.ok(resources.some(item => item.from === "bot" && item.to === "app/bot"));
+  const botResource = resources.find(item => item.from === "bot" && item.to === "app/bot");
+  assert.ok(botResource);
+  assert.ok(botResource.filter.some(item => item === "!**/.env"));
   assert.ok(resources.some(item => item.from === "desktop-runtime/node.exe" && item.to === "node/node.exe"));
   assert.equal(pkg.build?.nsis?.oneClick, true);
   assert.equal(pkg.build?.nsis?.perMachine, false);
@@ -67,4 +69,19 @@ test("desktop delivery window is 24h and bot cleanup has a 30-day safety floor",
   assert.match(bot, /Math\.max\(30, Math\.floor\(requestedDays\)\)/);
   assert.match(bot, /ensureCloudBackupForCleanup/);
   assert.match(bot, /backup_cloud_copy_missing/);
+});
+
+
+test("desktop stores Supabase secret through Electron secure storage instead of packaging it", () => {
+  const main = read("../electron/main.cjs");
+  const preload = read("../electron/preload.js");
+  const pkg = JSON.parse(read("../package.json"));
+  const workflow = read("../.github/workflows/desktop.yml");
+  assert.match(main, /safeStorage\.encryptString/);
+  assert.match(main, /desktop-secure-config\.json/);
+  assert.match(preload, /desktop-config:save/);
+  const botResource = (pkg.build?.extraResources ?? []).find(item => item.from === "bot" && item.to === "app/bot");
+  assert.ok(botResource);
+  assert.ok(botResource.filter.some(item => item === "!**/.env"));
+  assert.doesNotMatch(workflow, /SUPABASE_SERVICE_ROLE_KEY:\s*\$\{\{\s*secrets\.SUPABASE_SERVICE_ROLE_KEY/);
 });

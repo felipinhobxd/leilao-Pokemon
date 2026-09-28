@@ -19,7 +19,7 @@ import { createPaymentReminderDrain } from "./payment-reminder.mjs";
 import { ANNOUNCE_GRACE_MINUTES, ANNOUNCE_MINUTES_BEFORE, ANNOUNCE_RULES_MINUTES_BEFORE, buildOpeningMessage, loadAnnouncedQueueIds, loadAnnouncementSticker, loadRulesAnnouncedQueueIds, loadRulesMessage, markQueueAnnounced, markQueueRulesAnnounced, saveAnnouncementSticker } from "./announce-sticker.mjs";
 import { queueEnabled, startQueueWorker } from "./queue-worker.mjs";
 
-const required = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "BOT_ADMIN_USER_ID"];
+const required = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"];
 for (const key of required) {
   if (!process.env[key]) {
     console.error(`Variável obrigatória ausente: ${key}`);
@@ -29,13 +29,32 @@ for (const key of required) {
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const ADMIN_USER_ID = process.env.BOT_ADMIN_USER_ID;
 const WORKER_ID = process.env.BOT_WORKER_ID || `bot-${process.pid}`;
 const SESSION_DIR = process.env.WHATSAPP_SESSION_DIR || "./sessao";
 
 const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
+
+let ADMIN_USER_ID = String(process.env.BOT_ADMIN_USER_ID || "").trim();
+if (!ADMIN_USER_ID) {
+  const { data, error } = await db.from("admin_profiles")
+    .select("user_id")
+    .eq("active", true)
+    .in("role", ["admin", "operator"])
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.error("Não foi possível resolver automaticamente o administrador do bot:", error.message);
+    process.exit(1);
+  }
+  ADMIN_USER_ID = String(data?.user_id || "").trim();
+}
+if (!ADMIN_USER_ID) {
+  console.error("Nenhum administrador/operator ativo encontrado no Supabase. Configure BOT_ADMIN_USER_ID.");
+  process.exit(1);
+}
+console.log(`🛡️ Administrador do bot: ${process.env.BOT_ADMIN_USER_ID ? "configurado" : "resolvido automaticamente pelo Supabase"}`);
 const logger = pino({ level: process.env.BOT_LOG_LEVEL || "silent" });
 
 let sock;

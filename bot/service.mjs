@@ -475,7 +475,7 @@ async function cleanupOldAuctions() {  if (cleanupBusy || shuttingDown) return;
   lastCleanupAttempt = now;
   cleanupBusy = true;
   try {
-    const days = Number(process.env.BOT_CLEANUP_DAYS || 1);
+    const days = Number(process.env.BOT_CLEANUP_DAYS || 30);
     const { data, error } = await db.rpc("cleanup_old_auctions", { p_days: Number.isFinite(days) && days > 0 ? days : 30 });
     if (error) {
       console.warn("Limpeza de leilões antigos falhou:", error?.message || error);

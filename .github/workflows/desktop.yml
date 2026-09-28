@@ -55,19 +55,6 @@ jobs:
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          RECOGNITION_SERVICE_SHARED_SECRET: ${{ secrets.RECOGNITION_SERVICE_SHARED_SECRET }}
-
-      - name: Inject runtime environment for the embedded bot
-        run: |
-          @"
-          NEXT_PUBLIC_SUPABASE_URL=${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
-          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
-          SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          SUPABASE_URL=${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
-          RECOGNITION_SERVICE_SHARED_SECRET=${{ secrets.RECOGNITION_SERVICE_SHARED_SECRET }}
-          "@ | Out-File -FilePath bot/.env -Encoding utf8
-        shell: pwsh
 
       - name: Install WhatsApp bot dependencies
         run: npm --prefix bot ci --no-audit --no-fund
@@ -216,7 +203,8 @@ jobs:
             - O painel Next.js já é compilado no GitHub Actions e fica empacotado no instalador.
             - O programa não executa `next build` na primeira abertura.
             - A janela de inicialização aparece imediatamente.
-            - O CI abre o .exe real antes de publicar e verifica o `/api/health` e a página inicial.
+            - O CI abre o .exe real antes de publicar e verifica o `/api/health`, a página inicial e o carregamento do recurso de reconhecimento.
+            - A chave secreta do Supabase NÃO é empacotada; na primeira abertura ela é armazenada de forma protegida pelo Windows.
 
             **Incluído**
             - Painel completo
@@ -230,9 +218,11 @@ jobs:
             - Baixe o `.exe`
             - Instale normalmente
             - Abra o atalho "Leilão Pokémon"
+            - Na primeira abertura, informe a chave secreta do Supabase quando solicitada
+            - A chave fica armazenada usando a proteção de credenciais do Windows
             - Entre no painel com sua conta administrativa
             - Configure/conecte o WhatsApp pela Central WhatsApp
 
-            O reconhecimento Python/IA local pesado continua opcional e não é baixado para dentro do instalador.
+            O reconhecimento por navegador (PP-OCRv6 + comparação visual/DINOv2) está incluído. O reconhecimento Python/IA local pesado continua opcional e não é baixado para dentro do instalador.
           draft: false
           prerelease: false

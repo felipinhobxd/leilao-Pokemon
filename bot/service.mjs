@@ -6,6 +6,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createClient } from "@supabase/supabase-js";
+import { WebSocket } from "ws";
 import { runBusinessBackup } from "./backup.mjs";
 
 const required = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"];
@@ -24,6 +25,8 @@ const QR_TTL_MS = Math.min(180_000, Math.max(45_000, Number(process.env.BOT_QR_T
 const AUTO_GROUP_SYNC_MAX_AGE_MS = 5 * 60_000;
 const packageJson = JSON.parse(await readFile(new URL("./package.json", import.meta.url), "utf8"));
 const BOT_VERSION = String(packageJson.version || "0.0.0");
+
+if (!globalThis.WebSocket) globalThis.WebSocket = WebSocket;
 
 const db = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },

@@ -161,13 +161,16 @@ async function createWindow() {
   });
   mainWindow.on("closed", () => { mainWindow = null; });
 
+  // Carrega a UI de inicialização ANTES de qualquer await. Assim a janela
+  // nunca fica presa em about:blank branco enquanto o servidor responde.
+  await mainWindow.loadURL(htmlProgress("Iniciando o Leilão Pokémon…", "Abrindo o painel já preparado e os serviços locais."));
+
   try {
     if (await isServerRunning()) {
       await mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
       return;
     }
 
-    mainWindow.loadURL(htmlProgress("Iniciando o Leilão Pokémon…", "Abrindo o painel já preparado e os serviços locais."));
     startStack();
 
     const ok = await waitForServer();

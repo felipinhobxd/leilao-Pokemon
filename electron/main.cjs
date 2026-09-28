@@ -152,6 +152,30 @@ const htmlError = msg => `data:text/html;charset=utf-8,
 
 const SMOKE_MODE = process.env.LEILAO_DESKTOP_SMOKE === "1";
 
+async function waitForRendererContent(timeoutMs = 60_000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (!mainWindow || mainWindow.isDestroyed()) return null;
+    try {
+      const state = await mainWindow.webContents.executeJavaScript(
+        "(() => { const body = document.body; return { readyState: document.readyState, title: document.title, text: String(body?.innerText || \\"\\").trim(), htmlLength: body?.innerHTML?.length || 0 }; })()",
+        true,
+      );
+      if (
+        state?.readyState === "complete" &&
+        Number(state?.htmlLength) > 500 &&
+        String(state?.text || "").length > 20
+      ) {
+        return state;
+      }
+    } catch {}
+    await new Promise(resolve => setTimeout(resolve, 1_000));
+  }
+  return null;
+}
+
+const SMOKE_MODE = process.env.LEILAO_DESKTOP_SMOKE === "1";
+
 async function runSmokeMode() {
   let smokeWindow = null;
   try {
@@ -177,19 +201,8 @@ async function runSmokeMode() {
     startupLog("[smoke] servidor Next respondeu. Carregando a UI no Chromium...");
     await smokeWindow.loadURL(`http://127.0.0.1:${PORT}/`);
 
-    const state = await smokeWindow.webContents.executeJavaScript(
-      \`(() => {
-        const body = document.body;
-        return {
-          readyState: document.readyState,
-          title: document.title,
-          text: String(body?.innerText || "").trim(),
-          htmlLength: body?.innerHTML?.length || 0,
-        };
-      })()\`,
-      true,
-    );
-
+    const state = await waitForRendererContent();
+    if (!state) throw new Error("Chromium não renderizou conteúdo da aplicação em 60 segundos.");
     if (state?.readyState !== "complete") throw new Error("Documento Electron não chegou a readyState=complete.");
     if (Number(state?.htmlLength) <= 500) throw new Error(`DOM muito pequeno: ${state?.htmlLength ?? 0} bytes.`);
     if (!String(state?.text || "").includes("Leilão Pokémon")) {

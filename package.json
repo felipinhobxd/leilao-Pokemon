@@ -68,7 +68,9 @@
         "filter": [
           "**/*",
           "!sessao/**",
-          "!backups/**"
+          "!backups/**",
+          "!**/.env",
+          "!**/.env.*"
         ]
       },
       {

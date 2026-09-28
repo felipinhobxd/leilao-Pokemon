@@ -16,15 +16,14 @@ export async function GET(request: Request) {
   try {
     const { db, profile } = await timing.measure("authorize", () => authorize(request, false, timing));
     const operationsOnly = new URL(request.url).searchParams.get("scope") === "operations";
-    // Janela de envios: 30 dias (era 7) — acompanha a rotina de limpeza de
-    // leilões antigos (cleanup_old_auctions, também 30 dias).
-    const DISPATCH_WINDOW_DAYS = 30;
+    // Janela de envios exibida no painel: últimas 24 horas.
+    const DISPATCH_WINDOW_DAYS = 1;
     const windowStart = new Date(Date.now() - DISPATCH_WINDOW_DAYS * 86_400_000).toISOString();
     const [data, workerResult, groupResult, ...countResults] = await Promise.all([
       operationsOnly ? null : timing.measure("read_dashboard_snapshot", () => snapshot(db, true)),
       db.from("whatsapp_bot_workers").select("worker_id,status,heartbeat_at,version").order("heartbeat_at", { ascending: false, nullsFirst: false }).limit(1).maybeSingle(),
       db.from("whatsapp_groups").select("id,name,is_default").eq("active", true).eq("is_default", true).maybeSingle(),
-      // dispatch_success_rate (7d): a tabela de disparos é a fonte da verdade —
+      // dispatch_success_rate (24h): a tabela de disparos é a fonte da verdade —
       // `sent` vs `failed` reais, nada estimado pela fila de transporte.
       // COUNT per status via head:true (PostgREST count only, no rows over
       // the wire): the old unbounded SELECT returned every dispatch row

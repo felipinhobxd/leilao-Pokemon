@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+const nextCli = path.join(root, "node_modules", "next", "dist", "bin", "next");
 
 function run(command, args, env = process.env) {
   return new Promise((resolve, reject) => {
@@ -22,11 +22,12 @@ function run(command, args, env = process.env) {
   });
 }
 
-await run(npm, ["run", "build"], {
+await run(process.execPath, [nextCli, "build"], {
   ...process.env,
   DESKTOP_BUILD: "1",
 });
 
+await access(nextCli);
 const standalone = path.join(root, ".next", "standalone");
 const standaloneServer = path.join(standalone, "server.js");
 await access(standaloneServer);

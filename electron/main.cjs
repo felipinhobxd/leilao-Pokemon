@@ -1,7 +1,7 @@
 // LEILÃO POKÉMON — Desktop (Electron)
 // O instalador traz o Next.js standalone já compilado. O primeiro uso NÃO
 // executa `next build`: o aplicativo só sobe a stack local e abre a UI.
-const { app, BrowserWindow, Menu, shell } = require("electron");
+const { app, BrowserWindow, Menu, shell, ipcMain, safeStorage } = require("electron");
 const { spawn } = require("child_process");
 const path = require("path");
 const http = require("http");
@@ -17,6 +17,80 @@ const bundledNodeBin = app.isPackaged && process.platform === "win32"
   ? path.join(process.resourcesPath, "node", "node.exe")
   : null;
 const nodeBin = bundledNodeBin || (isElectron ? process.execPath : "node");
+
+let launching = false;
+
+function desktopPublicConfig() {
+  const candidates = [
+    path.join(BUNDLED_ROOT, ".next", "standalone", "desktop-public-config.json"),
+    path.join(BUNDLED_ROOT, "desktop-public-config.json"),
+  ];
+  for (const file of candidates) {
+    try {
+      const value = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (value && typeof value.url === "string") return value;
+    } catch {}
+  }
+  return {
+    url: String(process.env.NEXT_PUBLIC_SUPABASE_URL || ""),
+    publishableKey: String(process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || ""),
+  };
+}
+
+function desktopConfigFile() {
+  return path.join(app.getPath("userData"), "desktop-secure-config.json");
+}
+
+function readDesktopSecret() {
+  const envSecret = String(process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
+  if (envSecret) return envSecret;
+  try {
+    const payload = JSON.parse(fs.readFileSync(desktopConfigFile(), "utf8"));
+    if (!payload?.encryptedSecret || !safeStorage.isEncryptionAvailable()) return "";
+    return safeStorage.decryptString(Buffer.from(payload.encryptedSecret, "base64")).trim();
+  } catch {
+    return "";
+  }
+}
+
+function saveDesktopSecret(secret) {
+  const value = String(secret || "").trim();
+  if (value.length < 20) throw new Error("A chave secreta do Supabase parece inválida.");
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error("A criptografia segura do Windows não está disponível neste computador.");
+  }
+  fs.mkdirSync(path.dirname(desktopConfigFile()), { recursive: true });
+  fs.writeFileSync(
+    desktopConfigFile(),
+    JSON.stringify({
+      version: 1,
+      provider: "windows-safe-storage",
+      encryptedSecret: safeStorage.encryptString(value).toString("base64"),
+      updatedAt: new Date().toISOString(),
+    }, null, 2),
+    "utf8",
+  );
+}
+
+function buildNodeEnv() {
+  const publicConfig = desktopPublicConfig();
+  const secret = readDesktopSecret();
+  const env = {
+    ...readDotEnv(path.join(BUNDLED_ROOT, "bot", ".env")),
+    ...readDotEnv(path.join(BUNDLED_ROOT, ".env.local")),
+    ...process.env,
+    NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL || publicConfig.url,
+    NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || publicConfig.publishableKey,
+    NODE_ENV: "production",
+    LEILAO_DESKTOP_STANDALONE: "1",
+    LEILAO_DESKTOP_PORT: String(PORT),
+  };
+  if (!env.SUPABASE_SERVICE_ROLE_KEY && secret) env.SUPABASE_SERVICE_ROLE_KEY = secret;
+  if (!env.SUPABASE_SECRET_KEY && secret) env.SUPABASE_SECRET_KEY = secret;
+  if (!env.SUPABASE_URL && env.NEXT_PUBLIC_SUPABASE_URL) env.SUPABASE_URL = env.NEXT_PUBLIC_SUPABASE_URL;
+  if (isElectron && !bundledNodeBin) env.ELECTRON_RUN_AS_NODE = "1";
+  return env;
+}
 
 function startupLogFile() {
   const configured = String(process.env.LEILAO_DESKTOP_LOG_FILE ?? "").trim();
@@ -59,18 +133,6 @@ function readDotEnv(file) {
   }
 }
 
-// Secrets configurados no build ficam no bot/.env do runtime empacotado.
-// process.env tem prioridade para permitir override local sem recompilar.
-const nodeEnv = {
-  ...readDotEnv(path.join(BUNDLED_ROOT, "bot", ".env")),
-  ...readDotEnv(path.join(BUNDLED_ROOT, ".env.local")),
-  ...process.env,
-  NODE_ENV: "production",
-  LEILAO_DESKTOP_STANDALONE: "1",
-  LEILAO_DESKTOP_PORT: String(PORT),
-};
-if (!bundledNodeBin && isElectron) nodeEnv.ELECTRON_RUN_AS_NODE = "1";
-
 function isServerRunning() {
   return new Promise(resolve => {
     const req = http.get(`http://127.0.0.1:${PORT}/api/health`, res => {
@@ -105,7 +167,7 @@ function startStack() {
   startupLog("[stack] iniciando stack desktop via start-all.mjs");
   stackProcess = spawn(nodeBin, [script], {
     cwd: BUNDLED_ROOT,
-    env: nodeEnv,
+    env: buildNodeEnv(),
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
@@ -126,6 +188,82 @@ function killStack() {
   setTimeout(() => { try { if (child.exitCode === null) child.kill("SIGKILL"); } catch {} }, 3_000);
   stackProcess = null;
 }
+
+const htmlSetup = config => {
+  const project = String(config?.url || "").replace(/^https?:\/\//, "").replace(/\?.*$/, "") || "Supabase";
+  const escapeHtml = value => String(value).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;");
+  return `data:text/html;charset=utf-8,
+  <body style="font-family:Segoe UI,sans-serif;background:#0f1115;color:#f4f4f5;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0">
+    <div style="width:min(620px,calc(100vw - 48px));padding:34px;border:1px solid #2b2f36;border-radius:18px;background:#171a20;box-shadow:0 20px 60px rgba(0,0,0,.35)">
+      <div style="font-size:42px">🎴</div>
+      <h1 style="margin:8px 0 6px">Configurar Leilão Pokémon</h1>
+      <p style="color:#a1a1aa;line-height:1.55">Esta instalação usa o mesmo banco do painel web. Na primeira abertura, informe a chave secreta do Supabase. Ela fica criptografada pelo Windows e não é colocada dentro do instalador.</p>
+      <p style="font-size:13px;color:#71717a;margin:12px 0 22px">Projeto: <b style="color:#d4d4d8">${escapeHtml(project)}</b></p>
+      <label style="display:block;font-size:14px;font-weight:600;margin-bottom:8px">Chave secreta do Supabase</label>
+      <input id="secret" type="password" autocomplete="off" spellcheck="false" placeholder="sb_secret_... ou service_role" style="box-sizing:border-box;width:100%;padding:13px 14px;border-radius:10px;border:1px solid #3f4652;background:#0f1115;color:#fff;font-size:14px">
+      <button id="save" style="margin-top:16px;width:100%;padding:13px;border:0;border-radius:10px;background:#e74c3c;color:#fff;font-weight:700;font-size:14px;cursor:pointer">Salvar e abrir painel</button>
+      <p id="msg" style="min-height:20px;color:#fca5a5;font-size:13px;margin:12px 0 0"></p>
+      <small style="color:#71717a;display:block;margin-top:18px;line-height:1.5">A chave é usada somente pelo servidor local e pelo bot do aplicativo.</small>
+    </div>
+    <script>
+      const input=document.getElementById("secret");
+      const button=document.getElementById("save");
+      const msg=document.getElementById("msg");
+      button.onclick=async()=>{
+        button.disabled=true; msg.textContent="";
+        try {
+          await window.desktop.saveSecret(input.value);
+          msg.style.color="#86efac";
+          msg.textContent="Configuração salva. Abrindo o painel…";
+        } catch (error) {
+          msg.textContent=error?.message || "Não foi possível salvar a configuração.";
+          button.disabled=false;
+        }
+      };
+      input.addEventListener("keydown",event=>{if(event.key==="Enter")button.click();});
+      input.focus();
+    </script>
+  </body>`;
+};
+
+async function launchConfiguredApp() {
+  if (launching || !mainWindow || mainWindow.isDestroyed()) return;
+  launching = true;
+  try {
+    const publicConfig = desktopPublicConfig();
+    const secret = readDesktopSecret();
+
+    if (app.isPackaged && (!publicConfig.url || !publicConfig.publishableKey || !secret)) {
+      await mainWindow.loadURL(htmlSetup(publicConfig));
+      return;
+    }
+
+    await mainWindow.loadURL(htmlProgress("Iniciando o Leilão Pokémon…", "Abrindo o painel e os serviços locais."));
+    if (await isServerRunning()) {
+      void mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
+      return;
+    }
+
+    startStack();
+    const ok = await waitForServer();
+    if (ok && mainWindow && !mainWindow.isDestroyed()) {
+      void mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
+    } else if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.loadURL(htmlError("O servidor local não respondeu. Confira a configuração e tente novamente."));
+    }
+  } catch (error) {
+    startupLog(`[init] erro: ${error?.stack || error}`);
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.loadURL(htmlError(String(error?.message || error)));
+  } finally {
+    launching = false;
+  }
+}
+
+ipcMain.handle("desktop-config:save", async (_event, secret) => {
+  saveDesktopSecret(secret);
+  void launchConfiguredApp();
+  return { ok: true };
+});
 
 const htmlProgress = (title, sub) => `data:text/html;charset=utf-8,
   <body style="font-family:sans-serif;background:#1a1a2e;color:#eee;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
@@ -258,29 +396,8 @@ async function createWindow() {
   });
   mainWindow.on("closed", () => { mainWindow = null; });
 
-  // Carrega a UI de inicialização ANTES de qualquer await. Assim a janela
-  // nunca fica presa em about:blank branco enquanto o servidor responde.
-  void mainWindow.loadURL(htmlProgress("Iniciando o Leilão Pokémon…", "Abrindo o painel já preparado e os serviços locais."))
-    .catch(error => console.error("[ui] falha ao carregar tela inicial:", error?.message || error));
+  void launchConfiguredApp();
 
-  try {
-    if (await isServerRunning()) {
-      void mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
-      return;
-    }
-
-    startStack();
-
-    const ok = await waitForServer();
-    if (ok && mainWindow && !mainWindow.isDestroyed()) {
-      void mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
-    } else if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.loadURL(htmlError("O servidor não respondeu. Abra novamente o Leilão Pokémon ou use Recarregar."));
-    }
-  } catch (error) {
-    startupLog(`[init] erro: ${error?.stack || error}`);
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.loadURL(htmlError(String(error?.message || error)));
-  }
 }
 
 const gotLock = app.requestSingleInstanceLock();

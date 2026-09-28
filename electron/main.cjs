@@ -252,13 +252,11 @@ async function launchConfiguredApp() {
       }
     }
 
-    // Never leave the user with a blank Chromium surface. Verify that the
-    // renderer produced actual visible content after navigating to the app.
     const rendered = await waitForRendererContent(20_000);
     if (!rendered && mainWindow && !mainWindow.isDestroyed()) {
-      startupLog("[renderer] conteúdo vazio após 20s; exibindo diagnóstico.");
+      startupLog("[renderer] conteúdo vazio após a navegação.");
       await mainWindow.loadURL(htmlError(
-        "O servidor respondeu, mas o painel não renderizou conteúdo. Abra o menu Recarregar. O diagnóstico foi salvo no log do aplicativo."
+        "O servidor respondeu, mas o painel não renderizou. Abra Recarregar para tentar novamente. O diagnóstico foi salvo no log."
       ));
     }
   } catch (error) {
@@ -312,7 +310,13 @@ async function waitForRendererContent(timeoutMs = 60_000) {
       if (
         state?.readyState === "complete" &&
         Number(state?.htmlLength) > 500 &&
-        String(state?.text || "").length > 20
+        String(state?.text || "").length > 20 &&
+        String(state?.text || "").includes("Leilão Pokémon") &&
+        (
+          String(state?.text || "").includes("Acesso administrativo") ||
+          String(state?.text || "").includes("OPERAÇÃO AO VIVO") ||
+          String(state?.text || "").includes("Configurar Leilão Pokémon")
+        )
       ) {
         return state;
       }
@@ -354,6 +358,7 @@ async function runSmokeMode() {
     if (!String(state.text || "").includes("Leilão Pokémon")) {
       throw new Error("Chromium carregou a página, mas o texto esperado não apareceu no DOM.");
     }
+    startupLog("[smoke] renderer OK: conteúdo visível confirmado no Chromium.");
 
     startupLog(`[smoke] renderer OK: title="${state.title}", html=${state.htmlLength}, text=${state.text.length} chars.`);
     try { smokeWindow.destroy(); } catch {}
@@ -389,6 +394,12 @@ async function createWindow() {
     { role: "quit", label: "Sair" },
   ]));
 
+  void mainWindow.loadURL(
+    '<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Leilão Pokémon</title></head>' +
+    '<body style="margin:0;background:#0f1115;color:#f7f8fb;font-family:Segoe UI,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh">' +
+    '<main style="text-align:center;padding:40px"><div style="font-size:52px">🎴</div><h1 style="margin:10px 0">Leilão Pokémon</h1><p style="color:#a8b2c4;margin:0">Iniciando o painel…</p></main></body></html>'
+  );
+
   mainWindow.maximize();
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
@@ -397,10 +408,10 @@ async function createWindow() {
   mainWindow.webContents.on("console-message", (_event, level, message, line, sourceId) => {
     startupLog(`[renderer] level=${level} ${message} (${sourceId}:${line})`);
   });
-  mainWindow.webContents.on("unresponsive", () => startupLog("[renderer] Chromium ficou sem responder."));
-  mainWindow.webContents.on("responsive", () => startupLog("[renderer] Chromium voltou a responder."));
   mainWindow.webContents.on("dom-ready", () => startupLog("[renderer] DOM pronto."));
   mainWindow.webContents.on("did-finish-load", () => startupLog("[renderer] página terminou de carregar."));
+  mainWindow.webContents.on("unresponsive", () => startupLog("[renderer] Chromium sem resposta."));
+  mainWindow.webContents.on("responsive", () => startupLog("[renderer] Chromium respondeu novamente."));
   mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
     if (mainWindow && !mainWindow.isDestroyed() && !validatedURL.startsWith("data:") && errorCode !== -3) {
       mainWindow.loadURL(htmlError(`Não foi possível carregar o painel (${errorCode}): ${errorDescription}`));

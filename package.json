@@ -15,7 +15,7 @@
     "recognition:local": "node scripts/recognition-local.mjs",
     "recognition:index": "node scripts/recognition-index.mjs",
     "desktop:dev": "electron . --dev",
-    "desktop:build": "electron-builder --win",
+    "desktop:build": "node scripts/build-desktop.mjs && electron-builder --win",
     "desktop:dist": "node scripts/build-desktop.mjs && electron-builder --win"
   },
   "dependencies": {

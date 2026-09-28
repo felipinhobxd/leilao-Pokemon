@@ -66,6 +66,8 @@ jobs:
 
       - name: Build unpacked app and Setup.exe
         run: npx electron-builder --win --config.directories.output=dist-electron
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Smoke-test the actual packaged executable
         shell: pwsh

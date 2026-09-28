@@ -85,3 +85,10 @@ test("desktop stores Supabase secret through Electron secure storage instead of 
   assert.ok(botResource.filter.some(item => item === "!**/.env"));
   assert.doesNotMatch(workflow, /SUPABASE_SERVICE_ROLE_KEY:\s*\$\{\{\s*secrets\.SUPABASE_SERVICE_ROLE_KEY/);
 });
+
+test("dashboard initial render is deterministic and syncs persisted auth", () => {
+  const source = read("../app/dashboard.tsx");
+  assert.match(source, /const \[clock, setClock\] = useState\(0\)/);
+  assert.match(source, /db\.auth\.getSession\(\)/);
+  assert.match(source, /setReady\(true\)/);
+});

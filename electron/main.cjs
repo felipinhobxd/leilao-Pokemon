@@ -13,7 +13,10 @@ let stackProcess = null;
 
 const BUNDLED_ROOT = app.isPackaged ? path.join(process.resourcesPath, "app") : path.join(__dirname, "..");
 const isElectron = Boolean(process.versions.electron);
-const nodeBin = isElectron ? process.execPath : "node";
+const bundledNodeBin = app.isPackaged && process.platform === "win32"
+  ? path.join(process.resourcesPath, "node", "node.exe")
+  : null;
+const nodeBin = bundledNodeBin || (isElectron ? process.execPath : "node");
 
 function startupLogFile() {
   const configured = String(process.env.LEILAO_DESKTOP_LOG_FILE ?? "").trim();
@@ -66,7 +69,7 @@ const nodeEnv = {
   LEILAO_DESKTOP_STANDALONE: "1",
   LEILAO_DESKTOP_PORT: String(PORT),
 };
-if (isElectron) nodeEnv.ELECTRON_RUN_AS_NODE = "1";
+if (!bundledNodeBin && isElectron) nodeEnv.ELECTRON_RUN_AS_NODE = "1";
 
 function isServerRunning() {
   return new Promise(resolve => {
@@ -96,6 +99,9 @@ function startStack() {
   const standaloneServer = path.join(BUNDLED_ROOT, ".next", "standalone", "server.js");
   if (!fs.existsSync(script)) throw new Error("O launcher do aplicativo não foi encontrado.");
   if (!fs.existsSync(standaloneServer)) throw new Error("O instalador não contém o servidor Next.js standalone.");
+  if (app.isPackaged && (!bundledNodeBin || !fs.existsSync(bundledNodeBin))) {
+    throw new Error("O instalador não contém o runtime Node.js 24 necessário pelos serviços locais.");
+  }
   startupLog("[stack] iniciando stack desktop via start-all.mjs");
   stackProcess = spawn(nodeBin, [script], {
     cwd: BUNDLED_ROOT,

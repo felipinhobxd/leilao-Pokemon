@@ -8,7 +8,7 @@ test("desktop main uses the packaged standalone server instead of first-run next
   const source = read("../electron/main.cjs");
   assert.match(source, /path\.join\(BUNDLED_ROOT, "\.next", "standalone", "server\.js"\)/);
   assert.match(source, /LEILAO_DESKTOP_STANDALONE/);
-  assert.doesNotMatch(source, /\\bbuildProcess\\b|\\brunBuild\\b|function needsBuild/);
+  assert.doesNotMatch(source, /buildProcess|runBuild|function needsBuild/);
   assert.doesNotMatch(source, /BUILD_ID/);
   assert.match(source, /show:\s*true/);
   assert.match(source, /did-fail-load/);

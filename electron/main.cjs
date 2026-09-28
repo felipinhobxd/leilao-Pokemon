@@ -174,8 +174,6 @@ async function waitForRendererContent(timeoutMs = 60_000) {
   return null;
 }
 
-const SMOKE_MODE = process.env.LEILAO_DESKTOP_SMOKE === "1";
-
 async function runSmokeMode() {
   let smokeWindow = null;
   try {

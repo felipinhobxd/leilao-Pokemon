@@ -158,7 +158,7 @@ async function waitForRendererContent(timeoutMs = 60_000) {
     if (!mainWindow || mainWindow.isDestroyed()) return null;
     try {
       const state = await mainWindow.webContents.executeJavaScript(
-        "(() => { const body = document.body; return { readyState: document.readyState, title: document.title, text: String(body?.innerText || \\"\\").trim(), htmlLength: body?.innerHTML?.length || 0 }; })()",
+        '(() => { const body = document.body; return { readyState: document.readyState, title: document.title, text: String(body?.innerText || "").trim(), htmlLength: body?.innerHTML?.length || 0 }; })()',
         true,
       );
       if (
@@ -203,16 +203,13 @@ async function runSmokeMode() {
 
     const state = await waitForRendererContent();
     if (!state) throw new Error("Chromium não renderizou conteúdo da aplicação em 60 segundos.");
-    if (state?.readyState !== "complete") throw new Error("Documento Electron não chegou a readyState=complete.");
-    if (Number(state?.htmlLength) <= 500) throw new Error(`DOM muito pequeno: ${state?.htmlLength ?? 0} bytes.`);
-    if (!String(state?.text || "").includes("Leilão Pokémon")) {
+    if (state.readyState !== "complete") throw new Error("Documento Electron não chegou a readyState=complete.");
+    if (Number(state.htmlLength) <= 500) throw new Error(`DOM muito pequeno: ${state.htmlLength ?? 0} bytes.`);
+    if (!String(state.text || "").includes("Leilão Pokémon")) {
       throw new Error("Chromium carregou a página, mas o texto esperado não apareceu no DOM.");
     }
 
-    startupLog(
-      `[smoke] renderer OK: title="${state.title}", html=${state.htmlLength}, text=${state.text.length} chars.`,
-    );
-
+    startupLog(`[smoke] renderer OK: title="${state.title}", html=${state.htmlLength}, text=${state.text.length} chars.`);
     try { smokeWindow.destroy(); } catch {}
     mainWindow = null;
     killStack();
@@ -225,7 +222,6 @@ async function runSmokeMode() {
     setTimeout(() => app.exit(1), 500);
   }
 }
-
 async function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,

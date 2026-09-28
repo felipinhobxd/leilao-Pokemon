@@ -38,6 +38,7 @@ test("desktop package configuration contains the standalone runtime and per-user
   const resources = pkg.build?.extraResources ?? [];
   assert.ok(resources.some(item => item.from === ".next/standalone" && item.to === "app/.next/standalone"));
   assert.ok(resources.some(item => item.from === "bot" && item.to === "app/bot"));
+  assert.ok(resources.some(item => item.from === "desktop-runtime/node.exe" && item.to === "node/node.exe"));
   assert.equal(pkg.build?.nsis?.oneClick, true);
   assert.equal(pkg.build?.nsis?.perMachine, false);
 });

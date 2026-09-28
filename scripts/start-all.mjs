@@ -57,15 +57,21 @@ export function startAll(commands) {
     const bin = command.bin ?? process.execPath;
     const child = spawn(bin, command.args, { cwd: command.cwd, env: command.env ?? process.env, stdio: 'inherit', detached: process.platform !== 'win32' });
     children[index] = child;
-    child.once('error', error => { console.error(error.message); void stop(1); });
+    child.once('error', error => {
+      console.error(`[start] ${command.label ?? bin} erro: ${error.message}`);
+      if (!command.optional) void stop(1);
+    });
     if (command.optional) {
-      // Optional companions may die alone: the site degrades to the in-browser
-      // pipeline instead of taking everything down. A bounded restart gives a
-      // natively-crashed recognition service one chance to recover on CPU.
+      // Optional companions may die alone: the site stays online. A bounded
+      // restart is only used when explicitly enabled by the command.
       const restarts = [];
       child.once('exit', code => {
         if (stopping) return;
         const label = command.label ?? bin;
+        if (command.restart === false) {
+          console.error(`[start] ${label} saiu (code ${code}); o serviço principal continua ativo.`);
+          return;
+        }
         const now = Date.now();
         while (restarts.length && now - restarts[0] > RESTART_WINDOW_MS) restarts.shift();
         if (restarts.length < RESTART_MAX) {
@@ -117,7 +123,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
             },
           }
         : { cwd: root, args: [path.join(root, 'node_modules/next/dist/bin/next'), 'start', ...process.argv.slice(2)] },
-      { cwd: path.join(root, 'bot'), args: ['--env-file=.env', 'service.mjs'] },
+      {
+        cwd: path.join(root, 'bot'),
+        args: ['--env-file=.env', 'service.mjs'],
+        optional: desktopStandalone,
+        restart: false,
+        label: 'bot WhatsApp',
+      },
     ];
     // Local recognition service (optional): two-route pipeline (visual + OCR).
     // Not installed -> the site silently uses the in-browser fallback pipeline.

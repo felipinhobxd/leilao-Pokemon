@@ -55,7 +55,7 @@ export function startAll(commands) {
   process.on('SIGTERM', onTerminate);
   const launch = (command, index) => {
     const bin = command.bin ?? process.execPath;
-    const child = spawn(bin, command.args, { cwd: command.cwd, stdio: 'inherit', detached: process.platform !== 'win32' });
+    const child = spawn(bin, command.args, { cwd: command.cwd, env: command.env ?? process.env, stdio: 'inherit', detached: process.platform !== 'win32' });
     children[index] = child;
     child.once('error', error => { console.error(error.message); void stop(1); });
     if (command.optional) {
@@ -91,12 +91,32 @@ export function startAll(commands) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   try {
-    for (const file of ['.next/BUILD_ID', 'node_modules/next/dist/bin/next', 'bot/.env', 'bot/node_modules/@whiskeysockets/baileys/package.json']) {
+    const desktopStandalone = process.env.LEILAO_DESKTOP_STANDALONE === '1';
+    const standaloneRoot = path.join(root, '.next', 'standalone');
+    const requiredFiles = desktopStandalone
+      ? ['.next/standalone/server.js', 'bot/.env', 'bot/node_modules/@whiskeysockets/baileys/package.json']
+      : ['.next/BUILD_ID', 'node_modules/next/dist/bin/next', 'bot/.env', 'bot/node_modules/@whiskeysockets/baileys/package.json'];
+    for (const file of requiredFiles) {
       try { await access(path.join(root, file)); }
-      catch { throw new Error(`Ausente: ${file}. Execute npm.cmd ci, npm.cmd --prefix bot ci e npm.cmd run build; configure bot/.env.`); }
+      catch {
+        const hint = desktopStandalone
+          ? 'O instalador desktop está incompleto: o servidor Next.js standalone não foi empacotado.'
+          : 'Execute npm.cmd ci, npm.cmd --prefix bot ci e npm.cmd run build; configure bot/.env.';
+        throw new Error(`Ausente: ${file}. ${hint}`);
+      }
     }
     const commands = [
-      { cwd: root, args: [path.join(root, 'node_modules/next/dist/bin/next'), 'start', ...process.argv.slice(2)] },
+      desktopStandalone
+        ? {
+            cwd: standaloneRoot,
+            args: [path.join(standaloneRoot, 'server.js')],
+            env: {
+              ...process.env,
+              HOSTNAME: '127.0.0.1',
+              PORT: process.env.LEILAO_DESKTOP_PORT || '3000',
+            },
+          }
+        : { cwd: root, args: [path.join(root, 'node_modules/next/dist/bin/next'), 'start', ...process.argv.slice(2)] },
       { cwd: path.join(root, 'bot'), args: ['--env-file=.env', 'service.mjs'] },
     ];
     // Local recognition service (optional): two-route pipeline (visual + OCR).

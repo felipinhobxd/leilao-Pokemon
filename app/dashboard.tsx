@@ -61,13 +61,36 @@ export default function Dashboard() {
   useEffect(() => { if (purgeOpen && purgeDialog.current && !purgeDialog.current.open) purgeDialog.current.showModal(); }, [purgeOpen]);
   useEffect(() => { const timer = setInterval(() => setClock(Date.now()), 1000); return () => clearInterval(timer); }, []);
   useEffect(() => {
+    let active = true;
+    const syncInitialSession = async () => {
+      try {
+        const { data } = await db.auth.getSession();
+        if (!active) return;
+        accessToken.current = data.session?.access_token ?? null;
+        setSession(data.session);
+        setReady(true);
+      } catch {
+        if (!active) return;
+        setSession(null);
+        setReady(true);
+      }
+    };
+    void syncInitialSession();
+
     const { data: subscription } = db.auth.onAuthStateChange((_event, next) => {
       accessToken.current = next?.access_token ?? null;
       setSession(next); setReady(true);
-      if (identity.current !== (next?.user.id ?? null) || !next) { revision.current++; fullLoadedAt.current=0; setData(null); setOperations({bot:null,group:null}); setRetry(null); setEditor(null); }
+      if (identity.current !== (next?.user.id ?? null) || !next) {
+        revision.current++;
+        fullLoadedAt.current=0;
+        setData(null);
+        setOperations({bot:null,group:null});
+        setRetry(null);
+        setEditor(null);
+      }
       identity.current = next?.user.id ?? null;
     });
-    return () => { active = false; void subscription.subscription.unsubscribe(); };
+    return () => { active = false; subscription.subscription.unsubscribe(); };
   }, [db]);
   const request = useCallback(async (url: string, init?: RequestInit) => {
     const { data: auth } = await db.auth.getSession();

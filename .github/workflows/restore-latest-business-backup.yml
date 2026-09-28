@@ -39,9 +39,9 @@ jobs:
           if (auctionCountError) throw new Error("auction count failed: " + auctionCountError.message);
           if (cardCountError) throw new Error("card count failed: " + cardCountError.message);
 
-          if ((auctionCount ?? 0) !== 0 || (cardCount ?? 0) !== 0) {
+          if ((auctionCount ?? 0) !== 54 || (cardCount ?? 0) !== 54) {
             throw new Error(
-              "RESTORE_GUARD: auctions/cards are not empty; refusing to overwrite business data."
+              `RESTORE_GUARD: expected the partial 54-auction restore state, got auctions=${auctionCount ?? 0}, cards=${cardCount ?? 0}.`
             );
           }
 
@@ -94,10 +94,22 @@ jobs:
           await upsertChunks("participants", tables.participants ?? []);
           await upsertChunks("whatsapp_groups", tables.whatsapp_groups ?? []);
 
-          // Restore the business tree in FK-safe order.
-          await upsertChunks("cards", tables.cards ?? []);
-          await upsertChunks("auctions", tables.auctions ?? []);
-          await upsertChunks("bids", tables.bids ?? []);
+          // Cards/auctions were already restored by the guarded first pass.
+          // Keep their count stable and restore the historical bids through the
+          // temporary service-role-only database RPC because the normal bid
+          // trigger correctly rejects bids on closed auctions.
+          const { count: currentBids, error: currentBidsError } =
+            await db.from("bids").select("id", { count: "exact", head: true });
+          if (currentBidsError) throw new Error("current bids check failed: " + currentBidsError.message);
+          if ((currentBids ?? 0) !== 0) throw new Error("RESTORE_GUARD: bids are not empty.");
+
+          const { data: restoredBids, error: bidRestoreError } = await db.rpc(
+            "restore_historical_bids",
+            { p_rows: tables.bids ?? [] }
+          );
+          if (bidRestoreError) throw new Error("historical bids restore failed: " + bidRestoreError.message);
+          console.log("bids restored through guarded RPC", restoredBids);
+
           await upsertChunks("purchases", tables.purchases ?? []);
           await upsertChunks("payments", tables.payments ?? []);
           await upsertChunks("deliveries", tables.deliveries ?? []);

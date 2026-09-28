@@ -1,0 +1,121 @@
+name: Restore Latest Business Backup
+
+on:
+  push:
+    paths:
+      - ".github/workflows/restore-latest-business-backup.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Install Supabase client
+        run: npm ci --no-audit --no-fund
+      - name: Restore newest cloud backup only when core business tables are empty
+        env:
+          SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { createClient } from "@supabase/supabase-js";
+
+          const db = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
+            auth: { persistSession: false, autoRefreshToken: false }
+          });
+
+          const { count: auctionCount, error: auctionCountError } =
+            await db.from("auctions").select("id", { count: "exact", head: true });
+          const { count: cardCount, error: cardCountError } =
+            await db.from("cards").select("id", { count: "exact", head: true });
+          if (auctionCountError) throw new Error("auction count failed: " + auctionCountError.message);
+          if (cardCountError) throw new Error("card count failed: " + cardCountError.message);
+
+          if ((auctionCount ?? 0) !== 0 || (cardCount ?? 0) !== 0) {
+            throw new Error(
+              "RESTORE_GUARD: auctions/cards are not empty; refusing to overwrite business data."
+            );
+          }
+
+          const { data: objects, error: listError } = await db.storage
+            .from("business-backups")
+            .list("backups", { limit: 100, sortBy: { column: "name", order: "desc" } });
+          if (listError) throw new Error("backup list failed: " + listError.message);
+
+          const backup = (objects ?? [])
+            .filter(o => /^backup-\d{8}-\d{4}\.json$/.test(o.name))
+            .sort((a,b) => String(b.name).localeCompare(String(a.name)))[0];
+          if (!backup) throw new Error("No cloud business backup found.");
+
+          const objectPath = "backups/" + backup.name;
+          const { data: file, error: downloadError } = await db.storage
+            .from("business-backups")
+            .download(objectPath);
+          if (downloadError) throw new Error("backup download failed: " + downloadError.message);
+
+          const payload = JSON.parse(await file.text());
+          const tables = payload.tables ?? {};
+          const count = name => Array.isArray(tables[name]) ? tables[name].length : 0;
+
+          console.log(JSON.stringify({
+            backup: backup.name,
+            exported_at: payload.exported_at,
+            cards: count("cards"),
+            auctions: count("auctions"),
+            bids: count("bids"),
+            purchases: count("purchases"),
+            dispatches: count("whatsapp_dispatches"),
+            queues: count("auction_publish_queues"),
+            quick_polls: count("whatsapp_quick_polls"),
+            participants: count("participants")
+          }));
+
+          async function upsertChunks(table, rows, onConflict = "id") {
+            if (!Array.isArray(rows) || rows.length === 0) return 0;
+            for (let i = 0; i < rows.length; i += 100) {
+              const chunk = rows.slice(i, i + 100);
+              const { error } = await db.from(table).upsert(chunk, { onConflict });
+              if (error) throw new Error(table + " restore failed: " + error.message);
+            }
+            console.log(table, rows.length);
+            return rows.length;
+          }
+
+          // Existing participants/groups are preserved; backup rows only refill
+          // matching historical ids and missing records.
+          await upsertChunks("participants", tables.participants ?? []);
+          await upsertChunks("whatsapp_groups", tables.whatsapp_groups ?? []);
+
+          // Restore the business tree in FK-safe order.
+          await upsertChunks("cards", tables.cards ?? []);
+          await upsertChunks("auctions", tables.auctions ?? []);
+          await upsertChunks("bids", tables.bids ?? []);
+          await upsertChunks("purchases", tables.purchases ?? []);
+          await upsertChunks("payments", tables.payments ?? []);
+          await upsertChunks("deliveries", tables.deliveries ?? []);
+          await upsertChunks("warnings", tables.warnings ?? []);
+          await upsertChunks("value_change_log", tables.value_change_log ?? []);
+          await upsertChunks("participant_warnings", tables.participant_warnings ?? []);
+          await upsertChunks("auction_publish_queues", tables.auction_publish_queues ?? []);
+          await upsertChunks("whatsapp_dispatches", tables.whatsapp_dispatches ?? []);
+          await upsertChunks("whatsapp_quick_polls", tables.whatsapp_quick_polls ?? []);
+          await upsertChunks("payment_reminders", tables.payment_reminders ?? []);
+          await upsertChunks("whatsapp_vote_state", tables.whatsapp_vote_state ?? [], "auction_id,voter_jid");
+
+          const checks = {};
+          for (const table of ["cards","auctions","bids","purchases","payments","deliveries","warnings","value_change_log","participant_warnings","auction_publish_queues","whatsapp_dispatches","whatsapp_quick_polls","payment_reminders","whatsapp_vote_state"]) {
+            const { count, error } = await db.from(table).select("*", { count: "exact", head: true });
+            if (error) throw new Error("verify " + table + " failed: " + error.message);
+            checks[table] = count ?? 0;
+          }
+          console.log("RESTORE_VERIFY", JSON.stringify(checks));
+          console.log("RESTORE_OK", backup.name);
+          NODE

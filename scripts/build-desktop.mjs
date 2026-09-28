@@ -44,4 +44,13 @@ try {
   // public/ é opcional no Next.js; nada a copiar.
 }
 
+if (process.platform === "win32") {
+  const runtimeDir = path.join(root, "desktop-runtime");
+  const runtimeNode = path.join(runtimeDir, "node.exe");
+  await mkdir(runtimeDir, { recursive: true });
+  await cp(process.execPath, runtimeNode, { force: true });
+  await access(runtimeNode);
+  console.log("[desktop] Node runtime empacotável preparado:", runtimeNode);
+}
+
 console.log("[desktop] Next.js standalone preparado:", standaloneServer);

@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createClient } from "@supabase/supabase-js";
 import { runBusinessBackup } from "./backup.mjs";
 
-const required = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "BOT_ADMIN_USER_ID"];
+const required = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"];
 for (const key of required) {
   if (!process.env[key]) {
     console.error(`Variável obrigatória ausente: ${key}`);

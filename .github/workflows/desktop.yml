@@ -40,6 +40,16 @@ jobs:
       - name: Install web dependencies
         run: npm ci --no-audit --no-fund
 
+      - name: Download portable Node.js 24 runtime for the packaged app
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path desktop-runtime | Out-Null
+          $url = "https://nodejs.org/dist/v24.21.0/win-x64/node.exe"
+          Invoke-WebRequest -Uri $url -OutFile desktop-runtime/node.exe
+          $version = & "$PWD\desktop-runtime\node.exe" --version
+          Write-Host "Bundled Node runtime: $version"
+          if ($version -ne "v24.21.0") { throw "Unexpected bundled Node version: $version" }
+
       - name: Build portable Next.js standalone
         run: node scripts/build-desktop.mjs
         env:

@@ -49,7 +49,22 @@ test("desktop workflow builds standalone and smoke-tests the real executable bef
   assert.match(workflow, /electron-builder --win/);
   assert.match(workflow, /dist-electron[\\/]win-unpacked/);
   assert.match(workflow, /api\/health/);
+  assert.match(workflow, /card-recognition\/ppocrv6-loader\.mjs/);
+  assert.match(workflow, /web-sdk-pp-ocrv6@0\\.2\\.0/);
   assert.match(workflow, /Leilão Pokémon/);
   assert.match(workflow, /softprops\/action-gh-release/);
   assert.match(workflow, /desktop-v\$\{\{ github\.run_number \}\}/);
+});
+
+
+test("desktop delivery window is 24h and bot cleanup has a 30-day safety floor", () => {
+  const dashboard = read("../app/api/dashboard/route.ts");
+  const ui = read("../app/dashboard.tsx");
+  const bot = read("../bot/service.mjs");
+  assert.match(dashboard, /DISPATCH_WINDOW_DAYS = 1/);
+  assert.match(ui, /Envios \(24h\)/);
+  assert.match(bot, /BOT_CLEANUP_DAYS \?\? 30/);
+  assert.match(bot, /Math\.max\(30, Math\.floor\(requestedDays\)\)/);
+  assert.match(bot, /ensureCloudBackupForCleanup/);
+  assert.match(bot, /backup_cloud_copy_missing/);
 });

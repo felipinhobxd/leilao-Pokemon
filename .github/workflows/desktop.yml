@@ -148,6 +148,15 @@ jobs:
             if (Test-Path $stderrLog) { Get-Content $stderrLog | Write-Host }
             if (!$server.HasExited) { taskkill.exe /PID $server.Id /T /F | Out-Null }
           }
+      - name: Validate browser AI resources
+        shell: pwsh
+        run: |
+          $loader = Invoke-WebRequest -Uri "http://127.0.0.1:3000/card-recognition/ppocrv6-loader.mjs" -UseBasicParsing -TimeoutSec 10
+          if ($loader.StatusCode -ne 200) { throw "AI loader returned HTTP $($loader.StatusCode)." }
+          if ($loader.Content -notmatch "web-sdk-pp-ocrv6@0\.2\.0") { throw "AI loader is not the expected PP-OCRv6 SDK build." }
+          if ($loader.Content -notmatch "__LEILAO_PPOCRV6__") { throw "AI loader does not expose the expected OCR runtime." }
+          Write-Host "Browser AI resources OK: PP-OCRv6 loader is served by the packaged Next application."
+
       - name: Smoke-test the actual packaged executable
         shell: pwsh
         run: |

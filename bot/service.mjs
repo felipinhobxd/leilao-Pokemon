@@ -444,7 +444,8 @@ async function processPendingLogout() {
 }
 
 // Backup diário dos dados de leilão (uma vez por dia, BOT_BACKUP_HOUR padrão
-// 4h30). Falha apenas registra — o seguro de vida não pode derrubar o bot.
+// 4h30). O backup em nuvem precisa estar disponível antes de marcar o dia como
+// protegido; assim uma falha do Storage nunca deixa a limpeza sem uma cópia.
 async function dailyBackup() {
   if (backupBusy || shuttingDown) return;
   const hour = Number(process.env.BOT_BACKUP_HOUR ?? 4.5);
@@ -453,11 +454,13 @@ async function dailyBackup() {
   const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   if (lastBackupDay === today) return;
   if (now.getHours() + now.getMinutes() / 60 < hour) return;
-  lastBackupDay = today;
+  if (backupBusy) return;
   backupBusy = true;
   try {
     const result = await runBusinessBackup(db, now);
-    console.log(`Backup dos dados gravado: ${result.path} (${(result.bytes / 1024).toFixed(1)} KB, mantendo ${result.kept})`);
+    if (!result.cloudPath) throw new Error("backup_cloud_copy_missing");
+    lastBackupDay = today;
+    console.log(`Backup dos dados gravado: ${result.path} (${(result.bytes / 1024).toFixed(1)} KB, mantendo ${result.kept}, nuvem ${result.cloudPath})`);
   } catch (error) {
     lastBackupDay = ""; // retry na próxima janela de 10 min
     console.error("Backup diário falhou:", error?.message || error);
@@ -466,17 +469,41 @@ async function dailyBackup() {
   }
 }
 
-// Rotina de exclusão de leilões antigos: p_days no banco (padrão 30). Roda no
-// máximo 1x/hora; falha só registra aviso (a próxima janela tenta de novo) —
-// a limpeza nunca pode derrubar o supervisor do bot.
+// Rotina de exclusão de leilões antigos: mínimo 30 dias. Roda no máximo
+// 1x/hora e só é autorizada depois de um backup na nuvem feito no mesmo dia.
+// O objetivo é evitar outra perda de histórico por variável de ambiente antiga.
+async function ensureCloudBackupForCleanup(now = new Date()) {
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  if (lastBackupDay === today) return true;
+  if (backupBusy || shuttingDown) return false;
+  backupBusy = true;
+  try {
+    const result = await runBusinessBackup(db, now);
+    if (!result.cloudPath) throw new Error("backup_cloud_copy_missing");
+    lastBackupDay = today;
+    console.log(`Backup de segurança antes da limpeza: ${result.cloudPath}`);
+    return true;
+  } catch (error) {
+    console.error("Limpeza bloqueada: backup na nuvem indisponível.", error?.message || error);
+    return false;
+  } finally {
+    backupBusy = false;
+  }
+}
+
 async function cleanupOldAuctions() {  if (cleanupBusy || shuttingDown) return;
   const now = Date.now();
   if (now - lastCleanupAttempt < 60 * 60_000) return;
   lastCleanupAttempt = now;
   cleanupBusy = true;
   try {
-    const days = Number(process.env.BOT_CLEANUP_DAYS || 30);
-    const { data, error } = await db.rpc("cleanup_old_auctions", { p_days: Number.isFinite(days) && days > 0 ? days : 30 });
+    if (!(await ensureCloudBackupForCleanup(new Date(now)))) {
+      console.warn("Limpeza de leilões antigos adiada: não foi possível confirmar o backup na nuvem do dia.");
+      return;
+    }
+    const requestedDays = Number(process.env.BOT_CLEANUP_DAYS ?? 30);
+    const days = Number.isFinite(requestedDays) ? Math.max(30, Math.floor(requestedDays)) : 30;
+    const { data, error } = await db.rpc("cleanup_old_auctions", { p_days: days });
     if (error) {
       console.warn("Limpeza de leilões antigos falhou:", error?.message || error);
       return;

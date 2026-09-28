@@ -17,7 +17,7 @@
 11. **Export Excel FIX**: snapshot com LIMITs (era TODAS as linhas → timeout 57014).
 12. **Egress/Log Ingestion FIX**: dashboard snapshot com LIMITs (~50-80 KB, era 288 KB); Realtime debounce 250ms→5s; polling global ~56% menor.
 13. **Backup na nuvem**: bucket privado business-backups, retenção 7 (nuvem) / 30 (local).
-14. **Limpeza 1 dia** (era 30): BOT_CLEANUP_DAYS default 1 no bot.
+14. **Limpeza 30 dias**: BOT_CLEANUP_DAYS agora tem padrão e piso de 30 dias; a limpeza também exige backup na nuvem no mesmo dia.
 15. **Auto-save de rascunho**: 45s, fingerprint, silencioso em falha.
 
 ## Ponto EXATO onde paramos

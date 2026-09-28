@@ -1,6 +1,9 @@
 name: Inspect Cloud Backup
 
 on:
+  push:
+    paths:
+      - ".github/workflows/inspect-cloud-backup-once.yml"
   workflow_dispatch:
 
 permissions:

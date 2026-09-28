@@ -138,14 +138,21 @@ jobs:
       - name: Validate browser AI resources
         shell: pwsh
         run: |
-          $loader = Invoke-WebRequest -Uri "http://127.0.0.1:3000/card-recognition/ppocrv6-loader.mjs" -UseBasicParsing -TimeoutSec 10
+          $loader = Invoke-WebRequest -Uri "http://127.0.0.1:3010/card-recognition/ppocrv6-loader.mjs" -UseBasicParsing -TimeoutSec 10
           if ($loader.StatusCode -ne 200) { throw "AI loader returned HTTP $($loader.StatusCode)." }
           if ($loader.Content -notmatch "web-sdk-pp-ocrv6@0\.2\.0") { throw "AI loader is not the expected PP-OCRv6 SDK build." }
           if ($loader.Content -notmatch "__LEILAO_PPOCRV6__") { throw "AI loader does not expose the expected OCR runtime." }
-          Write-Host "Browser AI resources OK: PP-OCRv6 loader is served by the packaged Next application."
+          $cdn = Invoke-WebRequest -Uri "https://cdn.jsdelivr.net/npm/web-sdk-pp-ocrv6@0.2.0/+esm" -UseBasicParsing -TimeoutSec 20
+          if ($cdn.StatusCode -ne 200) { throw "PP-OCRv6 CDN returned HTTP $($cdn.StatusCode)." }
+          if ($cdn.Content -notmatch "createOCR") { throw "PP-OCRv6 SDK does not expose createOCR." }
+          Write-Host "Browser AI resources OK: packaged app serves the loader and the PP-OCRv6 SDK is reachable."
 
       - name: Smoke-test the actual packaged executable
         shell: pwsh
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           $exe = Join-Path $PWD "dist-electron\win-unpacked\Leilão Pokémon.exe"
           if (!(Test-Path $exe)) { throw "Desktop executable not found: $exe" }
@@ -181,7 +188,11 @@ jobs:
             if ($homepage.Content.Length -lt 1000) { throw "Desktop smoke test failed: homepage HTML is unexpectedly small." }
             if ($homepage.Content -notmatch "Leilão Pokémon") { throw "Desktop smoke test failed: expected app title was not found in homepage HTML." }
 
-            Write-Host "Desktop smoke test OK: packaged .exe started Node 24, Next.js and served the application."
+            $aiLoader = Invoke-WebRequest -Uri "http://127.0.0.1:3000/card-recognition/ppocrv6-loader.mjs" -UseBasicParsing -TimeoutSec 10
+            if ($aiLoader.StatusCode -ne 200) { throw "Desktop smoke test failed: AI loader status $($aiLoader.StatusCode)." }
+            if ($aiLoader.Content -notmatch "web-sdk-pp-ocrv6@0\.2\.0") { throw "Desktop smoke test failed: expected PP-OCRv6 SDK was not referenced." }
+
+            Write-Host "Desktop smoke test OK: packaged .exe started Node 24, Next.js, served the application and exposed the browser AI loader."
           } finally {
             if (Test-Path $env:LEILAO_DESKTOP_LOG_FILE) { Get-Content $env:LEILAO_DESKTOP_LOG_FILE | Write-Host }
             if (!$process.HasExited) {

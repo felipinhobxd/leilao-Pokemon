@@ -16,7 +16,7 @@
     "recognition:index": "node scripts/recognition-index.mjs",
     "desktop:dev": "electron . --dev",
     "desktop:build": "electron-builder --win",
-    "desktop:dist": "npm run build && electron-builder --win"
+    "desktop:dist": "node scripts/build-desktop.mjs && electron-builder --win"
   },
   "dependencies": {
     "@huggingface/transformers": "4.2.0",
@@ -56,22 +56,24 @@
     ],
     "extraResources": [
       {
-        "from": ".",
-        "to": "app",
+        "from": ".next/standalone",
+        "to": "app/.next/standalone",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "bot",
+        "to": "app/bot",
         "filter": [
           "**/*",
-          "!node_modules/.cache/**",
-          "!.next/**",
-          "!dist-electron/**",
-          "!.git/**",
-          "!recognition/.venv/**",
-          "!recognition/models/**",
-          "!recognition/data/**",
-          "!bot/sessao/**",
-          "!bot/backups/**",
-          "!electron/node_modules/**",
-          "!*.exe"
+          "!sessao/**",
+          "!backups/**"
         ]
+      },
+      {
+        "from": "scripts/start-all.mjs",
+        "to": "app/scripts/start-all.mjs"
       }
     ],
     "win": {
@@ -85,11 +87,12 @@
       ]
     },
     "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
+      "oneClick": true,
+      "perMachine": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Leilão Pokémon"
+      "shortcutName": "Leilão Pokémon",
+      "runAfterFinish": true
     }
   }
 }

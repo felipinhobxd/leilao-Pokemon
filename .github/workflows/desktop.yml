@@ -73,10 +73,13 @@ jobs:
         run: npm --prefix bot ci --no-audit --no-fund
 
       - name: Validate desktop entrypoints
+        shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           node --check electron/main.cjs
           node --check scripts/start-all.mjs
           node --check scripts/build-desktop.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build unpacked app and Setup.exe
         run: npx electron-builder --win --publish never --config.directories.output=dist-electron

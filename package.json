@@ -74,6 +74,10 @@
       {
         "from": "scripts/start-all.mjs",
         "to": "app/scripts/start-all.mjs"
+      },
+      {
+        "from": "desktop-runtime/node.exe",
+        "to": "node/node.exe"
       }
     ],
     "win": {

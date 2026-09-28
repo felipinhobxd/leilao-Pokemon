@@ -65,7 +65,7 @@ jobs:
           node --check scripts/build-desktop.mjs
 
       - name: Build unpacked app and Setup.exe
-        run: npx electron-builder --win --config.directories.output=dist-electron
+        run: npx electron-builder --win --publish never --config.directories.output=dist-electron
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

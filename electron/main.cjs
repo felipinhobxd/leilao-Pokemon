@@ -152,17 +152,54 @@ const htmlError = msg => `data:text/html;charset=utf-8,
 
 const SMOKE_MODE = process.env.LEILAO_DESKTOP_SMOKE === "1";
 
+async function waitForRendererContent(timeoutMs = 60_000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (!mainWindow || mainWindow.isDestroyed()) return null;
+    try {
+      const state = await mainWindow.webContents.executeJavaScript(
+        \`(() => {
+          const body = document.body;
+          return {
+            readyState: document.readyState,
+            title: document.title,
+            text: String(body?.innerText || "").trim(),
+            htmlLength: body?.innerHTML?.length || 0,
+          };
+        })()\`,
+        true,
+      );
+      if (
+        state?.readyState === "complete" &&
+        Number(state.htmlLength) > 500 &&
+        String(state.text || "").length > 20
+      ) {
+        return state;
+      }
+    } catch {}
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+  return null;
+}
+
 async function runSmokeMode() {
   try {
-    startupLog("[smoke] iniciando o mesmo runtime usado pelo instalador...");
-    startStack();
-    const ok = await waitForServer(180_000);
-    if (!ok) {
-      startupLog("[smoke] /api/health não respondeu.");
+    startupLog("[smoke] iniciando a mesma janela + runtime usados pelo instalador...");
+    await createWindow();
+    const state = await waitForRendererContent();
+    if (!state) {
+      startupLog("[smoke] o Chromium não renderizou conteúdo da aplicação.");
       app.exit(1);
       return;
     }
-    startupLog("[smoke] /api/health respondeu com sucesso.");
+    if (!String(state.text).includes("Leilão Pokémon")) {
+      startupLog("[smoke] a página carregou, mas o conteúdo esperado não apareceu.");
+      app.exit(1);
+      return;
+    }
+    startupLog(
+      \`[smoke] renderer OK: title="${state.title}", html=${state.htmlLength}, text=${state.text.length} chars.\`,
+    );
     // Keep the Electron process alive until the CI job terminates the executable.
   } catch (error) {
     startupLog(`[smoke] erro de inicialização: ${error?.stack || error}`);

@@ -29,6 +29,22 @@ const db = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_R
   auth: { persistSession: false, autoRefreshToken: false },
 });
 
+async function ensureBotAdminUserId() {
+  if (String(process.env.BOT_ADMIN_USER_ID ?? "").trim()) return process.env.BOT_ADMIN_USER_ID;
+  const { data, error } = await db.from("admin_profiles")
+    .select("user_id")
+    .eq("active", true)
+    .in("role", ["admin", "operator"])
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`Não foi possível descobrir o admin do bot: ${error.message}`);
+  if (!data?.user_id) throw new Error("Nenhum admin/operator ativo encontrado para o bot.");
+  process.env.BOT_ADMIN_USER_ID = String(data.user_id);
+  console.log("BOT_ADMIN_USER_ID não configurado; usando automaticamente um admin/operator ativo do Supabase.");
+  return process.env.BOT_ADMIN_USER_ID;
+}
+
 let child = null;
 let desiredRunning = true;
 let shuttingDown = false;
@@ -194,6 +210,7 @@ function scheduleRestart() {
 }
 
 async function startChild() {
+  await ensureBotAdminUserId();
   if (child || !desiredRunning || shuttingDown) return;
   runtime.status = runtime.sessionActive ? "connecting" : "starting";
   runtime.lastError = null;

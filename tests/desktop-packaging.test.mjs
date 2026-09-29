@@ -59,7 +59,7 @@ test("desktop workflow builds standalone and smoke-tests the real executable bef
 });
 
 
-test("desktop delivery window is 24h and bot cleanup has a 30-day safety floor", () => {
+test("desktop delivery window is 24h and bot cleanup is fixed at 24h", () => {
   const dashboard = read("../app/api/dashboard/route.ts");
   const ui = read("../app/dashboard.tsx");
   const bot = read("../bot/service.mjs");

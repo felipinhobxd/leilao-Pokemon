@@ -903,8 +903,12 @@ const lastStickerByChat = new Map();
 async function maybeCaptureAnnouncementSticker(message) {
   const chatJid = message?.key?.remoteJid;
   if (!chatJid || !message?.message) return;
-  if (message.message.stickerMessage) {
-    lastStickerByChat.set(chatJid, { key: message.key, message: message.message });
+  // Mesma correção dos votos (2026-09-29): em conversas com mensagens
+  // temporárias, figurinha e texto chegam ENCAPSULADOS em ephemeralMessage —
+  // o check direto não via nada e a captura falhava em silêncio.
+  const content = unwrapMessageContent(message.message);
+  if (content?.stickerMessage) {
+    lastStickerByChat.set(chatJid, { key: message.key, message: content });
     // Buffer limitado: só interessa a ÚLTIMA figurinha por chat.
     if (lastStickerByChat.size > 100) {
       const oldest = lastStickerByChat.keys().next().value;
@@ -912,7 +916,7 @@ async function maybeCaptureAnnouncementSticker(message) {
     }
     return;
   }
-  const text = String(message.message.conversation ?? message.message.extendedTextMessage?.text ?? "").trim();
+  const text = String(content?.conversation ?? content?.extendedTextMessage?.text ?? "").trim();
   if (text.toLowerCase() !== "!figurinha") return;
   const sticker = lastStickerByChat.get(chatJid);
   if (!sticker) {

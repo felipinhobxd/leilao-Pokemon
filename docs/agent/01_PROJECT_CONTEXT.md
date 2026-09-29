@@ -53,7 +53,7 @@ Operar leilões recorrentes em grupos de WhatsApp com o mínimo de trabalho manu
 ## Ambiente de execução / variáveis críticas
 
 - **Raiz `.env.local`**: chaves Supabase (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`) + `RECOGNITION_SERVICE_SHARED_SECRET` (mesmo valor do `recognition/.env`).
-- **`bot/.env`**: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `BOT_ADMIN_USER_ID`, `BOT_ADMIN_WA_JIDS` (DMs de aviso; default: 554197285978, 5519989759121), `BOT_CLEANUP_DAYS` (30), `BOT_NIGHT_RESTART_HOUR` (4).
+- **`bot/.env`**: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `BOT_ADMIN_USER_ID`, `BOT_ADMIN_WA_JIDS` (DMs de aviso; default: 554197285978, 5519989759121), retenção fixa de limpeza (24h), `BOT_NIGHT_RESTART_HOUR` (4).
 - **`recognition/.env`** (gitignored): `RECOGNITION_SERVICE_SHARED_SECRET` (≥32 chars), `RECOGNITION_ALLOWED_ORIGINS`, `RECOGNITION_SCAN_CACHE_MB=150`, `RECOGNITION_SIFT_CACHE_MB=48`, `RECOGNITION_IDLE_UNLOAD_MINUTES=10`. Carregado pelo próprio Python (`recognizer/config.py::load_local_env`).
 - Máquina-alvo do operador: Windows, Node 24, Python venv em `recognition/.venv`, GPU AMD RX 570 4 GB (DirectML).
 

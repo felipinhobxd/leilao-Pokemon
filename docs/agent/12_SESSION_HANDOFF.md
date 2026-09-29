@@ -1,7 +1,15 @@
 # SESSION HANDOFF
 
 ## Última atualização
-2026-09-25 (fim do dia: sessão maratona — rascunhos, brinde por carta, avisos com ciclo, figurinha+@all atômico, edição/exclusão de leilões, auto-save, backup na nuvem, DM de falha, 200 cartas, export fix, egress fix, desktop app avaliado)
+2026-09-29 (hotfix do spam "Leilão encerrado: sem comprador" 7x + corrida de conexão)
+
+## Hotfix 2026-09-29 — finalize repetido + corrida de conexão
+- **Sintoma**: 7x "⏰ Leilão encerrado: sem comprador" (grupo + terminal) em ~30s, e foto/lote antes do "@all O leilão vai começar!".
+- **Causa 1 (spam)**: leilão travado em `open` (carta "teste" de 25/09 ficou `in_auction` 4 dias) re-anunciado a CADA ciclo de 5s — o `finalizeDueAuctions` anunciava sempre que o RPC resolvia sem vencedor, sem checar se o leilão realmente fechou, e re-anunciava após falha de envio.
+- **Causa 2 (ordem)**: `connect()` no `open` rodava `void runScheduler()` + `void finalizeDueAuctions()` IMEDIATOS, em paralelo com a sequência de abertura — foto/lote saía antes do @all e o finalize antecipava (anúncio #1 às 15:11:56, antes da fila ser anunciada).
+- **Fix (bot/index.mjs)**: (a) Set `finalizeAnnounced` (cap 200) — um anúncio por `bot-finalize:{id}:{end}`, nunca mais repete; (b) anúncio SÓ quando `result.auction.status` é `closed`/`sold` — resultado sem transição loga `⚠️ Finalize sem transição` UMA vez, sem mensagem no grupo; (c) `auction_not_open` no catch marca o evento como anunciado (fechado por ARREMATE corrida) e `continue`; (d) disparos imediatos do `open` REMOVIDOS — o 1º tick (5s) cobre a reconexão com a ordem garantida (await sendOpeningSequence → scheduler → finalize).
+- **Validação**: bot 38 + 13 testes, typecheck limpo. RPC `process_auction_command` testado DIRETO no banco de produção: open+vencido+0 lances → `closed` (funciona — o spam não era o RPC).
+- **Evidência**: `processed_commands` NÃO tinha nenhum `bot-finalize` de 29/09 (as 7 tentativas falharam no banco silenciosamente); log `bot/logs/bot-2026-09-29.log`.
 
 ## Sessão atual (resumo das 10+ rodadas)
 1. **Rascunhos do wizard em lote** (150000): salvar/abrir/excluir, fotos no Storage, auto-save 45s, apaga ao publicar.

@@ -64,6 +64,10 @@ let sock;
 let schedulerTimer;
 let schedulerBusy = false;
 let finalizeBusy = false;
+// Finalize: um anúncio de encerramento por leilão por processo. O leilão que
+// não sai de 'open' (RPC falho, corrida com compra) não pode re-anunciar
+// "sem comprador" a cada ciclo de 5s — 7x seguidos vistos em 2026-09-29.
+const finalizeAnnounced = new Set();
 let socketReady = false;
 let dispatchQueue = null;
 let voteQueue = Promise.resolve();
@@ -1031,9 +1035,20 @@ async function finalizeDueAuctions() {
     if (error) throw error;
     for (const auction of auctions ?? []) {
       const eventId = `bot-finalize:${auction.id}:${auction.scheduled_end_at}`.slice(0, 200);
+      if (finalizeAnnounced.has(eventId)) continue;
       try {
         const result = await processCommand({ type: "AUCTION_FINALIZE", eventId, auctionId: auction.id });
+        if (finalizeAnnounced.size >= 200) finalizeAnnounced.clear();
+        finalizeAnnounced.add(eventId);
         const finalAuction = result?.auction;
+        const finalStatus = finalAuction?.status;
+        if (finalStatus !== "closed" && finalStatus !== "sold") {
+          // RPC resolveu SEM transição (leilão ainda open/draft): anunciar de
+          // novo a cada ciclo inundaria o grupo — loga UMA vez com o estado
+          // real para decisão humana, sem mensagem no grupo.
+          console.warn(`⚠️ Finalize sem transição (status: ${finalStatus ?? "sem resultado"}): lote ${auction.id} — sem anúncio no grupo.`);
+          continue;
+        }
         if (!auction.whatsapp_group_id) continue;
         const { data: card } = await db.from("cards").select("name").eq("id", auction.card_id).single();
         if (finalAuction?.winner_participant_id) {
@@ -1058,7 +1073,15 @@ async function finalizeDueAuctions() {
           await sock.sendMessage(auction.whatsapp_group_id, { text: `🏁 Leilão de *${card?.name ?? "carta"}* encerrado sem lances válidos.` });
         }
       } catch (error) {
-        if (!String(error?.message || error).includes("auction_not_open")) console.error("Falha ao finalizar leilão:", error?.message || error);
+        const message = String(error?.message || error);
+        if (message.includes("auction_not_open")) {
+          // Esperado (fechado por ARREMATE corrida paralela): garante que o
+          // anúncio não repita no próximo ciclo para o mesmo evento.
+          if (finalizeAnnounced.size >= 200) finalizeAnnounced.clear();
+          finalizeAnnounced.add(eventId);
+          continue;
+        }
+        console.error("Falha ao finalizar leilão:", message);
       }
     }
   } finally { finalizeBusy = false; }
@@ -1126,8 +1149,11 @@ schedulerTimer = setInterval(() => {
         })();
       }, 5000);
       void syncOpenAuctionGroups().catch(error => console.warn("Falha ao sincronizar grupos abertos:", error?.message || error));
-      void runScheduler();
-      void finalizeDueAuctions();
+      // Disparos/finalize imediatos REMOVIDOS: rodavam em paralelo com a
+      // sequência de abertura (regras → figurinha → @all) — invertiam a ordem
+      // no grupo (foto/lote antes do @all), antecipavam o finalize e o
+      // anúncio de encerrado ANTES da fila ser anunciada. O 1º tick (5s)
+      // cobre a recuperação de reconexão com a ordem garantida.
     }
     if (connection === "close") {
       socketReady = false;

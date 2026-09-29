@@ -83,10 +83,10 @@ begin
   -- Os avisos GLOBAIS têm que sobreviver (auction_id NULL + contexto intacto).
   perform pg_temp.cmd(jsonb_build_object('type','AUCTION_FINALIZE','eventId','w-final1','auctionId',a1->>'id'));
   perform pg_temp.cmd(jsonb_build_object('type','AUCTION_FINALIZE','eventId','w-final2','auctionId',a2->>'id'));
-  update public.auctions set ended_at = now() - interval '40 days', updated_at = now() - interval '40 days' where id in ((a1->>'id')::uuid,(a2->>'id')::uuid);
+  update public.auctions set ended_at = now() - interval '2 days', updated_at = now() - interval '40 days' where id in ((a1->>'id')::uuid,(a2->>'id')::uuid);
   declare result jsonb;
   begin
-    result:=public.cleanup_old_auctions;
+    result:=public.cleanup_old_auctions();
     perform pg_temp.check_that((result->'deleted'->>'auctions')::int=2,'cleanup removed both old auctions');
   end;
   perform pg_temp.check_that((select count(*)=0 from public.auctions where id in ((a1->>'id')::uuid,(a2->>'id')::uuid)),'old auctions gone');

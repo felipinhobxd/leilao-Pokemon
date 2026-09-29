@@ -47,7 +47,7 @@ Regras de manutenção (valem para TODOS os arquivos desta pasta):
 ## Estado atual resumido por área
 
 - **Site/API (app/, lib/)** — funcional. Wizard em lote: rascunhos com auto-save, brinde por carta (foto+enquete no lugar do leilão), edição de lote pendente na fila, até 200 cartas. Dashboard: painel de avisos com ciclo de 3, exclusão real de leilão ("sim quero").
-- **Banco (supabase/)** — migrations de 2026-09-24/25 escritas e testadas no CI; algumas pendentes de aplicação manual (ver P-13). Snapshot do dashboard com LIMITs (fix de egress/log). Snapshot do export com LIMITs (fix de timeout). Limpeza de 1 dia (era 30). Máximo 200 cartas por fila.
+- **Banco (supabase/)** — migrations de 2026-09-24/25 escritas e testadas no CI; algumas pendentes de aplicação manual (ver P-13). Snapshot do dashboard com LIMITs (fix de egress/log). Snapshot do export com LIMITs (fix de timeout). Limpeza fixa de 24 horas (era 30 dias). Máximo 200 cartas por fila.
 - **Bot (bot/)** — funcional. Sequência de abertura ATÔMICA: regras → 3s → figurinha → @all (menções reais, todos os JIDs). Nunca duplica, nunca inverte ordem. DM de lote falho para os admins. Avisos: redução de lance conta no ciclo; 3 = DM aos admins + reset; o participante NÃO recebe DM.
 - **Reconhecimento (recognition/)** — funcional. Pipeline ativo VISÍVEL no wizard (chip). Warming backoff: 5s (era 60s cego). Health timeout: 5s (era 1.2s).
 - **Performance/Supabase** — polling global reduzido ~56% (bot 5s, dashboard 30s, Realtime debounce 5s). Log Ingestion era 4.8 GB/dia → estimado ~80-120 MB/dia.

@@ -5,7 +5,7 @@
 --     acumula entre leilões diferentes);
 --  4. 3 avisos => 1 única notificação de admin (idempotente por evento);
 --  5. evento repetido (retry/replay) não gera aviso nem notificação dupla;
---  6. limpeza de 30 dias APAGA os leilões velhos mas PRESERVA os avisos
+--  6. limpeza de 24 horas APAGA os leilões velhos mas PRESERVA os avisos
 --     (auction_id vira NULL, contexto card_name/lot_number continua lá).
 begin;
 insert into auth.users(id) values('00000000-0000-0000-0000-000000000009');
@@ -79,14 +79,14 @@ begin
   perform pg_temp.check_that((select count(*)=4 from public.participant_warnings where participant_id=(p1->>'id')::uuid),'fourth decrease still warns');
   perform pg_temp.check_that((select count(*)=1 from public.admin_notifications where participant_id=(p1->>'id')::uuid),'notification fires only at exactly three');
 
-  -- LIMPEZA: termina os leilões, empurra 40 dias para trás e roda o cleanup.
+  -- LIMPEZA: termina os leilões, empurra 2 dias para trás e roda o cleanup.
   -- Os avisos GLOBAIS têm que sobreviver (auction_id NULL + contexto intacto).
   perform pg_temp.cmd(jsonb_build_object('type','AUCTION_FINALIZE','eventId','w-final1','auctionId',a1->>'id'));
   perform pg_temp.cmd(jsonb_build_object('type','AUCTION_FINALIZE','eventId','w-final2','auctionId',a2->>'id'));
   update public.auctions set ended_at = now() - interval '40 days', updated_at = now() - interval '40 days' where id in ((a1->>'id')::uuid,(a2->>'id')::uuid);
   declare result jsonb;
   begin
-    result:=public.cleanup_old_auctions(30);
+    result:=public.cleanup_old_auctions;
     perform pg_temp.check_that((result->'deleted'->>'auctions')::int=2,'cleanup removed both old auctions');
   end;
   perform pg_temp.check_that((select count(*)=0 from public.auctions where id in ((a1->>'id')::uuid,(a2->>'id')::uuid)),'old auctions gone');

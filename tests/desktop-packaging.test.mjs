@@ -66,7 +66,7 @@ test("desktop delivery window is 24h and bot cleanup is fixed at 24h", () => {
   assert.match(dashboard, /DISPATCH_WINDOW_DAYS = 1/);
   assert.match(ui, /Envios \(24h\)/);
   assert.match(bot, /const days = 1;/);
-  assert.doesNotMatch(bot, /BOT_CLEANUP_DAYS/);
+  assert.match(bot, /BOT_CLEANUP_DAYS é ignorado/);
   assert.doesNotMatch(bot, /Math\.max\(30/);
   assert.match(bot, /ensureCloudBackupForCleanup/);
   assert.match(bot, /backup_cloud_copy_missing/);

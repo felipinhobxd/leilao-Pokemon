@@ -51,19 +51,15 @@ Próximo passo: operador copiar o valor para a Vercel (server-only) → redeploy
 ```text
 ID: P-14
 Título: Conversão para aplicativo desktop (.exe) — Electron wrapper
-Prioridade: Baixa (o sistema já roda 100% local com npm run start; o Electron só colocaria janela nativa)
-Status: AVALIAÇÃO FEITA (2026-09-25) — Electron wrapper recomendado (NÃO SQLite/rewrite completo):
-  - Electron main.cjs abre janela nativa carregando http://localhost:3000
-  - [spawn] bot (node bot/index.mjs) como processo filho
-  - [spawn] reconhecimento (Python .venv) como processo filho
-  - Supabase CONTINUA como banco (grátis, já configurado, o bot fala direto com ele)
-  - electron-builder → Setup.exe + auto-update via GitHub Releases
-  - GitHub Actions: build electron + upload artifact na aba Releases
-Próximo passo: se o operador confirmar que quer isso, criar pasta electron/ com main.cjs, preload, package.json do builder e workflow .yml.
+Status: ❌ CANCELADO PELO OPERADOR (2026-09-29) — a ideia do .exe foi REMOVIDA do projeto:
+  electron/, desktop.yml (workflow), scripts/build-desktop.mjs, tests/desktop-packaging.test.mjs,
+  deps electron/electron-builder e a config do builder foram apagadas. O projeto é 100% web:
+  painel na Vercel + bot local (npm run start / serviço do Windows) + serviço de reconhecimento local.
+Não reabrir. Novo trabalho = melhorias web/bot.
 ```
 
 ## Não confirmado / fora de escopo atual
 
 - Supabase Log Ingestion: 0.96/1 GB no free plan — polling reduzido ~56%, mas os logs acumulados só resetam no próximo ciclo de billing. Monitorar.
-- Conversão para desktop: avaliada mas NÃO iniciada — o operador pediu passo a passo mas a decisão final sobre Electron vs. rewrite SQLite é dele.
+- Conversão para desktop: ❌ CANCELADA pelo operador (2026-09-29) — toda a ideia .exe/Electron foi removida do repositório.
 - Limitless como fonte do catálogo: cliente pronto, `LIMITLESS_API_KEY` nunca configurado.

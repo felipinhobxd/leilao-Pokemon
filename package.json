@@ -13,10 +13,7 @@
     "start:web": "next start",
     "recognition:install": "node scripts/recognition-install.mjs",
     "recognition:local": "node scripts/recognition-local.mjs",
-    "recognition:index": "node scripts/recognition-index.mjs",
-    "desktop:dev": "electron . --dev",
-    "desktop:build": "node scripts/build-desktop.mjs && electron-builder --win",
-    "desktop:dist": "node scripts/build-desktop.mjs && electron-builder --win"
+    "recognition:index": "node scripts/recognition-index.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "4.2.0",
@@ -33,72 +30,11 @@
     "@types/node": "24.3.0",
     "@types/react": "19.1.12",
     "@types/react-dom": "19.1.9",
-    "electron": "^33.4.11",
-    "electron-builder": "^25.1.8",
     "libsodium-wrappers": "^0.8.4",
     "tweetnacl": "^1.0.3",
     "typescript": "7.0.2"
   },
   "overrides": {
     "onnxruntime-node": "file:stubs/onnxruntime-node"
-  },
-  "main": "electron/main.cjs",
-  "build": {
-    "appId": "com.leilaopokemon.desktop",
-    "productName": "Leilão Pokémon",
-    "directories": {
-      "output": "dist-electron",
-      "buildResources": "electron"
-    },
-    "files": [
-      "electron/**/*",
-      "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": ".next/standalone",
-        "to": "app/.next/standalone",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
-        "from": "bot",
-        "to": "app/bot",
-        "filter": [
-          "**/*",
-          "!sessao/**",
-          "!backups/**",
-          "!**/.env",
-          "!**/.env.*"
-        ]
-      },
-      {
-        "from": "scripts/start-all.mjs",
-        "to": "app/scripts/start-all.mjs"
-      },
-      {
-        "from": "desktop-runtime/node.exe",
-        "to": "node/node.exe"
-      }
-    ],
-    "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
-      ]
-    },
-    "nsis": {
-      "oneClick": true,
-      "perMachine": false,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "Leilão Pokémon",
-      "runAfterFinish": true
-    }
   }
 }

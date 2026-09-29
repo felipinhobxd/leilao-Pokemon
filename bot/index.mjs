@@ -13,7 +13,7 @@ import { dispatchMessageId, dispatchPollSecret } from "./dispatch-id.mjs";
 import { buildAuctionCaption } from "./format.mjs";
 import { phoneFromWhatsAppJid, syncGroupParticipants } from "./group-participants.mjs";
 import { isLidJid, isPhoneJid, normalizeUserJid } from "./poll-identities.mjs";
-import { decryptIncomingPollVote } from "./poll-votes.mjs";
+import { decryptIncomingPollVote, unwrapMessageContent } from "./poll-votes.mjs";
 import { createAdminNotificationDrain, parseAdminJids } from "./warning-notify.mjs";
 import { resolveParticipantJid, mentionMessage } from "./participant-contact.mjs";
 import { createPaymentReminderDrain } from "./payment-reminder.mjs";
@@ -793,8 +793,12 @@ async function loadDispatchForPoll(pollMessageId) {
   return { dispatch: remote.data ?? null, cached };
 }
 
-async function processIncomingPollMessage(message) {
-  const creationKey = message?.message?.pollUpdateMessage?.pollCreationMessageKey;
+async function processIncomingPollMessage(message, contentOverride) {
+  // Votos chegam às vezes ENCAPSULADOS (ephemeralMessage etc.) — o conteúdo
+  // real é extraído uma vez aqui e em handleIncomingMessages com o MESMO
+  // helper, para o voto nunca mais cair no fluxo de "mensagem comum".
+  const content = contentOverride ?? unwrapMessageContent(message?.message);
+  const creationKey = content?.pollUpdateMessage?.pollCreationMessageKey;
   const pollMessageId = creationKey?.id;
   if (!pollMessageId) return;
 
@@ -830,8 +834,13 @@ async function processIncomingPollMessage(message) {
   };
 
   try {
-    const decrypted = await decryptIncomingPollVote({ sock, message, pollMessage, pollKey });
-    if (!decrypted) return;
+    const decrypted = await decryptIncomingPollVote({ sock, message, content, pollMessage, pollKey });
+    if (!decrypted) {
+      // Atualização de enquete SEM payload de voto (ex.: snapshot/sincronismo):
+      // antes era silêncio total — agora fica rastreável no terminal.
+      console.warn(`Atualização de enquete sem payload de voto: ${pollMessageId} — ignorada.`);
+      return;
+    }
     await handlePollVote(dispatch, decrypted.pollUpdate, pollMessage);
   } catch (error) {
     const diagnostic = error?.diagnostic ?? {};
@@ -847,7 +856,7 @@ async function processIncomingPollMessage(message) {
 
 async function enrichParticipantFromMessage(message) {
   const groupJid = String(message?.key?.remoteJid ?? "");
-  if (!trackedGroupJids.has(groupJid) || message?.message?.pollUpdateMessage) return;
+  if (!trackedGroupJids.has(groupJid) || unwrapMessageContent(message?.message)?.pollUpdateMessage) return;
   const senderJids = uniqueUserJids([message?.key?.participant, message?.key?.participantAlt]);
   const now = Date.now();
   if (senderJids.length && senderJids.every(jid => {
@@ -866,8 +875,13 @@ async function enrichParticipantFromMessage(message) {
 async function handleIncomingMessages(messages) {
   for (const message of messages ?? []) {
     rememberMessageSender(message);
-    if (message?.message?.pollUpdateMessage?.pollCreationMessageKey?.id) {
-      await processIncomingPollMessage(message);
+    // CORREÇÃO DO VOTO (2026-09-29): o check era DIRETO em
+    // message.message.pollUpdateMessage — votos encapsulados em
+    // ephemeralMessage (grupos com mensagens temporárias) nunca eram
+    // reconhecidos como voto e morriam no fluxo de "mensagem comum".
+    const content = unwrapMessageContent(message?.message);
+    if (content?.pollUpdateMessage?.pollCreationMessageKey?.id) {
+      await processIncomingPollMessage(message, content);
     } else {
       // P-05: buffer da última figurinha por chat (o WhatsApp não expõe ID
       // nenhum ao usuário) + comando !figurinha na MESMA conversa captura.

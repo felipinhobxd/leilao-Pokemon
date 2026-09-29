@@ -97,46 +97,19 @@ export function startAll(commands) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   try {
-    const desktopStandalone = process.env.LEILAO_DESKTOP_STANDALONE === '1';
-    const standaloneRoot = path.join(root, '.next', 'standalone');
-    const requiredFiles = desktopStandalone
-      ? ['.next/standalone/server.js', 'bot/node_modules/@whiskeysockets/baileys/package.json']
-      : ['.next/BUILD_ID', 'node_modules/next/dist/bin/next', 'bot/.env', 'bot/node_modules/@whiskeysockets/baileys/package.json'];
+    const requiredFiles = ['.next/BUILD_ID', 'node_modules/next/dist/bin/next', 'bot/.env', 'bot/node_modules/@whiskeysockets/baileys/package.json'];
     for (const file of requiredFiles) {
       try { await access(path.join(root, file)); }
-      catch {
-        const hint = desktopStandalone
-          ? 'O instalador desktop está incompleto: o servidor Next.js standalone não foi empacotado.'
-          : 'Execute npm.cmd ci, npm.cmd --prefix bot ci e npm.cmd run build; configure bot/.env.';
-        throw new Error(`Ausente: ${file}. ${hint}`);
-      }
+      catch { throw new Error(`Ausente: ${file}. Execute npm.cmd ci, npm.cmd --prefix bot ci e npm.cmd run build; configure bot/.env.`); }
     }
     const commands = [
-      desktopStandalone
-        ? {
-            cwd: standaloneRoot,
-            args: [path.join(standaloneRoot, 'server.js')],
-            env: {
-              ...process.env,
-              HOSTNAME: '127.0.0.1',
-              PORT: process.env.LEILAO_DESKTOP_PORT || '3000',
-            },
-          }
-        : { cwd: root, args: [path.join(root, 'node_modules/next/dist/bin/next'), 'start', ...process.argv.slice(2)] },
-      desktopStandalone
-        ? {
-            cwd: path.join(root, 'bot'),
-            args: ['service.mjs'],
-            env: process.env,
-            optional: true,
-            label: 'bot WhatsApp',
-          }
-        : {
-            cwd: path.join(root, 'bot'),
-            args: ['--env-file=.env', 'service.mjs'],
-            optional: false,
-            label: 'bot WhatsApp',
-          },
+      { cwd: root, args: [path.join(root, 'node_modules/next/dist/bin/next'), 'start', ...process.argv.slice(2)] },
+      {
+        cwd: path.join(root, 'bot'),
+        args: ['--env-file=.env', 'service.mjs'],
+        optional: false,
+        label: 'bot WhatsApp',
+      },
     ];
     // Local recognition service (optional): two-route pipeline (visual + OCR).
     // Not installed -> the site silently uses the in-browser fallback pipeline.

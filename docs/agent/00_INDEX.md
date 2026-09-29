@@ -41,7 +41,7 @@ Regras de manutenção (valem para TODOS os arquivos desta pasta):
 | 08 | `08_AUCTION_DOMAIN.md` | Domínio de leilão | Estável; exclusão real de leilão; ciclo de 3; brinde na fila | 2026-09-25 |
 | 09 | `09_TESTS_AND_VALIDATION.md` | Testes e validação | Estável — Node 171, bot 38, Python 252, typecheck, build, 12 SQL test files | 2026-09-25 |
 | 10 | `10_SECURITY_AND_PERFORMANCE.md` | Segurança e performance | ⚠️ Supabase Log Ingestion quase no limite (0.96/1 GB); polling reduzido ~56% | 2026-09-25 |
-| 11 | `11_PENDING_WORK.md` | Trabalho pendente | 🔴 Migrations para aplicar + P-11 Vercel + desktop app conversão | 2026-09-25 |
+| 11 | `11_PENDING_WORK.md` | Trabalho pendente | 🔴 Migrations para aplicar + P-11 Vercel; P-14 (.exe) CANCELADO e removido | 2026-09-29 |
 | 12 | `12_SESSION_HANDOFF.md` | Checkpoint da sessão | Atualizado a cada sessão | 2026-09-25 |
 
 ## Estado atual resumido por área
@@ -55,7 +55,7 @@ Regras de manutenção (valem para TODOS os arquivos desta pasta):
 
 ## Próxima área recomendada
 
-Ver **`11_PENDING_WORK.md`** e **`12_SESSION_HANDOFF.md`**. Trabalho imediato: **aplicar migrations pendentes** (P-13). Backlog: **P-11** (secret na Vercel), **conversão para desktop .exe** (avaliação feita — Electron wrapper recomendado, não SQLite).
+Ver **`11_PENDING_WORK.md`** e **`12_SESSION_HANDOFF.md`**. Trabalho imediato: **aplicar migrations pendentes** (P-13). Backlog: **P-11** (secret na Vercel). A conversão para desktop .exe foi **CANCELADA e removida** do repositório (2026-09-29) — o projeto é 100% web.
 
 ## Comandos oficiais (referência rápida — detalhes em `09_TESTS_AND_VALIDATION.md`)
 

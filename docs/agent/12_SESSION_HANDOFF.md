@@ -29,12 +29,12 @@
 15. **Auto-save de rascunho**: 45s, fingerprint, silencioso em falha.
 
 ## Ponto EXATO onde paramos
-Tudo concluído, testado e publicado. CI verde. Migrations PENDENTES de aplicação manual (P-13 — ver 11_PENDING_WORK.md). O operador também pediu avaliação de conversão para desktop .exe (P-14 — Electron wrapper recomendado, não SQLite).
+2026-09-29 (sessão de auditoria geral): (1) hotfix do spam "sem comprador" 7x no finalize; (2) CORREÇÃO RAIZ DOS VOTOS — votos de enquete encapsulados em ephemeralMessage nunca eram reconhecidos (check direto message.message.pollUpdateMessage); unwrapMessageContent agora normaliza em handleIncomingMessages/processIncomingPollMessage/decryptIncomingPollVote; (3) ideia .exe/Electron REMOVIDA por completo (P-14 cancelado). Migrations PENDENTES de aplicação manual (P-13 — ver 11_PENDING_WORK.md).
 
 ## Próximo passo EXATO
-1. **OPERADOR (P-13)**: aplicar as 6 migrations pendentes no SQL Editor (ordem lexical, ver 11_PENDING_WORK.md) → `npm run doctor` → smokes.
-2. **OPERADOR (P-11)**: secret na Vercel → chip "serviço local ✅" no painel publicado.
-3. **OPERADOR**: decidir sobre P-14 (desktop Electron vs. continuar como está).
+1. **OPERADOR**: reiniciar o bot (npm run start) e testar um voto numa enquete de um grupo NOVO (mensagens temporárias) — o terminal deve logar "🗳️ Voto recebido".
+2. **OPERADOR (P-13)**: aplicar as migrations pendentes no SQL Editor (ver 11_PENDING_WORK.md) → `npm run doctor` → smokes.
+3. **OPERADOR (P-11)**: secret na Vercel → chip "serviço local ✅" no painel publicado.
 4. Se novo trabalho: `npm run build` ANTES do `npm run start` (o build local precisa ter os últimos fixes).
 
 ## Arquivos de código prioritários

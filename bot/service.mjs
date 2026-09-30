@@ -22,7 +22,13 @@ const WORKER_ID = process.env.BOT_WORKER_ID || `bot-${process.pid}`;
 const SESSION_DIR = path.resolve(here, process.env.WHATSAPP_SESSION_DIR || "./sessao");
 const HEARTBEAT_MS = Math.min(15_000, Math.max(10_000, Number(process.env.BOT_HEARTBEAT_SECONDS || 12) * 1000));
 const QR_TTL_MS = Math.min(180_000, Math.max(45_000, Number(process.env.BOT_QR_TTL_SECONDS || 90) * 1000));
-const AUTO_GROUP_SYNC_MAX_AGE_MS = 5 * 60_000;
+// Janela de "grupos frescos" para o sync AUTOMÁTICO (2026-09-30: era 5 min —
+// como o bot fica desligado entre leilões, a janela estava SEMPRE vencida no
+// boot e o supervisor matava o bot 750ms após conectar para rodar o sync,
+// que é o que fazia "conectar demorar MUITO" com um conectado falso +
+// reconexão de ~60-90s. Grupos raramente mudam: 6h cobre o restart noturno
+// sem dance; o botão "Atualizar grupos" segue manual e imediato).
+const AUTO_GROUP_SYNC_MAX_AGE_MS = 6 * 60 * 60_000;
 const packageJson = JSON.parse(await readFile(new URL("./package.json", import.meta.url), "utf8"));
 const BOT_VERSION = String(packageJson.version || "0.0.0");
 
@@ -110,7 +116,16 @@ async function publishState(patch = {}) {
     runtime.sessionActive = session.sessionActive;
     if (session.accountJid) runtime.accountJid = session.accountJid;
     const now = new Date().toISOString();
-    const { error } = await db.from("whatsapp_bot_workers").upsert({
+    // Guard de 10s (2026-09-30): um upsert do status pode ficAR pendurado
+    // num Supabase degradado (statement timeout). Sem o race, publishBusy
+    // travava para sempre e o site mostrava "desconectado" mesmo com o bot
+    // no ar — o heartbeat nunca mais atualizava a linha do worker.
+    const timeout = new Promise(resolve => {
+      const timer = setTimeout(() => resolve({ error: new Error("timeout de 10s ao publicar status (Supabase sem responder)") }), 10_000);
+      timer.unref?.();
+    });
+    const { error } = await Promise.race([
+      db.from("whatsapp_bot_workers").upsert({
       worker_id: WORKER_ID,
       status: runtime.status,
       heartbeat_at: now,
@@ -124,7 +139,9 @@ async function publishState(patch = {}) {
       version: BOT_VERSION,
       session_active: runtime.sessionActive,
       updated_at: now,
-    }, { onConflict: "worker_id" });
+      }, { onConflict: "worker_id" }),
+      timeout,
+    ]);
     if (error) console.error("Falha ao publicar status do bot:", error.message);
   } catch (error) {
     console.error("Falha ao publicar status do bot:", error?.message || error);
@@ -618,6 +635,27 @@ cleanupTimer.unref?.();
 backupTimer = setInterval(() => void dailyBackup(), 10 * 60_000);
 backupTimer.unref?.();
 console.log(`Supervisor iniciado. Worker: ${WORKER_ID} — versao ${BOT_VERSION}`);
+// BOOT SYNC (2026-09-30): grupos desatualizados são sincronizados ANTES da
+// primeira conexão. Antes o fluxo era: conectar → matar 750ms depois →
+// sync ~90s → reconectar ~60s (o "✅ conectado" falso + espera de minutos
+// que o operador via). Agora: sync (quando realmente vencido) → UMA conexão
+// real. Sem sessão ativa ainda (primeira instalação) o sync é pulado para o
+// QR aparecer imediatamente.
+if (!groupsSyncIsFresh()) {
+  const bootSession = await readSessionInfo();
+  if (bootSession.sessionActive) {
+    console.log("Grupos desatualizados — sincronizando ANTES de conectar (uma única conexão, sem restart no meio)…");
+    try {
+      await publishState({ status: "connecting", lastError: null });
+      await runGroupSync();
+    } catch (error) {
+      // O sync no boot é best-effort: o bot conecta mesmo assim e o
+      // operador pode rodar "Atualizar grupos" quando quiser.
+      runtime.lastError = String(error?.message || error).slice(0, 1000);
+      console.error("Falha na sincronização de grupos no boot:", error?.message || error);
+    }
+  }
+}
 await startChild();
 void pollBotCommands();
 void cleanupOldAuctions();

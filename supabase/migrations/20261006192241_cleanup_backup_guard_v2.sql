@@ -69,6 +69,6 @@ begin
   'vote_state',n_votes,'dispatches',n_dispatches,'queues',n_queues,'events',n_events,'bids',n_bids,
   'value_changes',n_changes,'auctions',n_auctions,'cards',n_cards));
 end
-$function$
+$function$;
 
 commit;

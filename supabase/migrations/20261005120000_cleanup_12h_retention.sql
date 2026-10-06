@@ -14,6 +14,7 @@ set search_path=''
 as $function$
 declare
  cutoff timestamptz:=clock_timestamp()-make_interval(hours=>greatest(coalesce(p_hours,12),1));
+ card_ids uuid[];
  n_payments bigint:=0; n_deliveries bigint:=0; n_purchases bigint:=0; n_warnings bigint:=0; n_votes bigint:=0;
  n_dispatches bigint:=0; n_queues bigint:=0; n_events bigint:=0; n_bids bigint:=0; n_changes bigint:=0;
  n_auctions bigint:=0; n_cards bigint:=0; n_tmp bigint:=0;

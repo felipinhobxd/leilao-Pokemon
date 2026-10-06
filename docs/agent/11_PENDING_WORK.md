@@ -2,7 +2,7 @@
 
 > Área: Backlog
 > Escopo: Bugs, melhorias, features pedidas pelo operador, dívidas, testes faltantes
-> Última atualização: 2026-09-25
+> Última atualização: 2026-10-05
 > Fonte principal: pedidos explícitos do operador nas sessões de trabalho + diagnóstico das sessões
 
 ## Migrations para aplicar (P-13 — ação do OPERADOR)
@@ -19,34 +19,22 @@ PENDENTES (ordem lexical):
   4. 20260924220000_auction_lot_sequence_no_drift.sql    (RECONCILIADA — se já colou a original, cole esta por cima)
   5. 20260925140000_max200_export_limits.sql             (200 cartas + export com LIMITs)
   6. 20260925150000_dashboard_snapshot_limits.sql       (LIMITs no snapshot do dashboard — fix de egress/log)
-Próximo passo: colar as 6 no SQL Editor → `npm run doctor` → smokes:
+  7. 20261005120000_cleanup_12h_retention.sql            (limpeza 12h — RETENÇÃO NOVA, pedido do operador;
+     redefine o RPC por completo com parâmetro p_hours, então substitui a 20260929191637/24h em
+     qualquer estado: se a de 24h ainda não foi colada, cole SÓ esta. O bot já chama p_hours=12.)
+  8. 20261005130000_drop_card_recognition_examples.sql   (REMOÇÃO DO RECONHECIMENTO: apaga a tabela
+     card_recognition_examples — memória de IA que não existe mais. Opcional, mas recomendado.)
+Próximo passo: colar as 8 no SQL Editor → `npm run doctor` → smokes:
   (a) excluir leilão de teste ("sim quero") some do Excel
   (b) 3+3 reduções → 2 DMs de ciclo (com reset)
   (c) editar lote pendente na fila
   (d) export Excel funciona sem timeout
   (e) backup com cloudPath no log
   (f) regras+figurinha+@all na próxima fila (ordem correta, sem duplicar)
+  (g) limpeza 12h: leilão terminal de 13h some no próximo ciclo; aberto/recente NUNCA é tocado
 ```
 
 ## Bugs / Features pendentes
-
-```text
-ID: P-04
-Título: SigLIP2 quantizado (fp16/int8) para PC fraco
-Prioridade: Média (meta declarada: "rodar até num PC meio ruim")
-Status: Não iniciado (estacionado — a qualidade depende da FOTO, não da velocidade)
-Arquivos relacionados: recognition/scripts/download_models.py, calibrate_thresholds.py, benchmark.py; recognizer/config.py
-Próximo passo: rodar scripts/bakeoff_embeddings.py com o candidato quantizado nas fixtures existentes.
-```
-
-```text
-ID: P-11
-Título: Vercel — RECOGNITION_SERVICE_SHARED_SECRET como env server-only
-Prioridade: Alta para quem usa o painel publicado (senão pipeline do navegador no Vercel)
-Status: Aguardando configuração do operador (feito localmente; falta na Vercel)
-Arquivos relacionados: .env.local (valor de referência), painel Vercel → Settings → Environment Variables
-Próximo passo: operador copiar o valor para a Vercel (server-only) → redeploy → chip "serviço local ✅" no domínio publicado.
-```
 
 ```text
 ID: P-14
@@ -54,12 +42,22 @@ Título: Conversão para aplicativo desktop (.exe) — Electron wrapper
 Status: ❌ CANCELADO PELO OPERADOR (2026-09-29) — a ideia do .exe foi REMOVIDA do projeto:
   electron/, desktop.yml (workflow), scripts/build-desktop.mjs, tests/desktop-packaging.test.mjs,
   deps electron/electron-builder e a config do builder foram apagadas. O projeto é 100% web:
-  painel na Vercel + bot local (npm run start / serviço do Windows) + serviço de reconhecimento local.
+  painel na Vercel + bot local (npm run start / serviço do Windows).
 Não reabrir. Novo trabalho = melhorias web/bot.
+```
+
+```text
+ID: P-15
+Título: Reconhecimento automático de cartas (IA/OCR/Python)
+Status: ❌ REMOVIDO PELO OPERADOR (2026-10-05) — toda a IA saiu do projeto:
+  recognition/ (serviço Python, modelos, catálogo, ~7 GB de artefatos locais), lib/card-recognition-*,
+  lib/card-catalog.ts (validação morta — collection não vinha da UI), /api/card-recognition/*, UI do wizard,
+  scripts, workflows, benchmarks, docs, testes, dependências (@huggingface/transformers, onnxruntime-common,
+  stubs) e a tabela card_recognition_examples (migration 20261005130000).
+Não reabrir. Cadastro de cartas é 100% manual.
 ```
 
 ## Não confirmado / fora de escopo atual
 
 - Supabase Log Ingestion: 0.96/1 GB no free plan — polling reduzido ~56%, mas os logs acumulados só resetam no próximo ciclo de billing. Monitorar.
 - Conversão para desktop: ❌ CANCELADA pelo operador (2026-09-29) — toda a ideia .exe/Electron foi removida do repositório.
-- Limitless como fonte do catálogo: cliente pronto, `LIMITLESS_API_KEY` nunca configurado.

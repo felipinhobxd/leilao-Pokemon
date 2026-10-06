@@ -1,19 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import RecognitionDebug from "./recognition-debug";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { buildCustomValuesPlan, buildPollPlan, cardConditions, cardLanguages, DEFAULT_POLL_OPTIONS, GIVEAWAY_DEFAULT_OPTIONS, MAX_POLL_OPTIONS, parseCustomValues } from "@/lib/auction-wizard";
 import { brasiliaInputToIso, formatBrasiliaDateTime, formatBrasiliaTime, toBrasiliaInput } from "@/lib/brasilia-time";
 import { uploadCardImageBatch, type CardImageStage, type CardImageUploadFailure } from "@/lib/card-image";
-import { AUCTION_DRAFT_MAX_BYTES, auctionDraftJson, buildDraftState, buildDraftTitle, restoreDraftState, type AuctionDraftCandidate } from "@/lib/auction-draft";
-import { mergeRecognitionFields, type ManualFieldMap, type RecognitionCandidate, type RecognitionResult, type RecognizableField } from "@/lib/card-recognition-core";
-import { cachedServiceWarming, confirmRecognitionMemory, probeRecognitionPipeline, recognizePokemonCard, shutdownCardRecognition, imageRecognitionEnabled, imageRecognitionPreferenceEvent, type RecognitionPipelineKind } from "@/lib/card-recognition-local";
+import { AUCTION_DRAFT_MAX_BYTES, auctionDraftJson, buildDraftState, buildDraftTitle, restoreDraftState } from "@/lib/auction-draft";
 import { createPublicSupabaseClient } from "@/lib/supabase";
 
 type Group = { id: string; name: string; is_default: boolean };
-type RecognitionStage = "idle" | "queued" | "analyzing" | "identified" | "review" | "not-found" | "error" | "unavailable";
 type Draft = {
   id: string; file: File | null; preview: string; imageUrl: string; imageStage: CardImageStage; imageMessage: string;
   extraFiles: File[]; extraImages: string[]; extraPreviews: string[];
@@ -21,8 +17,6 @@ type Draft = {
   pricingMode: "increment" | "custom"; customValues: string; customBuyoutLast: boolean;
   giveaway: boolean; giveawayOptions: string;
   lotNumber: string; startingPrice: string; increment: string; buyout: string; durationMinutes: string; optionCount: string; expanded: boolean;
-  recognitionResult?: RecognitionResult;
-  recognitionStage: RecognitionStage; recognitionConfidence: number | null; recognitionMessage: string; recognitionCandidates: RecognitionCandidate[]; manualFields: ManualFieldMap;
 };
 type QueueView = {
   queue: { id: string; status: string; interval_seconds: number; starts_at: string; total_items: number };
@@ -39,20 +33,14 @@ type QueueView = {
 type DraftSummary = { id: string; title: string; updated_at: string };
 
 const variants = ["Normal", "Holo", "Reverse Holo", "Full Art", "Illustration Rare", "Secret Rare", "Promo"];
-// Idioma aceito pelo dropdown do wizard (cardLanguages é a fonte da API):
-// qualquer outro valor (ex.: "es" do catálogo de texto) vira "Outro".
-const wizardLanguage = (value: string | undefined) =>
-  cardLanguages.some(item => item.value === value) ? (value as Draft["language"]) : "other";
-const recognizableFields = new Set<RecognizableField>(["name", "collection", "cardNumber", "language", "variant"]);
 const money = (value: number | null) => value == null || !Number.isFinite(value) ? "—" : new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
 const defaultSchedule = () => toBrasiliaInput(new Date(Date.now() + 5 * 60_000));
 
 // Wizard previews are DOWNSCALED to this size before entering the DOM. Phone
 // photos are 12 MP+; rendering 20-50 of them at full size forces the main
-// thread to decode hundreds of millions of pixels (the reported "UI freezes
-// during/after recognition"). A ~560 px JPEG is visually identical in the
-// thumbnail/large-preview slots and decodes ~50x cheaper. Uploads still use
-// the ORIGINAL card.file.
+// thread to decode hundreds of millions of pixels. A ~560 px JPEG is visually
+// identical in the thumbnail/large-preview slots and decodes ~50x cheaper.
+// Uploads still use the ORIGINAL card.file.
 const PREVIEW_MAX_SIDE = 560;
 
 async function makePreviewUrl(file: File): Promise<string> {
@@ -86,39 +74,7 @@ function draftFor(file: File | null, preview: string, lot: number, expanded: boo
     giveaway: false, giveawayOptions: GIVEAWAY_DEFAULT_OPTIONS,
     variant: "Normal", condition: cardConditions[0], language: "pt-BR", lotNumber: String(lot), startingPrice: "5", increment: "1",
     buyout: "", durationMinutes: "2", optionCount: String(DEFAULT_POLL_OPTIONS), expanded,
-    recognitionStage: file ? "idle" : "unavailable", recognitionConfidence: null, recognitionMessage: file ? "Aguardando reconhecimento local" : "Adicione uma imagem para reconhecer", recognitionCandidates: [], manualFields: {},
   };
-}
-
-function recognitionLabel(card: Draft) {
-  const localPipeline = (card.recognitionResult as { localPipeline?: { languageStatus?: string } } | undefined)?.localPipeline;
-  const uncertainLanguage = localPipeline?.languageStatus === "uncertain";
-  // Impressão pt-BR anterior a 2011 (Devir): o catálogo só tem a gêmea EN —
-  // identidade correta, entrada em inglês por construção do catálogo.
-  const devirPtPre2011 = localPipeline?.languageStatus === "pt-br-pre-2011";
-  if (card.recognitionStage === "not-found" && (card.recognitionResult as { decisionStatus?: string } | undefined)?.decisionStatus === "REVISAR") return "🔎 Evidências insuficientes ou conflitantes · revisar";
-  if (card.recognitionStage === "identified") return card.recognitionMessage === "Candidato escolhido manualmente" ? "✅ Carta escolhida manualmente"
-    : devirPtPre2011 ? "✅ Carta identificada · impressão pt-BR pré-2011 (catálogo tem a versão EN)"
-    : uncertainLanguage ? `✅ Carta identificada · ${card.language} (idioma incerto — revise)` : "✅ Carta identificada";
-  if (card.recognitionStage === "review") return devirPtPre2011 ? "🟡 Carta provável · impressão pt-BR pré-2011 (catálogo tem a versão EN)"
-    : uncertainLanguage ? `🟡 Carta provável · ${card.language} (idioma incerto — revise)` : "🟡 Carta provável · verifique os dados";
-  if (card.recognitionStage === "not-found") return "🔴 Não consegui identificar com segurança";
-  if (card.recognitionStage === "error") return "⚠ Reconhecimento indisponível";
-  if (card.recognitionStage === "queued") return "🔍 Na fila de reconhecimento…";
-  if (card.recognitionStage === "analyzing") return `🔍 ${card.recognitionMessage || "Analisando localmente…"}`;
-  return card.recognitionMessage;
-}
-
-// Rascunho restaurado não tem o File local: os candidatos vêm pelo payload —
-// normalizados de volta para a forma completa de RecognitionCandidate
-// (hp/image são metadados de exibição que os botões de candidato não usam).
-function draftCandidates(list: AuctionDraftCandidate[]): RecognitionCandidate[] {
-  return list.map(candidate => ({
-    id: candidate.id, name: candidate.name, collection: candidate.collection, cardNumber: candidate.cardNumber,
-    localId: candidate.localId, denominator: candidate.denominator,
-    language: candidate.language as RecognitionCandidate["language"],
-    hp: null, image: null, variant: candidate.variant ?? undefined, score: candidate.score,
-  }));
 }
 
 export default function BulkAuctionWizard() {
@@ -151,18 +107,15 @@ export default function BulkAuctionWizard() {
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
   const [draftBusy, setDraftBusy] = useState(false);
   const [draftNotice, setDraftNotice] = useState("");
-  const [recognitionPipeline, setRecognitionPipeline] = useState<"checking" | RecognitionPipelineKind>("checking");
   const [editingItem, setEditingItem] = useState<QueueView["items"][number] | null>(null);
   const previewUrls = useRef(new Set<string>());
-  const recognitionInFlight = useRef(new Set<string>());
   const submission = useRef<{ fingerprint: string; eventId: string } | null>(null);
   const lastSavedDraftFingerprint = useRef<string | null>(null);
   const autoSaveDisabled = useRef(false);
   const saveDraftRef = useRef<(auto?: boolean) => Promise<void>>(async () => {});
 
   // Auto-save do rascunho: fingerprint do estado atual vs o último salvo; um
-  // intervalo de 45s evita debounce no cada tecla. Mutações transientes de
-  // reconhecimento (stage/mensagens) NÃO contam — só o que muda o rascunho.
+  // intervalo de 45s evita debounce no cada tecla.
   function currentDraftFingerprint() {
     if (!cards.length) return null;
     return auctionDraftJson(buildDraftState({
@@ -171,9 +124,6 @@ export default function BulkAuctionWizard() {
         ...card,
         imageUrl: card.imageUrl,
         extraImages: card.extraImages.length ? card.extraImages : [],
-        recognitionStage: "idle",
-        recognitionMessage: "",
-        recognitionCandidates: [],
       })),
     }));
   }
@@ -181,10 +131,10 @@ export default function BulkAuctionWizard() {
 
 
   // Auto-save ESTAVEL: o timer nasce UMA vez por sessao/fila (nao a cada
-  // render — o efeito antigo sem deps resetava os 45s a cada tecla e a cada
-  // progresso de reconhecimento, e o save so disparava depois de 45s de
-  // silencio total). O ref garante que o intervalo chama sempre o saveDraft
-  // mais recente (closure fresca com o estado atual).
+  // render — o efeito antigo sem deps resetava os 45s a cada tecla, e o save
+  // so disparava depois de 45s de silencio total). O ref garante que o
+  // intervalo chama sempre o saveDraft mais recente (closure fresca com o
+  // estado atual).
   useEffect(() => {
     if (!session || queueId) return;
     const timer = setInterval(() => { void saveDraftRef.current(true); }, 45_000);
@@ -220,10 +170,6 @@ export default function BulkAuctionWizard() {
           if (Array.isArray(draftsBody.drafts)) setDrafts(draftsBody.drafts);
         }
       } catch { /* rascunhos são complemento: nunca bloqueiam o boot */ }
-      // Pipeline de reconhecimento REAL (probe + mint de token): sem isso o
-      // painel publicado da Vercel sem o secret degrada para o NAVEGADOR em
-      // silêncio e o operador só percebe pela qualidade ruim.
-      void probeRecognitionPipeline().then(setRecognitionPipeline).catch(() => setRecognitionPipeline("browser"));
       const explicit = new URLSearchParams(window.location.search).get("queue");
       if (explicit) { setQueueId(explicit); return; }
       const latestResponse = await authFetch("/api/auctions/queue?latest=1");
@@ -240,7 +186,6 @@ export default function BulkAuctionWizard() {
   useEffect(() => () => {
     for (const url of previewUrls.current) URL.revokeObjectURL(url);
     previewUrls.current.clear();
-    void shutdownCardRecognition();
   }, []);
 
   useEffect(() => {
@@ -264,144 +209,14 @@ export default function BulkAuctionWizard() {
   }, [intervalValue, intervalUnit]);
   const startInstant = useMemo(() => publication === "now" ? new Date() : (() => { const iso = brasiliaInputToIso(scheduledInput); return iso ? new Date(iso) : null; })(), [publication, scheduledInput]);
 
-  function mutateCard(id: string, patch: Partial<Draft>, markManual = true) {
+  function mutateCard(id: string, patch: Partial<Draft>) {
     submission.current = null;
-    setCards(current => current.map(card => {
-      if (card.id !== id) return card;
-      const manualFields = { ...card.manualFields };
-      if (markManual) for (const key of Object.keys(patch)) if (recognizableFields.has(key as RecognizableField)) manualFields[key as RecognizableField] = true;
-      return { ...card, ...patch, manualFields };
-    }));
+    setCards(current => current.map(card => card.id === id ? { ...card, ...patch } : card));
   }
   function applyAll<K extends keyof Draft>(key: K, value: Draft[K]) {
     submission.current = null;
-    setCards(current => current.map(card => ({
-      ...card,
-      [key]: value,
-      manualFields: recognizableFields.has(key as RecognizableField) ? { ...card.manualFields, [key]: true } : card.manualFields,
-    })));
+    setCards(current => current.map(card => ({ ...card, [key]: value })));
   }
-
-  async function identifyCard(id: string, file: File, force = false, retry = false) {
-    if (recognitionInFlight.current.has(id)) return;
-    // Recognition disabled: ZERO recognition work — no identifyCard, no health
-    // probe, no local service call, no browser fallback, no not-found state.
-    // The image is simply kept as uploaded.
-    if (!imageRecognitionEnabled()) return;
-    recognitionInFlight.current.add(id);
-    setCards(current => current.map(card => card.id === id ? { ...card, recognitionStage: "queued", recognitionMessage: "Na fila de reconhecimento…" } : card));
-    const preferredLanguage = cards.find(card => card.id === id)?.language;
-    // Progress messages can fire several times per second per card; each one
-    // re-renders the ENTIRE wizard (every card, every input). Throttling the
-    // UI updates to ~6/s keeps React's render queue from saturating the main
-    // thread while recognition itself is unaffected (it runs off-thread).
-    let lastPaint = 0;
-    const paint = (message: string) => {
-      const now = Date.now();
-      if (now - lastPaint < 160) return;
-      lastPaint = now;
-      setCards(current => current.map(card => card.id === id ? { ...card, recognitionStage: "analyzing", recognitionMessage: message } : card));
-    };
-    try {
-      const result = await recognizePokemonCard(file, preferredLanguage, paint, { bypassCache: retry });
-      // Auto-correção do indicador: o resultado sabe qual pipeline rodou de
-      // verdade (degradação silenciosa durante a sessão não passa mais).
-      setRecognitionPipeline(result.localPipeline ? "local" : "browser");
-      // Disabled while this request was running: drop the result silently
-      // instead of marking a not-found the user never asked for.
-      if (!imageRecognitionEnabled()) {
-        setCards(current => current.map(card => card.id === id ? { ...card, recognitionStage: "idle", recognitionMessage: "Reconhecimento de imagens está desligado" } : card));
-        return;
-      }
-      setCards(current => current.map(card => {
-        if (card.id !== id) return card;
-        const recognized = mergeRecognitionFields(card as unknown as Record<string, unknown>, card.manualFields, result, force) as Partial<Draft>;
-        // Preenchimento automático respeita os idiomas do dropdown (es → Outro).
-        if (recognized.language) recognized.language = wizardLanguage(recognized.language);
-        const recognitionStage: RecognitionStage = result.level === "high" ? "identified" : result.level === "medium" ? "review" : "not-found";
-        return {
-          ...card,
-          ...recognized,
-          recognitionStage,
-          recognitionConfidence: result.confidence,
-          recognitionMessage: result.source === "cache" ? "Resultado reutilizado do cache local" : `${result.elapsedMs} ms · ${result.catalogRequests} consulta(s) ao catálogo`,
-          recognitionCandidates: result.candidates,
-          recognitionResult: result,
-          expanded: card.expanded || result.level !== "high",
-        };
-      }));
-    } catch (reason) {
-      const message = reason instanceof Error ? reason.message : "Falha no reconhecimento local.";
-      setCards(current => current.map(card => card.id === id ? { ...card, recognitionStage: "error", recognitionMessage: `${message} Preencha manualmente normalmente.` } : card));
-    } finally {
-      recognitionInFlight.current.delete(id);
-    }
-  }
-
-  function useCandidate(id: string, candidate: RecognitionCandidate) {
-    submission.current = null;
-    setCards(current => current.map(card => card.id !== id ? card : {
-      ...card,
-      name: candidate.name,
-      collection: candidate.collection,
-      cardNumber: candidate.cardNumber,
-      // Espanhol saiu dos idiomas de operação: candidato es (catálogo de
-      // texto/browser ainda o devolve) vira "Outro" — sem isso o select fica
-      // em branco e a API rejeita o lote na publicação.
-      language: wizardLanguage(candidate.language),
-      variant: candidate.variant ?? card.variant,
-      manualFields: { ...card.manualFields, name: true, collection: true, cardNumber: true, language: true, ...(candidate.variant ? { variant: true } : {}) },
-      recognitionStage: "identified",
-      recognitionConfidence: Math.max(card.recognitionConfidence ?? 0, candidate.score),
-      recognitionMessage: "Candidato escolhido manualmente",
-    }));
-    // Explicit user confirmation = ground truth for the local recognition memory.
-    // Fire-and-forget: never blocks the flow, never fails the wizard.
-    const file = cards.find(card => card.id === id)?.file;
-    if (file && candidate.id && candidate.language && candidate.name) {
-      void confirmRecognitionMemory(file, {
-        cardId: candidate.id,
-        language: candidate.language,
-        name: candidate.name,
-        setName: candidate.collection,
-        localId: candidate.localId,
-        denominator: candidate.denominator,
-      }).catch(() => undefined);
-    }
-  }
-
-  useEffect(() => {
-    if (!imageRecognitionEnabled()) return;
-    for (const card of cards) {
-      if (card.file && card.recognitionStage === "idle" && !recognitionInFlight.current.has(card.id)) void identifyCard(card.id, card.file);
-    }
-  }, [cards]);
-
-  // Toggle transitions: OFF stops queuing new recognitions and returns
-  // still-queued cards to idle (in-flight requests finish and are dropped by
-  // the guard in identifyCard); ON resumes recognition for pending images.
-  useEffect(() => {
-    const sync = () => {
-      if (imageRecognitionEnabled()) {
-        for (const card of cards) {
-          if (card.file && card.recognitionStage === "idle" && !recognitionInFlight.current.has(card.id)) void identifyCard(card.id, card.file);
-        }
-      } else {
-        setCards(current => current.map(card => card.recognitionStage === "queued"
-          ? { ...card, recognitionStage: "idle", recognitionMessage: "Reconhecimento de imagens está desligado" }
-          : card));
-      }
-      // Toggle mudou: o pipeline ativo pode ter mudado junto (desligado conta
-      // como "disabled"; religado volta a probrar local→browser).
-      void probeRecognitionPipeline().then(setRecognitionPipeline).catch(() => undefined);
-    };
-    window.addEventListener(imageRecognitionPreferenceEvent, sync);
-    window.addEventListener("storage", sync);
-    return () => {
-      window.removeEventListener(imageRecognitionPreferenceEvent, sync);
-      window.removeEventListener("storage", sync);
-    };
-  }, [cards]);
 
   async function addFiles(filesLike: FileList | File[]) {
     const files = Array.from(filesLike).filter(file => ["image/jpeg", "image/png", "image/webp"].includes(file.type));
@@ -417,7 +232,7 @@ export default function BulkAuctionWizard() {
     submission.current = null; setError("");
     // Replace the full-size object URLs with downscaled previews (async, off
     // the critical path): the wizard renders dozens of photos at once and
-    // 12 MP decodes were freezing the whole page during/after recognition.
+    // 12 MP decodes were freezing the whole page.
     const downscaled = await Promise.all(files.map(async file => ({ file, preview: await makePreviewUrl(file) })));
     setCards(current => current.map(card => {
       const match = downscaled.find(entry => entry.file === card.file);
@@ -435,7 +250,17 @@ export default function BulkAuctionWizard() {
   function removeCard(index: number) {
     setCards(current => {
       const target = current[index];
-      if (target?.preview) { URL.revokeObjectURL(target.preview); previewUrls.current.delete(target.preview); }
+      if (target) {
+        if (target.preview) { URL.revokeObjectURL(target.preview); previewUrls.current.delete(target.preview); }
+        // Object URLs de fotos de detalhe podem estar COMPARTILHADOS entre
+        // cartas (Copiar configurações da anterior): só revoga a que não
+        // tem outro dono — senão o thumbnail da outra carta morre.
+        for (const url of target.extraPreviews) {
+          const shared = current.some((other, otherIndex) => otherIndex !== index && other.extraPreviews.includes(url));
+          if (!shared) URL.revokeObjectURL(url);
+          previewUrls.current.delete(url);
+        }
+      }
       return current.filter((_, cardIndex) => cardIndex !== index);
     }); submission.current = null;
   }
@@ -671,8 +496,7 @@ export default function BulkAuctionWizard() {
         for (const url of card.extraPreviews) URL.revokeObjectURL(url);
       }
       // Restaurado: file=null + preview="" — o thumbnail usa a URL do Storage.
-      // Lotes/valores/idiomas vêm do payload; recognition só nos estágios
-      // terminais (identified/review/not-found) com os candidatos preservados.
+      // Lotes/valores/idiomas vêm do payload.
       setCards(state.cards.map((card, index) => ({
         ...draftFor(null, "", Number(card.lotNumber) || index + 1, index === 0),
         imageUrl: card.imageUrl, extraImages: card.extraImages,
@@ -682,9 +506,6 @@ export default function BulkAuctionWizard() {
         giveaway: card.giveaway, giveawayOptions: card.giveawayOptions,
         lotNumber: card.lotNumber, startingPrice: card.startingPrice, increment: card.increment, buyout: card.buyout,
         durationMinutes: card.durationMinutes, optionCount: card.optionCount,
-        recognitionStage: card.recognitionStage, recognitionMessage: card.recognitionMessage,
-        recognitionCandidates: draftCandidates(card.recognitionCandidates),
-        manualFields: card.manualFields,
         imageStage: card.imageUrl ? ("done" as const) : ("idle" as const),
         imageMessage: "",
       })));
@@ -869,10 +690,10 @@ export default function BulkAuctionWizard() {
     {error && <p className="alert" role="alert">{error}</p>}
     {draftNotice && <p className="notice">{draftNotice}</p>}
 
-    {step === 1 && <><section className="panel drop-panel" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); void addFiles(event.dataTransfer.files); }}><p className="eyebrow">ETAPA 1</p><h2>Adicionar cartas</h2><p className="muted">Arraste 1, 20, 50 ou mais imagens. O reconhecimento automático roda antes do upload; você pode editar enquanto a fila continua.</p><p className={`recognition-pipeline ${recognitionPipeline}`}>{recognitionPipeline === "local" ? "🔎 Reconhecimento: serviço local ✅ (duas rotas + verificação geométrica)" : recognitionPipeline === "browser" ? (cachedServiceWarming() ? "⏳ Serviço local aquecendo — os modelos carregam em segundos; a próxima foto já usa o pipeline local" : ["localhost", "127.0.0.1"].includes(window.location.hostname) ? "⚠ Reconhecimento pelo NAVEGADOR (pior): ligue o npm run start no PC — o serviço local não respondeu" : "⚠ Reconhecimento pelo NAVEGADOR (pior): no painel publicado, configure RECOGNITION_SERVICE_SHARED_SECRET na Vercel (P-11) — o serviço local do seu PC está saudável, mas sem o secret o painel não consegue autorizar o uso") : recognitionPipeline === "disabled" ? "⏸️ Reconhecimento desativado — religue nas opções" : "🔎 Verificando o reconhecimento…"}</p><div className="actions"><label className="button-like">＋ Selecionar imagens<input hidden type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={event => { if (event.target.files) void addFiles(event.target.files); event.currentTarget.value = ""; }} /></label><button className="secondary" type="button" onClick={addEmpty}>Adicionar sem imagem</button></div></section>
+    {step === 1 && <><section className="panel drop-panel" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); void addFiles(event.dataTransfer.files); }}><p className="eyebrow">ETAPA 1</p><h2>Adicionar cartas</h2><p className="muted">Arraste 1, 20, 50 ou mais imagens e preencha os dados de cada carta manualmente; você pode editar enquanto o upload continua.</p><div className="actions"><label className="button-like">＋ Selecionar imagens<input hidden type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={event => { if (event.target.files) void addFiles(event.target.files); event.currentTarget.value = ""; }} /></label><button className="secondary" type="button" onClick={addEmpty}>Adicionar sem imagem</button></div></section>
       {!cards.length && drafts.length > 0 && <section className="panel drafts-panel"><div className="panel-title"><div><h2>Rascunhos salvos</h2><p className="muted">Continue de onde parou — as fotos já estão no servidor. Publicar a fila apaga o rascunho automaticamente.</p></div></div><div className="draft-list">{drafts.map(draft => <article className="draft-row" key={draft.id}><div className="draft-row-info"><strong>{draft.title}</strong><span>Salvo em {formatBrasiliaDateTime(draft.updated_at, false)}</span></div><div className="actions"><button disabled={draftBusy} onClick={() => void openDraft(draft.id)}>Abrir</button><button className="danger-link" disabled={draftBusy} onClick={() => { if (window.confirm("Excluir este rascunho?")) void discardDraft(draft.id); }}>Excluir</button></div></article>)}</div></section>}
-      {!!cards.length && <section className="panel"><div className="panel-title"><div><h2>{cards.length} carta(s)</h2><p className="muted">A ordem é a ordem de publicação. OCR e catálogo são auxiliares: suas correções manuais nunca são sobrescritas automaticamente.</p></div></div><div className="bulk-bar"><label>Idioma para todas<select value={bulkLanguage} onChange={e => setBulkLanguage(e.target.value)}>{cardLanguages.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label><button onClick={() => applyAll("language", bulkLanguage)}>Aplicar</button><label>Condição para todas<select value={bulkCondition} onChange={e => setBulkCondition(e.target.value)}>{cardConditions.map(item => <option key={item}>{item}</option>)}</select></label><button onClick={() => applyAll("condition", bulkCondition)}>Aplicar</button></div>
-        <div className="draft-list">{cards.map((card, index) => <article key={card.id} className="draft-card" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); if (dragging != null) moveCard(dragging, index); setDragging(null); }}><div className="draft-head"><span className="drag-handle" title="Arraste para mudar a ordem" draggable onDragStart={() => setDragging(index)} onDragEnd={() => setDragging(null)}>☰</span><div className="draft-thumb">{card.preview || card.imageUrl ? <img src={card.preview || card.imageUrl} alt="" loading="lazy" decoding="async" /> : <span>🃏</span>}</div><div className="draft-title"><strong>{index + 1}. {card.giveaway ? "🎁 " : ""}{card.name || "Carta sem nome"}</strong><span>{card.cardNumber || "Sem número"}</span>{card.giveaway && <span className="brinde-inline">🎁 Brinde — vira enquete, não leilão</span>}{card.recognitionMessage && <span className={`recognition-inline ${card.recognitionStage}`}>{recognitionLabel(card)}</span>}{card.imageMessage && card.imageStage !== "idle" && <span className={card.imageStage === "error" ? "alert" : "muted"}>Imagem: {card.imageMessage}</span>}</div><div className="draft-actions"><button className="secondary" onClick={() => moveCard(index, index - 1)} disabled={index === 0}>↑</button><button className="secondary" onClick={() => moveCard(index, index + 1)} disabled={index === cards.length - 1}>↓</button><button className="secondary" onClick={() => mutateCard(card.id, { giveaway: !card.giveaway }, false)}>{card.giveaway ? "✓ Brinde" : "🎁 Brinde"}</button><button className="secondary" onClick={() => mutateCard(card.id, { expanded: !card.expanded }, false)}>{card.expanded ? "Fechar" : "Editar"}</button><button className="danger-link" onClick={() => removeCard(index)}>Remover</button></div></div>{card.expanded && <div className="draft-fields">{(card.file || (card.recognitionCandidates.length > 1 && card.recognitionStage !== "identified")) && <div className={`recognition-box wide ${card.recognitionStage}`}><div><strong>{recognitionLabel(card)}</strong><small>{card.recognitionMessage}</small>{card.file && (((card.recognitionResult as { normalization?: { confidence?: number } } | undefined)?.normalization?.confidence ?? 1) < 0.5 && card.recognitionStage !== "identified") && <small className="retake-hint">📸 Foto escura/torta (enquadramento fraco) — se puder, tire outra e substitua o arquivo; o reconhecimento melhora muito</small>}</div>{card.file && <button className="secondary" type="button" disabled={card.recognitionStage === "queued" || card.recognitionStage === "analyzing"} onClick={() => void identifyCard(card.id, card.file!, false, true)}>✨ {card.recognitionStage === "idle" ? "Identificar carta" : "Reconhecer novamente"}</button>}{card.recognitionCandidates.length > 1 && card.recognitionStage !== "identified" && <div className="recognition-candidates"><span>Possíveis resultados:</span>{card.recognitionCandidates.slice(0, 3).map(candidate => <button type="button" className="secondary" key={`${candidate.language}-${candidate.id}`} onClick={() => useCandidate(card.id, candidate)}><strong>{candidate.name}</strong><small>{candidate.collection} · {candidate.cardNumber} · {candidate.language} · {candidate.score}%</small></button>)}</div>}</div>}{card.file && <RecognitionDebug file={card.file} result={card.recognitionResult} busy={card.recognitionStage === "queued" || card.recognitionStage === "analyzing"} />}<label>Nome<input value={card.name} onChange={e => mutateCard(card.id, { name: e.target.value })} /></label><label>Número da carta<input placeholder="35/64" value={card.cardNumber} onChange={e => mutateCard(card.id, { cardNumber: e.target.value })} /></label>{card.giveaway && <label className="wide giveaway-options">🎁 Opções da enquete de brinde (uma por linha, 2 a 12)<textarea rows={3} value={card.giveawayOptions} onChange={e => mutateCard(card.id, { giveawayOptions: e.target.value })} placeholder={"Quero! 🙋\nTô dentro 🔥\nBora! 🎉"} /><small>"Quem clicar primeiro leva" — o bot publica a foto desta carta + a enquete no lugar do leilão.</small></label>}{!card.giveaway && <div className="draft-fields-extra wide"><span className="extra-label">Fotos de detalhe ({card.extraFiles.length + card.extraImages.length}/4){card.extraFiles.length ? <span className="extra-thumbs">{card.extraPreviews.map((url, index) => <span className="extra-thumb" key={url}><img src={url} alt="" loading="lazy" decoding="async" /><button type="button" title="Remover" onClick={() => mutateCard(card.id, { extraFiles: card.extraFiles.filter((_, i) => i !== index), extraPreviews: card.extraPreviews.filter((_, i) => i !== index) })}>×</button></span>)}</span> : null}</span><label className="button-like">＋ Detalhes{card.extraFiles.length + card.extraImages.length < 4 ? <input hidden type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={event => { const room = 4 - card.extraFiles.length - card.extraImages.length; const files = Array.from(event.target.files ?? []).slice(0, room); if (files.length) mutateCard(card.id, { extraFiles: [...card.extraFiles, ...files], extraPreviews: [...card.extraPreviews, ...files.map(file => URL.createObjectURL(file))] }); event.currentTarget.value = ""; }} /> : null}</label></div>}<label>Variante<input list={`variants-${card.id}`} value={card.variant} onChange={e => mutateCard(card.id, { variant: e.target.value })} /><datalist id={`variants-${card.id}`}>{variants.map(item => <option key={item} value={item} />)}</datalist></label><label>Condição<select value={card.condition} onChange={e => mutateCard(card.id, { condition: e.target.value })}>{cardConditions.map(item => <option key={item}>{item}</option>)}</select></label><label>Idioma<select value={card.language} onChange={e => mutateCard(card.id, { language: e.target.value })}>{cardLanguages.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>{!card.file && <label className="wide">URL HTTPS da imagem<input value={card.imageUrl} onChange={e => mutateCard(card.id, { imageUrl: e.target.value })} /></label>}{index > 0 && <button className="secondary wide" onClick={() => copyPrevious(index)}>Copiar configurações da carta anterior</button>}</div>}</article>)}</div></section>}
+      {!!cards.length && <section className="panel"><div className="panel-title"><div><h2>{cards.length} carta(s)</h2><p className="muted">A ordem é a ordem de publicação. Preencha os dados de cada carta; nada é preenchido automaticamente.</p></div></div><div className="bulk-bar"><label>Idioma para todas<select value={bulkLanguage} onChange={e => setBulkLanguage(e.target.value)}>{cardLanguages.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label><button onClick={() => applyAll("language", bulkLanguage)}>Aplicar</button><label>Condição para todas<select value={bulkCondition} onChange={e => setBulkCondition(e.target.value)}>{cardConditions.map(item => <option key={item}>{item}</option>)}</select></label><button onClick={() => applyAll("condition", bulkCondition)}>Aplicar</button></div>
+        <div className="draft-list">{cards.map((card, index) => <article key={card.id} className="draft-card" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); if (dragging != null) moveCard(dragging, index); setDragging(null); }}><div className="draft-head"><span className="drag-handle" title="Arraste para mudar a ordem" draggable onDragStart={() => setDragging(index)} onDragEnd={() => setDragging(null)}>☰</span><div className="draft-thumb">{card.preview || card.imageUrl ? <img src={card.preview || card.imageUrl} alt="" loading="lazy" decoding="async" /> : <span>🃏</span>}</div><div className="draft-title"><strong>{index + 1}. {card.giveaway ? "🎁 " : ""}{card.name || "Carta sem nome"}</strong><span>{card.cardNumber || "Sem número"}</span>{card.giveaway && <span className="brinde-inline">🎁 Brinde — vira enquete, não leilão</span>}{card.imageMessage && card.imageStage !== "idle" && <span className={card.imageStage === "error" ? "alert" : "muted"}>Imagem: {card.imageMessage}</span>}</div><div className="draft-actions"><button className="secondary" onClick={() => moveCard(index, index - 1)} disabled={index === 0}>↑</button><button className="secondary" onClick={() => moveCard(index, index + 1)} disabled={index === cards.length - 1}>↓</button><button className="secondary" onClick={() => mutateCard(card.id, { giveaway: !card.giveaway })}>{card.giveaway ? "✓ Brinde" : "🎁 Brinde"}</button><button className="secondary" onClick={() => mutateCard(card.id, { expanded: !card.expanded })}>{card.expanded ? "Fechar" : "Editar"}</button><button className="danger-link" onClick={() => removeCard(index)}>Remover</button></div></div>{card.expanded && <div className="draft-fields"><label>Nome<input value={card.name} onChange={e => mutateCard(card.id, { name: e.target.value })} /></label><label>Número da carta<input placeholder="35/64" value={card.cardNumber} onChange={e => mutateCard(card.id, { cardNumber: e.target.value })} /></label>{card.giveaway && <label className="wide giveaway-options">🎁 Opções da enquete de brinde (uma por linha, 2 a 12)<textarea rows={3} value={card.giveawayOptions} onChange={e => mutateCard(card.id, { giveawayOptions: e.target.value })} placeholder={"Quero! 🙋\nTô dentro 🔥\nBora! 🎉"} /><small>"Quem clicar primeiro leva" — o bot publica a foto desta carta + a enquete no lugar do leilão.</small></label>}{!card.giveaway && <div className="draft-fields-extra wide"><span className="extra-label">Fotos de detalhe ({card.extraFiles.length + card.extraImages.length}/4){card.extraFiles.length ? <span className="extra-thumbs">{card.extraPreviews.map((url, index) => <span className="extra-thumb" key={url}><img src={url} alt="" loading="lazy" decoding="async" /><button type="button" title="Remover" onClick={() => { const url = card.extraPreviews[index]; const shared = cards.some((other) => other.id !== card.id && other.extraPreviews.includes(url)); if (!shared) URL.revokeObjectURL(url); mutateCard(card.id, { extraFiles: card.extraFiles.filter((_, i) => i !== index), extraPreviews: card.extraPreviews.filter((_, i) => i !== index) }); }}>×</button></span>)}</span> : null}</span><label className="button-like">＋ Detalhes{card.extraFiles.length + card.extraImages.length < 4 ? <input hidden type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={event => { const room = 4 - card.extraFiles.length - card.extraImages.length; const files = Array.from(event.target.files ?? []).slice(0, room); if (files.length) { const urls = files.map(file => URL.createObjectURL(file)); for (const url of urls) previewUrls.current.add(url); mutateCard(card.id, { extraFiles: [...card.extraFiles, ...files], extraPreviews: [...card.extraPreviews, ...urls] }); } event.currentTarget.value = ""; }} /> : null}</label></div>}<label>Variante<input list={`variants-${card.id}`} value={card.variant} onChange={e => mutateCard(card.id, { variant: e.target.value })} /><datalist id={`variants-${card.id}`}>{variants.map(item => <option key={item} value={item} />)}</datalist></label><label>Condição<select value={card.condition} onChange={e => mutateCard(card.id, { condition: e.target.value })}>{cardConditions.map(item => <option key={item}>{item}</option>)}</select></label><label>Idioma<select value={card.language} onChange={e => mutateCard(card.id, { language: e.target.value })}>{cardLanguages.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>{!card.file && <label className="wide">URL HTTPS da imagem<input value={card.imageUrl} onChange={e => mutateCard(card.id, { imageUrl: e.target.value })} /></label>}{index > 0 && <button className="secondary wide" onClick={() => copyPrevious(index)}>Copiar configurações da carta anterior</button>}</div>}</article>)}</div></section>}
       <div className="wizard-footer"><Link href="/">Cancelar</Link><button onClick={() => go(2)}>Continuar para valores →</button></div></>}
 
     {step === 2 && <><section className="panel"><p className="eyebrow">ETAPA 2</p><h2>Valores</h2><p className="muted">Gere a enquete por incremento ou escolha Personalizado e digite os valores exatos (ex.: 1, 2, 5, 10 — o maior pode ser ARREMATE).</p><div className="bulk-bar values"><label>Primeiro lote<input type="number" min="1" value={firstLot} onChange={e => setFirstLot(e.target.value)} /></label><button onClick={sequentialLots}>Numerar lotes</button><label>Lance inicial para todas<input type="number" min="0" step="0.01" value={bulkStart} onChange={e => setBulkStart(e.target.value)} /></label><button onClick={() => applyAll("startingPrice", bulkStart)}>Aplicar</button><label>Incremento para todas<input type="number" min="0.01" step="0.01" value={bulkIncrement} onChange={e => setBulkIncrement(e.target.value)} /></label><button onClick={() => applyAll("increment", bulkIncrement)}>Aplicar</button><label>Valores personalizados p/ todas<input inputMode="decimal" placeholder="Ex.: 1, 2, 5, 10" value={bulkCustomValues} onChange={e => setBulkCustomValues(e.target.value)} /></label><button onClick={() => { setCards(current => current.map(card => ({ ...card, pricingMode: "custom" as const, customValues: bulkCustomValues }))); submission.current = null; }}>Aplicar personalizados</button><label>Duração para todas (min)<input type="number" min="0.1" step="0.1" value={bulkDuration} onChange={e => setBulkDuration(e.target.value)} /></label><button onClick={() => applyAll("durationMinutes", bulkDuration)}>Aplicar</button></div>

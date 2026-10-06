@@ -10,18 +10,13 @@
     "doctor": "node scripts/doctor.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/*.test.mjs",
-    "start:web": "next start",
-    "recognition:install": "node scripts/recognition-install.mjs",
-    "recognition:local": "node scripts/recognition-local.mjs",
-    "recognition:index": "node scripts/recognition-index.mjs"
+    "start:web": "next start"
   },
   "dependencies": {
-    "@huggingface/transformers": "4.2.0",
     "@supabase/supabase-js": "2.116.0",
     "exceljs": "4.4.0",
     "ioredis": "^6.0.0",
     "next": "16.3.4",
-    "onnxruntime-common": "1.24.0-dev.20251116-b39e144322",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "server-only": "0.0.1"
@@ -31,8 +26,5 @@
     "@types/react": "19.1.12",
     "@types/react-dom": "19.1.9",
     "typescript": "7.0.2"
-  },
-  "overrides": {
-    "onnxruntime-node": "file:stubs/onnxruntime-node"
   }
 }

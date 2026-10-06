@@ -5,17 +5,6 @@ import path from 'node:path';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 
-// Optional companions (e.g. the local recognition service) get ONE bounded
-// supervised restart: a native crash (Windows 0xC0000005) kills the Python
-// process in a way Python cannot catch, and the service itself recovers on
-// the next start (crash journal -> provider demotion -> CPU). The bound
-// (max restarts within a window) guarantees we never restart-loop an
-// unstable service: after the budget is spent it stays down and the site
-// keeps running on the browser pipeline, as before.
-const RESTART_MAX = 2;
-const RESTART_WINDOW_MS = 10 * 60_000;
-const RESTART_COOLDOWN_MS = 5_000;
-
 export function startAll(commands) {
   const children = [];
   let stopping;
@@ -59,37 +48,11 @@ export function startAll(commands) {
     children[index] = child;
     child.once('error', error => {
       console.error(`[start] ${command.label ?? bin} erro: ${error.message}`);
-      if (!command.optional) void stop(1);
+      void stop(1);
     });
-    if (command.optional) {
-      // Optional companions may die alone: the site stays online. A bounded
-      // restart is only used when explicitly enabled by the command.
-      const restarts = [];
-      child.once('exit', code => {
-        if (stopping) return;
-        const label = command.label ?? bin;
-        if (command.restart === false) {
-          console.error(`[start] ${label} saiu (code ${code}); o serviço principal continua ativo.`);
-          return;
-        }
-        const now = Date.now();
-        while (restarts.length && now - restarts[0] > RESTART_WINDOW_MS) restarts.shift();
-        if (restarts.length < RESTART_MAX) {
-          restarts.push(now);
-          console.error(`[start] ${label} saiu (code ${code}); reiniciando em ${RESTART_COOLDOWN_MS / 1000}s ` +
-            `(${restarts.length}/${RESTART_MAX} em 10 min)…`);
-          setTimeout(() => {
-            if (!stopping) launch(command, index);
-          }, RESTART_COOLDOWN_MS);
-        } else {
-          console.error(`[start] ${label} saiu (code ${code}) e esgotou os reinícios ` +
-            `(${RESTART_MAX} em 10 min); continuando sem ele. ` +
-            `Rode "python recognition/scripts/benchmark_runtime.py" para investigar o provider.`);
-        }
-      });
-    } else {
-      child.once('exit', code => { if (!stopping) void stop(code || 1); });
-    }
+    // Site e bot são ambos essenciais: quando qualquer um sai, todo o
+    // conjunto desce junto (o CMD mostra o código e nada fica órfão).
+    child.once('exit', code => { if (!stopping) void stop(code || 1); });
   };
   commands.forEach((command, index) => launch(command, index));
   return { children, stop };
@@ -107,30 +70,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
       {
         cwd: path.join(root, 'bot'),
         args: ['--env-file=.env', 'service.mjs'],
-        optional: false,
         label: 'bot WhatsApp',
       },
     ];
-    // Local recognition service (optional): two-route pipeline (visual + OCR).
-    // Not installed -> the site silently uses the in-browser fallback pipeline.
-    const isWindows = process.platform === 'win32';
-    const venvPython = path.join(root, 'recognition', '.venv', isWindows ? 'Scripts/python.exe' : 'bin/python');
-    try {
-      await access(venvPython);
-      commands.push({
-        cwd: path.join(root, 'recognition'),
-        bin: venvPython,
-        // No --preload: models load on the first photo and UNLOAD after
-        // RECOGNITION_IDLE_UNLOAD_MINUTES idle, so a PC without an active
-        // wizard session does not hold ~2 GB of ONNX sessions for nothing.
-        args: [path.join(root, 'recognition', 'recognition_server.py')],
-        optional: true,
-        label: 'reconhecimento local',
-      });
-      console.log('[start] serviço de reconhecimento local incluído (127.0.0.1:8765)');
-    } catch {
-      console.log('[start] reconhecimento local não instalado — rode npm run recognition:install (o site usará o pipeline do navegador)');
-    }
     startAll(commands);
+    console.log('[start] site (Next.js) + bot WhatsApp no ar — Ctrl+C para encerrar.');
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }

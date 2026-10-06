@@ -59,7 +59,13 @@ export default function Dashboard() {
   const purgeDialog = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (editor && dialog.current && !dialog.current.open) dialog.current.showModal(); }, [editor]);
   useEffect(() => { if (purgeOpen && purgeDialog.current && !purgeDialog.current.open) purgeDialog.current.showModal(); }, [purgeOpen]);
-  useEffect(() => { const timer = setInterval(() => setClock(Date.now()), 1000); return () => clearInterval(timer); }, []);
+  // Relógio da contagem regressiva: só faz tique-taque enquanto existe leilão
+  // ABERTO — sem leilão ativo o painel para de re-renderizar 1x/segundo.
+  useEffect(() => {
+    if (!data?.auctions?.some(a => a.status === "open")) return;
+    const timer = setInterval(() => setClock(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [data]);
   useEffect(() => {
     let active = true;
     const syncInitialSession = async () => {

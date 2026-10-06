@@ -1,7 +1,7 @@
 # SESSION HANDOFF
 
 ## Última atualização
-2026-09-29 (hotfix do spam "Leilão encerrado: sem comprador" 7x + corrida de conexão)
+2026-10-05 (remoção completa do reconhecimento + limpeza 12h)
 
 ## Hotfix 2026-09-29 — finalize repetido + corrida de conexão
 - **Sintoma**: 7x "⏰ Leilão encerrado: sem comprador" (grupo + terminal) em ~30s, e foto/lote antes do "@all O leilão vai começar!".
@@ -25,21 +25,23 @@
 11. **Export Excel FIX**: snapshot com LIMITs (era TODAS as linhas → timeout 57014).
 12. **Egress/Log Ingestion FIX**: dashboard snapshot com LIMITs (~50-80 KB, era 288 KB); Realtime debounce 250ms→5s; polling global ~56% menor.
 13. **Backup na nuvem**: bucket privado business-backups, retenção 7 (nuvem) / 30 (local).
-14. **Limpeza 24 horas**: retenção fixa de 24h no RPC e no bot; a limpeza continua exigindo backup na nuvem no mesmo dia.
+14. **Limpeza 12 horas** (2026-10-05, era 24h; antes piso de 30 dias): retenção fixa de 12h no RPC (`cleanup_old_auctions(p_hours=12)`, parâmetro em HORAS com piso de 1h) e no bot (`p_hours: 12`); a limpeza continua exigindo backup na nuvem no mesmo dia. Migration `20261005120000` + `tests/cleanup-retention.sql` reescrito e incluído no CI.
 15. **Auto-save de rascunho**: 45s, fingerprint, silencioso em falha.
+16. **REMOÇÃO COMPLETA DO RECONHECIMENTO** (2026-10-05, decisão do operador): toda a IA de identificação de cartas saiu do projeto — `recognition/` (Python/FastAPI/ONNX/OCR), 26 módulos `lib/card-recognition-*`, `lib/card-catalog.ts` (validação de lote contra o catálogo — o campo `collection` já não vinha da UI, o check estava morto), API `/api/card-recognition/*`, toggle/debug/wiring do wizard, 6 scripts, 2 workflows, benchmarks, docs, 11 arquivos de teste e a tabela `card_recognition_examples` (migration `20261005130000` de drop). Dependências `@huggingface/transformers` + `onnxruntime-common` + override/stubs removidas. Wizard agora é 100% manual: imagem → preencher dados → preços → revisão → publicar. `npm start` sobe só site + bot. `doctor` sem checks de reconhecimento e com verificações de tabela em paralelo. Rascunhos antigos continuam abrindo (whitelist ignora campos de IA).
 
 ## Ponto EXATO onde paramos
 2026-09-29 (sessão de auditoria geral): (1) hotfix do spam "sem comprador" 7x no finalize; (2) CORREÇÃO RAIZ DOS VOTOS — votos de enquete encapsulados em ephemeralMessage nunca eram reconhecidos (check direto message.message.pollUpdateMessage); unwrapMessageContent agora normaliza em handleIncomingMessages/processIncomingPollMessage/decryptIncomingPollVote; (3) ideia .exe/Electron REMOVIDA por completo (P-14 cancelado). Migrations PENDENTES de aplicação manual (P-13 — ver 11_PENDING_WORK.md).
+2026-10-05 (limpeza 12h): retenção da limpeza de leilões 24h → 12h (pedido do operador). Migration `20261005120000_cleanup_12h_retention.sql` (PENDENTE — item 7 do P-13), bot já chama `p_hours=12`, `tests/cleanup-retention.sql` reescrito (janela 12h + granularidade em horas) e adicionado ao CI, docs e `.env.example` atualizados.
+2026-10-05 (remoção do reconhecimento): Toda a IA de cartas foi eliminada (itens da sessão: ver item 16 acima). Migrations PENDENTES de aplicação: `20261005120000` (limpeza 12h) + `20261005130000_drop_card_recognition_examples.sql` (P-13). `npm install` já feito (lockfile regenerado, 22 pacotes a menos); faltam `npm ci` local + build.
 
 ## Próximo passo EXATO
 1. **OPERADOR**: reiniciar o bot (npm run start) e testar um voto numa enquete de um grupo NOVO (mensagens temporárias) — o terminal deve logar "🗳️ Voto recebido".
-2. **OPERADOR (P-13)**: aplicar as migrations pendentes no SQL Editor (ver 11_PENDING_WORK.md) → `npm run doctor` → smokes.
-3. **OPERADOR (P-11)**: secret na Vercel → chip "serviço local ✅" no painel publicado.
-4. Se novo trabalho: `npm run build` ANTES do `npm run start` (o build local precisa ter os últimos fixes).
+2. **OPERADOR (P-13)**: aplicar as migrations pendentes no SQL Editor (ver 11_PENDING_WORK.md — incl. a de drop do recognition e a da limpeza 12h) → `npm run doctor` → smokes.
+3. Se novo trabalho: `npm run build` ANTES do `npm run start` (o build local precisa ter os últimos fixes).
 
 ## Arquivos de código prioritários
-- `supabase/migrations/` (6 pendentes), `bot/index.mjs` (sendOpeningSequence atômica), `bot/announce-sticker.mjs` (@all + regras)
-- `app/dashboard.tsx` (painel de avisos + exclusão + dialog), `lib/card-recognition-local.ts` (warming backoff)
+- `supabase/migrations/` (pendentes — ver P-13), `bot/index.mjs` (sendOpeningSequence atômica), `bot/announce-sticker.mjs` (@all + regras)
+- `app/dashboard.tsx` (painel de avisos + exclusão + dialog)
 - `lib/auction-draft.ts` (contrato dos rascunhos), `bot/warning-notify.mjs` (ciclo + DM de falha)
 
 ## Comandos úteis
@@ -48,14 +50,11 @@ npm run doctor
 npm run start          # RODE npm run build ANTES!
 npm test && npm run typecheck && npm run build
 node --test bot/*.test.mjs
-# python: a partir de recognition/ com o venv
-.venv\Scripts\python.exe -m unittest discover -s tests
 ```
 
 ## Atenções
 - **npm run build ANTES do npm run start** — o build carrega os últimos fixes; sem ele o painel/bot usam código velho.
 - Migrations 180000..250000 NÃO aplicadas em produção: avisos/ciclo/edição/exclusão/LIMITs falham com erro claro até aplicar.
-- **P-11 é o gargalo da qualidade no painel publicado** (secret na Vercel).
 - **Supabase Log Ingestion** estava 0.96/1 GB — polling reduzido mas logs acumulados só resetam no próximo billing.
 - Migrations que substituem função: verbatim da última versão com adições marcadas (extração programática quando possível).
 - O OPERADOR também escreve migrations — `git fetch` ANTES de substituir função/push.
@@ -70,6 +69,6 @@ node --test bot/*.test.mjs
 - @all: menção coletiva nativa do WhatsApp (todos os JIDs no mentions, texto diz @all).
 - Sequência de abertura: ATÔMICA (regras → figurinha → @all); o scheduler espera.
 - Excluir leilão: "sim quero" (tripla validação); SECURITY DEFINER; carta órfã junto.
-- Reconhecimento: a pessoa NÃO recebe DM de aviso; o chip no wizard nomeia o pipeline ativo.
+- Reconhecimento: REMOVIDO por completo (2026-10-05) — não reabrir; cadastro de cartas é manual.
 - Espanhol: CANCELADO do produto (0 es no índice, dropdown sem es).
 - Fotos de detalhe: até 4 por carta, em sequência após a principal.

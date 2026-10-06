@@ -2,8 +2,8 @@
 
 > Área: API HTTP do painel
 > Escopo: Rotas, contratos, autenticação, idempotência
-$12026-09-25
-> Fonte principal: `app/api/**/route.ts`, `lib/backend.ts`, `lib/purge.ts`, `lib/card-recognition-token.mjs`, `lib/card-catalog.ts`, `lib/rate-limit.ts`, `lib/auction-draft.ts`
+$12026-10-05
+> Fonte principal: `app/api/**/route.ts`, `lib/backend.ts`, `lib/purge.ts`, `lib/rate-limit.ts`, `lib/auction-draft.ts`
 
 ## Padrão comum (confirmado em todas as rotas)
 
@@ -17,8 +17,7 @@ $12026-09-25
 ### `POST /api/auctions/new` — criar leilão único (wizard `/auctions/new/single`)
 - Body: `eventId`, `card{name, card_number, variant, condition, language, image_url, collection}`, `auction{lot_number?, starting_price, bid_increment, buyout_price?, option_count?, scheduled_at, scheduled_end_at?, group_id, pricing_mode: increment|custom, custom_values?, custom_buyout_last?}`.
 - Valores custom: `parseCustomValues` + `buildCustomValuesPlan` (`lib/auction-wizard.ts`) — server-side deriva `starting_price/bid_increment/buyout_price` e as `poll_options`.
-- Ghost-lot guard: `validateCardAgainstCatalog` (`lib/card-catalog.ts`) consulta o serviço local `/catalog/exists` com token; sem serviço → cria sem validar + log; `RECOGNITION_STRICT_CATALOG=1` bloqueia.
-- Idempotência: `eventId` (RPC). Erros: 400 validações, 409 `lot_number_in_use`/catálogo, 503 strict.
+- Idempotência: `eventId` (RPC). Erros: 400 validações, 409 `lot_number_in_use`/grupo indisponível.
 - Suporte: `GET /api/auctions/new/status` — status de publicação pós-criação (usado pelo wizard único para acompanhar o envio).
 
 ### `POST /api/auctions/batch` — fila em lote (wizard `/auctions/new`)
@@ -50,10 +49,6 @@ $12026-09-25
 - `authorize` emite URL assinada do Supabase Storage com **rate limit 50 req/min/usuário** (`lib/rate-limit.ts`; Redis quando `REDIS_URL`, senão in-memory).
 - Upload batched e incremental: `lib/card-image.ts` (`uploadCardImageBatch` — dedup no storage, preserva o que já subiu).
 
-### `/api/card-recognition/*` — ponte com o serviço local
-- `GET /api/card-recognition/token` — minta token HMAC (5 min default, máx 15) com `issueRecognitionServiceToken` (`lib/card-recognition-token.mjs`); exige sessão admin; segredo `RECOGNITION_SERVICE_SHARED_SECRET` (server-only).
-- `GET /api/card-recognition/scan` e `POST /api/card-recognition/memory` — proxies autenticados para os endpoints equivalentes do serviço local.
-
 ### `POST /api/commands` — enfileirar comando para o bot
 - Escreve em `whatsapp_bot_commands` (o supervisor faz poll a cada 3s). Usado pela central WhatsApp (reconectar, logout, sincronizar grupos etc.).
 
@@ -73,11 +68,10 @@ $12026-09-25
 
 | Rota | Idempotência | Erros típicos |
 |---|---|---|
-| auctions/new | `eventId` no RPC | 400/409/503 |
+| auctions/new | `eventId` no RPC | 400/409 |
 | auctions/batch | `eventId` no RPC | 400/409 |
 | auctions/drafts | upsert por PK (draftId client-generated) | 400/404/409 |
 | commands | comando com id próprio (claim único) | 409 conflito |
-| card-recognition/token | — (mint por sessão, cache 60s no cliente) | 401, 503 segredo ausente |
 | admin/purge | frase-trava | 400/503 |
 
 ## Relação com consumidores

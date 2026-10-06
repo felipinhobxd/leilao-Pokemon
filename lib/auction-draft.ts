@@ -9,23 +9,7 @@ import { cardConditions, cardLanguages, GIVEAWAY_DEFAULT_OPTIONS } from "./aucti
 
 export const AUCTION_DRAFT_VERSION = 1;
 export const AUCTION_DRAFT_MAX_CARDS = 200;
-export const AUCTION_DRAFT_MAX_CANDIDATES = 5;
-export const AUCTION_DRAFT_MAX_MESSAGE_CHARS = 300;
 export const AUCTION_DRAFT_MAX_BYTES = 512 * 1024;
-
-export type AuctionDraftCandidate = {
-  id: string;
-  name: string;
-  collection: string;
-  cardNumber: string;
-  localId: string;
-  denominator: number | null;
-  language: string;
-  variant: string | null;
-  score: number;
-};
-
-export type AuctionDraftManualField = "name" | "collection" | "cardNumber" | "language" | "variant";
 
 export type AuctionDraftCard = {
   imageUrl: string;
@@ -49,12 +33,6 @@ export type AuctionDraftCard = {
   buyout: string;
   durationMinutes: string;
   optionCount: string;
-  // Apenas estágios TERMINAIS sobrevivem ao rascunho: os transitórios
-  // (queued/analyzing) dizem respeito à sessão que os criou.
-  recognitionStage: "identified" | "review" | "not-found" | "error" | "idle";
-  recognitionMessage: string;
-  recognitionCandidates: AuctionDraftCandidate[];
-  manualFields: Partial<Record<AuctionDraftManualField, boolean>>;
 };
 
 export type AuctionDraftState = {
@@ -69,8 +47,6 @@ export type AuctionDraftState = {
   cards: AuctionDraftCard[];
 };
 
-const manualFieldKeys = new Set<AuctionDraftManualField>(["name", "collection", "cardNumber", "language", "variant"]);
-
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const text = (value: unknown, fallback = "") => {
   const result = typeof value === "string" ? value.trim() : "";
@@ -82,45 +58,11 @@ const clampStep = (value: unknown) => {
   return Math.min(4, Math.max(1, step));
 };
 
-function normalizeStage(value: unknown): AuctionDraftCard["recognitionStage"] {
-  return value === "identified" || value === "review" || value === "not-found" || value === "error" ? value : "idle";
-}
-
-function normalizeCandidate(raw: unknown): AuctionDraftCandidate | null {
-  if (!isObject(raw)) return null;
-  const denominator = Number(raw.denominator);
-  const score = Number(raw.score);
-  if (!text(raw.id) || !text(raw.name)) return null;
-  return {
-    id: text(raw.id),
-    name: text(raw.name),
-    collection: text(raw.collection),
-    cardNumber: text(raw.cardNumber),
-    localId: text(raw.localId),
-    denominator: Number.isFinite(denominator) ? denominator : null,
-    language: text(raw.language, "en"),
-    variant: typeof raw.variant === "string" && raw.variant.trim() ? raw.variant.trim() : null,
-    score: Number.isFinite(score) ? score : 0,
-  };
-}
-
-function normalizeCandidates(raw: unknown): AuctionDraftCandidate[] {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .map(normalizeCandidate)
-    .filter((candidate): candidate is AuctionDraftCandidate => candidate !== null)
-    .slice(0, AUCTION_DRAFT_MAX_CANDIDATES);
-}
-
-function normalizeManualFields(raw: unknown): AuctionDraftCard["manualFields"] {
-  if (!isObject(raw)) return {};
-  const output: AuctionDraftCard["manualFields"] = {};
-  for (const key of manualFieldKeys) if (raw[key] === true) output[key] = true;
-  return output;
-}
-
 /** Whitelist + defaults: o mesmo caminho normaliza o que o wizard envia e o
- * JSON guardado no banco, então restore(build(x)) é estável por construção. */
+ * JSON guardado no banco, então restore(build(x)) é estável por construção.
+ * Rascunhos salvos pela versão com reconhecimento automático continuam
+ * abrindo normalmente: os campos de recognition que eles carregam são
+ * simplesmente ignorados pela whitelist. */
 export function normalizeDraftCard(raw: unknown): AuctionDraftCard {
   if (!isObject(raw)) throw new Error("Rascunho corrompido (carta inválida).");
   const condition = text(raw.condition, cardConditions[0]);
@@ -147,10 +89,6 @@ export function normalizeDraftCard(raw: unknown): AuctionDraftCard {
     buyout: text(raw.buyout),
     durationMinutes: text(raw.durationMinutes),
     optionCount: text(raw.optionCount),
-    recognitionStage: normalizeStage(raw.recognitionStage),
-    recognitionMessage: text(raw.recognitionMessage).slice(0, AUCTION_DRAFT_MAX_MESSAGE_CHARS),
-    recognitionCandidates: normalizeCandidates(raw.recognitionCandidates),
-    manualFields: normalizeManualFields(raw.manualFields),
   };
 }
 
@@ -174,10 +112,6 @@ export type AuctionDraftCardSource = {
   buyout: string;
   durationMinutes: string;
   optionCount: string;
-  recognitionStage: string;
-  recognitionMessage: string;
-  recognitionCandidates: unknown;
-  manualFields: unknown;
 };
 
 export function buildDraftState(input: {

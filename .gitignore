@@ -9,14 +9,6 @@ out
 *.tsbuildinfo
 sessao/
 bot/sessao/
-benchmarks/card-recognition/private/
-benchmarks/card-recognition/results.local.json
-
-# Servico local de reconhecimento (Python): artefatos grandes ficam fora do git
-recognition/models/
-recognition/data/
-recognition/.venv/
-recognition/**/__pycache__/
 
 bot/data/
 

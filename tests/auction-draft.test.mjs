@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   AUCTION_DRAFT_MAX_CARDS,
-  AUCTION_DRAFT_MAX_CANDIDATES,
   AUCTION_DRAFT_VERSION,
   buildDraftState,
   buildDraftTitle,
@@ -28,15 +27,6 @@ const baseCard = (overrides = {}) => ({
   buyout: '',
   durationMinutes: '2',
   optionCount: '6',
-  recognitionStage: 'identified',
-  recognitionMessage: '193 ms · 2 consulta(s) ao catálogo',
-  recognitionCandidates: [
-    { id: 'x', name: 'Pikachu', collection: 'Base Set', cardNumber: '25/102', localId: '25', denominator: 102, language: 'en', variant: 'Holo', score: 87 },
-    { id: 'y', name: 'Raichu', collection: 'Base Set', cardNumber: '14/102', localId: '14', denominator: 102, language: 'en', score: 61 },
-    { id: '', name: 'Sem id vira lixo', collection: '', cardNumber: '', localId: '', denominator: null, language: 'en', score: 10 },
-    'não sou objeto',
-  ],
-  manualFields: { name: true, language: false, bogus: true },
   ...overrides,
 });
 
@@ -66,25 +56,12 @@ test('round trip: restore(JSON(build)) devolve exatamente o que foi salvo', () =
   assert.deepEqual(restored, state);
 });
 
-test('estágios transitórios de reconhecimento não sobrevivem ao rascunho', () => {
-  const state = buildDraftState(baseInput([baseCard({ recognitionStage: 'queued' }), baseCard({ recognitionStage: 'analyzing' }), baseCard({ recognitionStage: 'review' })]));
-  assert.equal(state.cards[0].recognitionStage, 'idle');
-  assert.equal(state.cards[1].recognitionStage, 'idle');
-  assert.equal(state.cards[2].recognitionStage, 'review');
-});
-
-test('candidatos: sem id são descartados e o máximo é respeitado', () => {
-  const many = Array.from({ length: 8 }, (_, index) => ({ id: `c${index}`, name: `N${index}`, collection: 'S', cardNumber: '1/10', localId: '1', denominator: 10, language: 'en', score: 50 }));
-  const state = buildDraftState(baseInput([baseCard({ recognitionCandidates: many })]));
-  assert.equal(state.cards[0].recognitionCandidates.length, AUCTION_DRAFT_MAX_CANDIDATES);
-  assert.deepEqual(state.cards[0].recognitionCandidates.map(candidate => candidate.id), ['c0', 'c1', 'c2', 'c3', 'c4']);
-  const fromBase = buildDraftState(baseInput([baseCard()]));
-  assert.equal(fromBase.cards[0].recognitionCandidates.length, 2, 'candidato sem id e não-objeto caem fora');
-});
-
-test('manualFields: só campos reconhecíveis com true sobrevivem', () => {
-  const state = buildDraftState(baseInput([baseCard()]));
-  assert.deepEqual(state.cards[0].manualFields, { name: true });
+test('rascunho salvo pela era do reconhecimento abre: campos de IA são ignorados pela whitelist', () => {
+  const legacyCard = { ...baseCard(), recognitionStage: 'review', recognitionMessage: '193 ms', recognitionCandidates: [{ id: 'x', name: 'Pikachu' }], manualFields: { name: true } };
+  const state = buildDraftState(baseInput([legacyCard]));
+  assert.equal(state.cards[0].name, 'Pikachu');
+  assert.equal('recognitionStage' in state.cards[0], false, 'campo de reconhecimento não faz mais parte do rascunho');
+  assert.equal('recognitionCandidates' in state.cards[0], false);
 });
 
 test('defaults defensivos: condição/idioma/variante/pricing inválidos normalizam', () => {
@@ -115,11 +92,6 @@ test('restore rejeita versão não suportada e payload sem cartas', () => {
   assert.throws(() => restoreDraftState({ ...JSON.parse(JSON.stringify(state)), cards: [] }), /sem cartas/);
   assert.throws(() => restoreDraftState('não sou objeto'), /corrompido/);
   assert.throws(() => normalizeDraftCard(42), /corrompido/);
-});
-
-test('mensagem de reconhecimento é truncada para não inflar o payload', () => {
-  const state = buildDraftState(baseInput([baseCard({ recognitionMessage: 'x'.repeat(500) })]));
-  assert.equal(state.cards[0].recognitionMessage.length, 300);
 });
 
 test('buildDraftTitle: data de Brasília + contagem de cartas', () => {

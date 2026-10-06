@@ -34,7 +34,7 @@ $12026-09-25
 5. **Redução de valor → aviso → 3 avisos → DM**: dentro da mesma transação do `BID_CHANGED`; bot drena `admin_notifications` (≤15s) e DM os admins com histórico.
 6. **Pausar/Retomar**: wizard → controle da fila (`paused`) → claim respeita → retomar continua do próximo `scheduled` sem duplicar (event-id por dispatch).
 7. **Exportar**: `GET /api/export` → snapshot → Excel (Vendas + TOTAL, Alterações de valores, Resumo, brutas).
-8. **Limpeza 12h** (era 24h — 2026-10-05): supervisor hourly → `cleanup_old_auctions` (só lotes terminais > 12h; avisos globais sobrevivem).
+8. **Limpeza 12h**: supervisor → `cleanup_old_auctions` (só lotes terminais > 12h; avisos globais sobrevivem e a rotina é bloqueada sem backup diário).
 
 ## Invariantes (nunca violar)
 

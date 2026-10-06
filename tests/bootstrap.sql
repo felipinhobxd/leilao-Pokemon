@@ -17,3 +17,11 @@ create table storage.objects(
   name text not null,
   primary key (bucket_id,name)
 );
+
+-- Seed today's backup metadata for CI so retention tests exercise the real
+-- cleanup path instead of being blocked by the production safety guard.
+insert into storage.objects(bucket_id,name)
+values (
+  'business-backups',
+  'backups/backup-' || to_char(clock_timestamp(),'YYYYMMDD') || '-ci.json'
+);

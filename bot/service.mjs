@@ -486,7 +486,7 @@ async function dailyBackup() {
   }
 }
 
-// Rotina de exclusão de leilões antigos: retenção fixa de 24 horas. Roda no máximo
+// Rotina de exclusão de leilões antigos: retenção fixa de 12 horas. Roda no máximo
 // 1x/hora e só é autorizada depois de um backup na nuvem feito no mesmo dia.
 // O objetivo é evitar outra perda de histórico por variável de ambiente antiga.
 async function ensureCloudBackupForCleanup(now = new Date()) {
@@ -518,10 +518,11 @@ async function cleanupOldAuctions() {  if (cleanupBusy || shuttingDown) return;
       console.warn("Limpeza de leilões antigos adiada: não foi possível confirmar o backup na nuvem do dia.");
       return;
     }
-    // Retenção fixa: 24 horas. O antigo BOT_CLEANUP_DAYS é ignorado de propósito,
-    // para um .env local antigo (por exemplo, 30 dias) não impedir a limpeza de 24h.
-    const days = 1;
-    const { data, error } = await db.rpc("cleanup_old_auctions", { p_days: days });
+    // Retenção fixa: 12 horas (era 24h — pedido do operador, 2026-10-05). O antigo
+    // BOT_CLEANUP_DAYS é ignorado de propósito, para um .env local antigo (por
+    // exemplo, 30 dias) não impedir a limpeza de 12h.
+    const hours = 12;
+    const { data, error } = await db.rpc("cleanup_old_auctions", { p_hours: hours });
     if (error) {
       console.warn("Limpeza de leilões antigos falhou:", error?.message || error);
       return;
@@ -529,7 +530,7 @@ async function cleanupOldAuctions() {  if (cleanupBusy || shuttingDown) return;
     const deleted = data?.deleted ?? {};
     const total = Object.values(deleted).reduce((sum, count) => sum + Number(count ?? 0), 0);
     if (total > 0) {
-      console.log(`Limpeza de leilões antigos (${data?.cutoff ?? "24h"}): ${total} registro(s) removido(s) —`, JSON.stringify(deleted));
+      console.log(`Limpeza de leilões antigos (${data?.cutoff ?? "12h"}): ${total} registro(s) removido(s) —`, JSON.stringify(deleted));
     }
   } catch (error) {
     console.warn("Limpeza de leilões antigos falhou:", error?.message || error);
@@ -623,9 +624,10 @@ await loadPreviousWorkerState();
 await publishState({ status: "starting" });
 heartbeatTimer = setInterval(() => void publishState(), HEARTBEAT_MS);
 commandTimer = setInterval(() => void pollBotCommands(), 5_000);
-// Limpeza automatica de leiloes antigos (24 horas): o supervisor roda 24h, a
-// rotina e hourly e so remove lotes TERMINAIS (closed/sold/cancelled) mais
-// velhos que o corte — nunca nada aberto/recente (cleanup_old_auctions).
+// Limpeza automatica de leiloes antigos (12 horas de retencao): o supervisor
+// roda 24h, a rotina e hourly e so remove lotes TERMINAIS (closed/sold/
+// cancelled) mais velhos que o corte — nunca nada aberto/recente
+// (cleanup_old_auctions).
 cleanupTimer = setInterval(() => void cleanupOldAuctions(), 10 * 60_000);
 cleanupTimer.unref?.();
 // Backup diário dos dados de leilão (bot/backups/backup-YYYYMMDD-HHmm.json):

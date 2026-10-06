@@ -5,7 +5,7 @@
 --     acumula entre leilões diferentes);
 --  4. 3 avisos => 1 única notificação de admin (idempotente por evento);
 --  5. evento repetido (retry/replay) não gera aviso nem notificação dupla;
---  6. limpeza de 24 horas APAGA os leilões velhos mas PRESERVA os avisos
+--  6. limpeza de 12 horas APAGA os leilões velhos mas PRESERVA os avisos
 --     (auction_id vira NULL, contexto card_name/lot_number continua lá).
 begin;
 insert into auth.users(id) values('00000000-0000-0000-0000-000000000009');

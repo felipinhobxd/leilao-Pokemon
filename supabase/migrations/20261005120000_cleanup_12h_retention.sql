@@ -1,12 +1,17 @@
 -- 2026-10-05: auction cleanup retention drops from 24 hours to 12 hours
 -- (operator request). The parameter is now p_hours (floor: 1 hour) so a
--- sub-day retention is expressible; named callers must pass p_hours — the
+-- sub-day retention is expressible; named callers must pass p_hours - the
 -- bot was updated in the same change. Default: 12 hours.
 -- This redefines the function wholesale: it supersedes 20260928165333
 -- (30-day floor) and 20260929191637 (24h) whichever of them is applied.
 -- Postgres refuses CREATE OR REPLACE when a parameter is RENAMED (same
 -- signature cleanup_old_auctions(integer)), so the old function is dropped
 -- first; the revoke/grant at the end re-establishes permissions.
+-- Standalone cards (no auction ever - e.g. cards created manually in the
+-- panel or giveaway/brinde cards) are PRESERVED: only cards orphaned by the
+-- auctions deleted in this SAME run are removed (operator fix a02e91ee
+-- declared the variable; this is the logic that uses it - the old sweep
+-- deleted ANY card without an auction, no matter how recent).
 begin;
 
 drop function if exists public.cleanup_old_auctions(integer);
@@ -58,9 +63,11 @@ begin
  with gone as (delete from public.value_change_log vc using public.auctions a
    where a.id=vc.auction_id and coalesce(a.ended_at,a.scheduled_end_at,a.created_at)<cutoff and a.status in ('closed','sold','cancelled') returning 1)
  select count(*) into n_changes from gone;
- with gone as (delete from public.auctions a where coalesce(a.ended_at,a.scheduled_end_at,a.created_at)<cutoff and a.status in ('closed','sold','cancelled') returning 1)
- select count(*) into n_auctions from gone;
- with gone as (delete from public.cards c where not exists(select 1 from public.auctions a where a.card_id=c.id) returning 1)
+ with gone as (delete from public.auctions a where coalesce(a.ended_at,a.scheduled_end_at,a.created_at)<cutoff and a.status in ('closed','sold','cancelled') returning a.card_id)
+ select count(*), coalesce(array_agg(distinct card_id) filter (where card_id is not null), '{}'::uuid[]) into n_auctions, card_ids from gone;
+ -- Only cards orphaned BY THIS RUN are deleted: a standalone card (manual
+ -- or brinde, never auctioned) survives the cleanup untouched.
+ with gone as (delete from public.cards c where c.id = any(card_ids) and not exists(select 1 from public.auctions a where a.card_id=c.id) returning 1)
  select count(*) into n_cards from gone;
  execute 'create trigger immutable_audit before update or delete on public.auction_events for each row execute function public.reject_audit_mutation()';
  return jsonb_build_object('cutoff',cutoff,'deleted',jsonb_build_object(

@@ -3,7 +3,7 @@
 -- 2. um leilão terminal de 2 horas é APAGADO com p_hours=1 — granularidade em
 --    HORAS (com o antigo parâmetro em dias ele sobreviveria);
 -- 3. um leilão terminal de 6 horas SOBREVIVE ao padrão (janela >= 6h);
--- 4. um leilão terminal de 13 horas é APAGADO pelo padrão (janela < 24h).
+-- 4. um leilão terminal de 13 horas é APAGADO pelo padrão (janela > 12h).
 begin;
 
 insert into auth.users(id) values ('00000000-0000-0000-0000-000000000092');

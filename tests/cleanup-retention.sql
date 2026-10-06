@@ -6,6 +6,14 @@
 -- 4. um leilão terminal de 13 horas é APAGADO pelo padrão (janela > 12h).
 begin;
 
+-- The production cleanup guard requires a same-day cloud backup.
+-- CI runs against plain Postgres, so seed the minimal Storage metadata mock.
+insert into storage.objects(bucket_id,name)
+values (
+  'business-backups',
+  'backups/backup-' || to_char(clock_timestamp(),'YYYYMMDD') || '-ci.json'
+);
+
 insert into auth.users(id) values ('00000000-0000-0000-0000-000000000092');
 insert into public.admin_profiles(user_id,display_name)
 values ('00000000-0000-0000-0000-000000000092','Cleanup retention test');

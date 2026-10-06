@@ -1,0 +1,2 @@
+-- Defense-in-depth: cleanup is blocked unless today's cloud backup exists.
+-- This prevents the destructive retention job from running against an unprotected database.

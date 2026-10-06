@@ -4,7 +4,12 @@
 -- bot was updated in the same change. Default: 12 hours.
 -- This redefines the function wholesale: it supersedes 20260928165333
 -- (30-day floor) and 20260929191637 (24h) whichever of them is applied.
+-- Postgres refuses CREATE OR REPLACE when a parameter is RENAMED (same
+-- signature cleanup_old_auctions(integer)), so the old function is dropped
+-- first; the revoke/grant at the end re-establishes permissions.
 begin;
+
+drop function if exists public.cleanup_old_auctions(integer);
 
 create or replace function public.cleanup_old_auctions(p_hours integer default 12)
 returns jsonb

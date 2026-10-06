@@ -20,8 +20,10 @@ PENDENTES (ordem lexical):
   5. 20260925140000_max200_export_limits.sql             (200 cartas + export com LIMITs)
   6. 20260925150000_dashboard_snapshot_limits.sql       (LIMITs no snapshot do dashboard — fix de egress/log)
   7. 20261005120000_cleanup_12h_retention.sql            (limpeza 12h — RETENÇÃO NOVA, pedido do operador;
-     redefine o RPC por completo com parâmetro p_hours, então substitui a 20260929191637/24h em
-     qualquer estado: se a de 24h ainda não foi colada, cole SÓ esta. O bot já chama p_hours=12.)
+     DROPA a função cleanup_old_auctions(integer) antes de recriar com p_hours — o Postgres não aceita
+     CREATE OR REPLACE com parâmetro renomeado (p_days→p_hours), era o erro do CI; a transação do arquivo
+     é atômica, então colar de novo após a falha é seguro. Substitui a 20260929191637/24h em qualquer
+     estado: se a de 24h ainda não foi colada, cole SÓ esta. O bot já chama p_hours=12.)
   8. 20261005130000_drop_card_recognition_examples.sql   (REMOÇÃO DO RECONHECIMENTO: apaga a tabela
      card_recognition_examples — memória de IA que não existe mais. Opcional, mas recomendado.)
 Próximo passo: colar as 8 no SQL Editor → `npm run doctor` → smokes:

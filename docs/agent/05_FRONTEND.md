@@ -2,7 +2,7 @@
 
 > Área: Frontend Next.js
 > Escopo: Páginas, fluxos, estados, integrações
-$12026-10-05
+$12026-10-07
 > Fonte principal: `app/layout.tsx`, `app/page.tsx`, `app/dashboard.tsx`, `app/auctions/new/**`, `app/whatsapp/**`, `lib/auction-draft.ts`
 
 ## Mapa real (arquivo → funcionalidade)
@@ -10,7 +10,7 @@ $12026-10-05
 | Funcionalidade | Arquivo |
 |---|---|
 | Login (Supabase Auth) | `app/page.tsx` |
-| Painel ao vivo (bot, grupo, leilão atual, maior lance, janela 30d, ações, **avisos de alteração de valores**) | `app/dashboard.tsx` |
+| Painel ao vivo (bot, grupo, leilão atual, maior lance, janela 30d, ações, **avisos de alteração de valores** com marca "após retirar o lance", **gestão de participantes**: suspender/reativar/banir, avisos total + K de 3, suspensão e notas) | `app/dashboard.tsx` |
 | Cadastro em **lote** (drag & drop de fotos, valores, fila, rascunhos, botão Brinde) | `app/auctions/new/page.tsx` → `app/auctions/new/bulk-wizard.tsx` |
 | Wizard de **carta única** | `app/auctions/new/single/page.tsx` → `app/auctions/new/wizard.tsx` |
 | **Brinde** (enquete rápida, movida da Central WhatsApp 2026-09-24) | `app/auctions/brinde/page.tsx` |
@@ -35,6 +35,13 @@ $12026-10-05
 ### Avisos de alteração de valores no dashboard (2026-09-24, migration `20260924180000`)
 
 - Painel "Avisos de alteração de valores" (entre Disputa e Cartas): cada redução de lance com participante, **lote/enquete**, carta, anterior → novo, **horário** e nº do aviso (K de 3, com "admins notificados" do 3º em diante). O participante NÃO recebe DM (decisão do operador — só conta); o terminal do bot loga cada troca em tempo real. Dados via `read_dashboard_snapshot` (agora inclui `participant_warnings` + `value_change_log`, limit 100 — antes só o Excel tinha).
+- **2026-10-07**: a célula "Alteração" marca `change_kind='withdraw_rebid'` como "· após retirar o lance" (redução via retirada + re-oferta, migration 20261007110000).
+
+### Gestão de participantes no dashboard (2026-10-07, migration `20261007100000`)
+
+- Seção Participantes ganhou colunas **Avisos** (total global · K de 3, via chave nova `participant_warning_stats` do snapshot — `warningStats()` em dashboard.tsx), **Suspensão** ("Até dd/mm hh:mm" / "Indefinida" / "—") e **Notas** (40 chars + tooltip).
+- Ações: **Suspender…** (dialog no padrão dos existentes: 24h/48h/7d/`datetime-local` em horário de Brasília via `brasiliaInputToIso`/indefinida → `PARTICIPANT_SUSPEND` com `data.suspension_until` ISO ou null), **Reativar** (`PARTICIPANT_REACTIVATE`, com confirm — aparece para suspenso/banido), **Editar** (dialog existente) e **Banir** (relabel do antigo "Remover" — mesmo `PARTICIPANT_DELETE`).
+- O select de participantes do form manual de lances agora filtra também `suspension_until` vigente (só status 'active' não bastava — o guard do banco rejeitaria o comando).
 
 ### Rascunhos (2026-09-24, migration `20260924150000`)
 

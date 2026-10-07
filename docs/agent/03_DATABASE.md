@@ -2,7 +2,7 @@
 
 > Área: Banco de dados
 > Escopo: Tabelas, RPCs, triggers, RLS, estados, idempotência, perigos
-> Última atualização: 2026-09-25
+> Última atualização: 2026-10-07
 > Fonte principal: `supabase/schema.sql`, `supabase/operations.sql`, `supabase/whatsapp_bridge.sql`, `supabase/migrations/*.sql` (todas), `lib/backend.ts`, `app/api/**`, `bot/**`
 
 ## Como o schema chega ao banco
@@ -21,8 +21,8 @@ Ordem de aplicação (confirmada no CI `ci.yml`): `tests/bootstrap.sql` → `sup
 | `purchases` | venda confirmada | `auction_id, participant_id, card_id, amount, status, confirmed_at` | export |
 | `payments` / `deliveries` | fluxo pós-venda | referenciam `purchases` | export |
 | `warnings` | advertências legadas por leilão | `participant_id, auction_id, type, reason, active, starts_at, ends_at` | export |
-| `value_change_log` | histórico de alterações de valor (migration 20260923093000) | `auction_id, participant_id, previous_amount, new_amount, difference, external_event_id UNIQUE, occurred_at` | export, avisos |
-| `participant_warnings` | contador GLOBAL de avisos por usuário (idem; **notified_at** na 20260924180000 = DM ao participante entregue) | `participant_id, auction_id (ON DELETE SET NULL), card_name, lot_number, previous_amount, new_amount, external_event_id UNIQUE, occurred_at, notified_at` | bot drena (DM ao participante), export, dashboard |
+| `value_change_log` | histórico de alterações de valor (migration 20260923093000) | `auction_id, participant_id, previous_amount, new_amount, difference, external_event_id UNIQUE, occurred_at, change_kind ('change'\|'withdraw_rebid', 20261007110000)` | export, avisos |
+| `participant_warnings` | contador GLOBAL de avisos por usuário (20260923093000; **cycle_closed** na 20260924180000 = aviso que fechou o ciclo de 3; `change_kind` na 20261007110000) | `participant_id, auction_id (ON DELETE SET NULL), card_name, lot_number, previous_amount, new_amount, external_event_id UNIQUE, occurred_at, created_at, cycle_closed, change_kind` | export, dashboard, stats do painel |
 | `admin_notifications` | DM pendente aos admins (idem) | `participant_id, kind, payload jsonb, external_event_id UNIQUE, sent_at` | bot drena |
 | `whatsapp_quick_polls` | brindes: enquete livre agendada (20260924120000) + **itens de brinde da fila** (20260924160000: foto da carta + posição na fila) | `group_id FK, title, options jsonb, image_url, queue_id FK CASCADE, queue_position, scheduled_at, sent_at, poll_message_id UNIQUE, external_event_id UNIQUE, created_by` | bot publica (P-07); fila com brinde |
 | `payment_reminders` | ciclo de lembretes de pagamento (idem) | `purchase_id UNIQUE FK CASCADE, participant_id, reminded_count, last_reminded_at` | bot drena (P-09) |
@@ -47,7 +47,13 @@ Ordem de aplicação (confirmada no CI `ci.yml`): `tests/bootstrap.sql` → `sup
 - Idempotência: `pg_advisory_xact_lock(hashtextextended(eid,0))` + `processed_commands`; repetição idêntica devolve resultado em cache; divergente → `event_id_conflict`.
 - Guardas de lance: `auction_not_open`, `deadline_expired`, `participant_not_eligible`, `stale_event`, `invalid_bid_amount` (≥ inicial, 2 casas), `active_bid_exists/not_found`, `bid_increment_required`.
 - Tie-break do vencedor: `amount DESC, COALESCE(whatsapp_event_at, processed_at), processed_at, confirmation_order` (horário REAL do voto).
+- Comandos `PARTICIPANT_SUSPEND`/`PARTICIPANT_REACTIVATE` (20261007100000): SUSPEND com prazo grava SÓ `suspension_until` (status segue 'active' → o guard `participant_not_eligible` AUTO-EXPIRA quando o prazo passa); sem prazo vira `status='suspended'` (indefinida); banido não é suspenso (`participant_banned`); REACTIVATE limpa status+prazo (desfaz ban também). Erros novos: `invalid_suspension_until`, `participant_banned`. O evento de auditoria liga o `participant_id` (pid:=rid).
+- ADDITION C (20261007110000): `BID_PLACED` pós-RETIRADA compara com o último lance `withdrawn` do participante NO MESMO leilão (alias `prev` — regra 42702; índice `bids_auction_participant_recent_idx`) → `register_participant_reduction` grava `value_change_log` (change_kind='withdraw_rebid') para toda re-oferta e aviso+ciclo de 3 apenas na REDUÇÃO. O bloco B.2 (BID_CHANGED) permanece inline verbatim, intocado.
 - Hooks 20260923093000 (apenas em `BID_CHANGED`): grava `value_change_log`; se `novo < anterior` → 1 linha em `participant_warnings` (ON CONFLICT nada); se total do usuário = **exatamente 3** → 1 linha em `admin_notifications` com payload completo (histórico incluso).
+
+### `register_participant_reduction(...)` — helper do caminho retirada+re-oferta (20261007110000)
+
+- Grava `value_change_log` + `participant_warnings` + ciclo de 3 + `admin_notifications` com o MESMO shape de payload que `bot/warning-notify.mjs` lê (zero mudança no bot). Chamado apenas pelo ADDITION C do `process_auction_command` (BID_PLACED pós-withdrawn); roda DENTRO da transação do chamador. Idempotência: `ON CONFLICT (external_event_id)` + o cache `processed_commands` do comando que o chamou. Server-only (revoke + grant execute to service_role).
 
 ### Demais RPCs
 
@@ -56,7 +62,7 @@ Ordem de aplicação (confirmada no CI `ci.yml`): `tests/bootstrap.sql` → `sup
 - Trigger `sync_auction_publish_queue_status` (corpo substituído na 20260924160000) — serve as DUAS tabelas (`tg_table_name`: dispatches falam `status`, quick_polls fala `sent_at`); brindes pendentes seguram a conclusão da fila; trigger novo em `whatsapp_quick_polls` (after update of sent_at) move a fila para frente.
 - `claim_whatsapp_dispatch(p_worker_id)` — claim atômica de dispatch vencido (fila `running`); `locked_at` + heartbeat do worker; recovery de lock stale (~2 min) no bot.
 - `resolve_whatsapp_participant(...)` — LID/telefone → participante (merge de identidades; conflito → evento auditado).
-- `read_auction_snapshot()` / `read_dashboard_snapshot()` — export/dashboard; a 20260923093000 adiciona as 3 tabelas novas ao auction snapshot; a **20260924180000** adiciona `value_change_log` + `participant_warnings` (limit 100) ao DASHBOARD snapshot — o painel ao vivo mostra qual enquete/lote, valores e horários (antes só o Excel tinha).
+- `read_auction_snapshot()` / `read_dashboard_snapshot()` — export/dashboard; a 20260923093000 adiciona as 3 tabelas novas ao auction snapshot; a **20260924180000** adiciona `value_change_log` + `participant_warnings` (limit 100) ao DASHBOARD snapshot — o painel ao vivo mostra qual enquete/lote, valores e horários (antes só o Excel tinha). A **20261007100000** adiciona a chave `participant_warning_stats` (total global + ciclo aberto por participante; as LINHAS de `participants` não mudam — contrato de tests/dashboard-snapshot.sql); a **20261007110000** adiciona `change_kind` às duas listas de avisos do dashboard snapshot (o export/backup usam `select *` — a coluna flui sozinha).
 - `purge_all_business_data(p_confirm)` — exclusão total com frase `quero excluir mesmo` (validação tripla UI→API→DB), ordem FK-safe, SECURITY DEFINER, reseta sequences.
 - `export_business_backup()` (20260923120000; corpo substituído na 20260924140000, 20260924150000 — drafts limit 50 — e na **20260924170000, do PRÓPRIO OPERADOR**, que acrescentou os campos do brinde na fila: `queue_id, queue_position, image_url` no bloco de quick_polls, limit 500) — snapshot JSON; consumido pelo bot (cópia diária 4h30 em `bot/backups/`) e por `GET /api/admin/backup`.
 - `upsert_auction_draft(p_payload, p_admin_user_id)` / `delete_auction_draft(p_draft_id, p_admin_user_id)` (20260924150000) — salvar/excluir rascunho do wizard. Upsert idempotente por PK (id gerado no cliente, SEM processed_commands); guards espelham a rota (título 1..120, cards 1..200, ≤512KB); propriedade: rascunho alheio vira `draft_not_found`; delete idempotente por estado.

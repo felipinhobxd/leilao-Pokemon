@@ -8,6 +8,7 @@ const messages: Record<string, string> = {
   stale_event: "Evento antigo: o estado atual foi preservado.", deadline_expired: "O prazo do leilão terminou. Finalize para apurar o vencedor.",
   card_unavailable: "Carta indisponível para leilão.", card_in_use: "Carta vinculada a uma disputa ou venda.", invalid_bid_amount: "Valor abaixo do inicial ou inválido.",
   buyout_not_enabled: "Este leilão não tem ARREMATE.", bid_increment_required: "O lance precisa respeitar o incremento mínimo do leilão.", forbidden: "Operação não autorizada.",
+  participant_not_found: "Participante não encontrado.", invalid_suspension_until: "Prazo de suspensão inválido — use uma data futura ou marque como indefinida.", participant_banned: "Participante está banido. Reative antes de suspender.",
 };
 export async function POST(request: Request) {
   try {

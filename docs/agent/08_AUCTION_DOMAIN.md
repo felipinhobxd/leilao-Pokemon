@@ -2,7 +2,7 @@
 
 > Área: Regras de negócio do leilão
 > Escopo: Lote, carta, valores, lances, enquete, ARREMATE, vencedor, fila, avisos
-$12026-09-25
+$12026-10-07
 > Fonte principal: `lib/auction-wizard.ts`, `app/api/auctions/**`, `supabase/migrations/**` (RPCs), `bot/index.mjs`, `bot/format.mjs`, `app/api/export/route.ts`
 
 ## Conceitos e onde vivem
@@ -17,7 +17,8 @@ $12026-09-25
 - **Pagamento pós-venda (P-09, 2026-09-24)**: delivery nasce `waiting_payment`; painel marca "Pagamento recebido" (`mark_purchase_paid` → payment `paid` + delivery `ready`, audita 1×); enquanto não marcado, o bot manda DM de lembrete a cada 7 dias ao arrematante (sem aviso/punição; máx. 5 por padrão).
 - **Brinde (P-07, 2026-09-24)**: enquete livre (texto/emoji) criada no painel (`whatsapp_quick_polls`), publicada pelo bot no horário agendado; "quem clicar primeiro leva" — votos visíveis na própria enquete do WhatsApp.
 - **Fotos de detalhe (P-08, 2026-09-24)**: até 4 por carta (`cards.extra_images`); o bot publica em sequência após a foto principal; o delay de 5s da enquete conta após a última.
-- **Aviso global (`participant_warnings`)**: cada `BID_CHANGED` com redução = 1 aviso no contador do USUÁRIO (vale no sistema inteiro, nunca reseta, um por evento por idempotência). Exatamente 3 → `admin_notifications` → DM aos admins (formato em `bot/warning-notify.mjs`). **O participante NÃO recebe DM** (decisão do operador 2026-09-24) — a redução só conta; o bot loga no terminal na hora ("🔄 Voto alterado … · lote N · ⚠️ redução") e o dashboard lista ao vivo (painel "Avisos de alteração de valores", migration 20260924180000). O Excel mantém as abas dedicadas. Subir/manter valor não gera aviso.
+- **Aviso global (`participant_warnings`)**: cada `BID_CHANGED` com redução = 1 aviso no contador do USUÁRIO (vale no sistema inteiro, nunca reseta, um por evento por idempotência). Exatamente 3 → `admin_notifications` → DM aos admins (formato em `bot/warning-notify.mjs`). **O participante NÃO recebe DM** (decisão do operador 2026-09-24) — a redução só conta; o bot loga no terminal na hora ("🔄 Voto alterado … · lote N · ⚠️ redução") e o dashboard lista ao vivo (painel "Avisos de alteração de valores", migration 20260924180000). O Excel mantém as abas dedicadas. Subir/manter valor não gera aviso. **Caminho novo (2026-10-07, migration 20261007110000)**: retirar o lance e re-ofertar MENOR também é redução — o `BID_PLACED` pós-retirada compara com o último lance withdrawn (ADDITION C + `register_participant_reduction`) e conta no MESMO ciclo de 3, marcado `change_kind='withdraw_rebid'` ("após retirar o lance" no painel e coluna "Como" no Excel). Subir/igualar após retirar só registra no `value_change_log`, sem aviso.
+- **Suspensão de participante (2026-10-07, migration 20261007100000)**: `PARTICIPANT_SUSPEND` com prazo grava só `suspension_until` (status segue 'active' → o guard `participant_not_eligible` AUTO-EXPIRA; lances ativos permanecem mas ficam inelegíveis até expirar); sem prazo = `status='suspended'` (indefinida, só volta reativando); `PARTICIPANT_REACTIVATE` limpa status+prazo (desfaz ban também); banido não é suspenso. Comandos idempotentes pelo eventId; auditoria dupla (auction_events do comando + trigger `audit_admin_change` em participants).
 - **Fila (`auction_publish_queues`)**: criação em lote gera fila + dispatches ordenados (`queue_position`); intervalo entre publicações 1s–24h; pausa/retomada persistente (`paused`), cancelamento, progresso (`summary`) na tela do wizard.
 
 ## Estados
@@ -42,5 +43,5 @@ $12026-09-25
 - EventId idêntico ⇒ resultado idêntico em cache; divergente ⇒ erro (anti-replay).
 - Nenhuma publicação sem `poll_message_id` gravado (re-envio seria detectado como jobId duplicado).
 - `poll_options` do banco são a verdade do que foi publicado — wizard/bot nunca recalculam sozinhos na publicação.
-- Contador de avisos é por PARTICIPANTE (global), não por leilão; nunca zera com troca de leilão/limpeza.
+- Contador de avisos é por PARTICIPANTE (global), não por leilão; nunca zera com troca de leilão/limpeza. Os DOIS caminhos de redução (troca direta e retirada+re-oferta menor) somam no MESMO ciclo de 3.
 - TOTAL da planilha soma apenas a coluna de valores das vendas (fórmula `=SUM` na faixa exata das linhas de compra).

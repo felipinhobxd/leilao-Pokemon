@@ -2,7 +2,7 @@
 
 > Área: Testes
 > Escopo: Suítes, comandos, cobertura, lacunas
-$12026-10-05
+$12026-10-07
 > Fonte principal: `package.json`, `bot/package.json`, `.github/workflows/ci.yml`, `tests/**`, `bot/*.test.mjs`
 
 ## Comandos oficiais
@@ -32,8 +32,8 @@ node tests/smoke.mjs
 - Lacunas: sem testes de rotas HTTP reais (só `smoke.mjs` pós-build); export Excel sem teste unitário (validado por build + revisão).
 
 ### 2. Banco — SQL executado no CI (Postgres 17 real)
-- Como: `ci.yml` aplica `tests/bootstrap.sql` + `supabase/schema.sql` + `supabase/whatsapp_bridge.sql` + **todas as migrations em ordem** + `tests/*.sql` (participant-identities, auction, auction-warnings, warning-notice, quick-polls-reminders, auction-drafts, giveaway-queue, edit-queue-item, delete-auction, auction-wizard, auction-queue, auction-queue-runtime, auction-queue-scale, dashboard-snapshot, cleanup-retention) via `psql -v ON_ERROR_STOP`.
-- O que valida: schema aplicável, RPCs, wizard, fila, runtime/escala da fila, snapshots, avisos globais, brindes/lembretes, rascunhos (`auction-drafts.sql`: upsert idempotente, guards, propriedade, delete idempotente, backup, **primeira cobertura SQL do purge**, RLS) e retenção da limpeza 12h (`cleanup-retention.sql`).
+- Como: `ci.yml` aplica `tests/bootstrap.sql` + `supabase/schema.sql` + `supabase/whatsapp_bridge.sql` + **todas as migrations em ordem** + `tests/*.sql` (participant-identities, auction, auction-warnings, warning-notice, quick-polls-reminders, auction-drafts, giveaway-queue, edit-queue-item, delete-auction, auction-wizard, auction-queue, auction-queue-runtime, auction-queue-scale, dashboard-snapshot, cleanup-retention, **participants-panel, withdraw-rebid-warning**) via `psql -v ON_ERROR_STOP`.
+- O que valida: schema aplicável, RPCs, wizard, fila, runtime/escala da fila, snapshots, avisos globais, brindes/lembretes, rascunhos (`auction-drafts.sql`: upsert idempotente, guards, propriedade, delete idempotente, backup, **primeira cobertura SQL do purge**, RLS), retenção da limpeza 12h (`cleanup-retention.sql`), **comandos de participante + snapshot stats** (`participants-panel.sql`: suspensão com prazo/indefinida, auto-expira, banido não suspenso, reativação, idempotência/event_id_conflict, participant_warning_stats, contrato da chave participants) e **redução via retirada+re-oferta** (`withdraw-rebid-warning.sql`: log change_kind, aviso só na redução, ciclo de 3 misto com DM no payload do bot, replay sem duplicar, change_kind no snapshot).
 - `tests/concurrency.py` (Python): buyouts concorrentes e eventos duplicados.
 - ⚠️ Localmente exige Postgres + psql; a validação local usual é confiar no CI.
 

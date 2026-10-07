@@ -30,7 +30,7 @@ export function failure(error: unknown) {
 export const tables = ["cards", "participants", "auctions", "bids", "auction_events", "purchases", "payments", "deliveries", "warnings", "value_change_log", "participant_warnings", "admin_notifications", "payment_reminders"] as const;
 export type Table = typeof tables[number];
 export type Row = Record<string, string | number | boolean | null | Record<string, unknown>>;
-export type Snapshot = Record<Table, Row[]>;
+export type Snapshot = Record<Table, Row[]> & { participant_warning_stats?: Row[] };
 // A JSON RPC avoids PostgREST row caps and reads a consistent database snapshot.
 export async function snapshot(db: ReturnType<typeof createServerSupabaseClient>, dashboard = false): Promise<Snapshot> {
   const { data, error } = await db.rpc(dashboard ? "read_dashboard_snapshot" : "read_auction_snapshot");

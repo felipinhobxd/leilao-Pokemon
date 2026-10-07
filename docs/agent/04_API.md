@@ -2,7 +2,7 @@
 
 > Área: API HTTP do painel
 > Escopo: Rotas, contratos, autenticação, idempotência
-$12026-10-05
+$12026-10-07
 > Fonte principal: `app/api/**/route.ts`, `lib/backend.ts`, `lib/purge.ts`, `lib/rate-limit.ts`, `lib/auction-draft.ts`
 
 ## Padrão comum (confirmado em todas as rotas)
@@ -49,8 +49,9 @@ $12026-10-05
 - `authorize` emite URL assinada do Supabase Storage com **rate limit 50 req/min/usuário** (`lib/rate-limit.ts`; Redis quando `REDIS_URL`, senão in-memory).
 - Upload batched e incremental: `lib/card-image.ts` (`uploadCardImageBatch` — dedup no storage, preserva o que já subiu).
 
-### `POST /api/commands` — enfileirar comando para o bot
-- Escreve em `whatsapp_bot_commands` (o supervisor faz poll a cada 3s). Usado pela central WhatsApp (reconectar, logout, sincronizar grupos etc.).
+### `POST /api/commands` — comando de negócio idempotente
+- Corpo: `{type, eventId, id?, auctionId?, participantId?, amount?, occurredAt?, data?}` → `parseCommand` (`lib/commands.ts`, whitelist de tipos + validação de forma) → RPC `process_auction_command` (service_role). É o canal das ações do dashboard (cards, participantes, leilões, lances manuais). **Novos tipos (2026-10-07)**: `PARTICIPANT_SUSPEND` (exige `id`; `data.suspension_until` nula/ausente = indefinida, ou ISO futura) e `PARTICIPANT_REACTIVATE` (exige `id`). Mensagens PT-BR novas: `participant_not_found`, `invalid_suspension_until`, `participant_banned`.
+- Separado disto, o painel também enfileira comandos de CONTROLE do bot em `whatsapp_bot_commands` (poll do supervisor a cada 3s) — usados pela central WhatsApp (reconectar, logout, sincronizar grupos etc.).
 
 ### `POST /api/quick-polls` — brindes: enquete rápida (2026-09-24)
 - Body: `eventId`, `groupId` (ativo), `title` 1..200, `options` 2..12 (≤100 chars cada), `scheduledAt` (default agora; passado >2min → 400). Idempotência leve: `external_event_id = quick-poll:{eventId}` (mesmo eventId devolve a enquete existente).

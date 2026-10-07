@@ -1,7 +1,7 @@
 # SESSION HANDOFF
 
 ## Última atualização
-2026-10-05 (remoção completa do reconhecimento + limpeza 12h)
+2026-10-07 (painel de gestão de participantes + redução via retirada e re-oferta)
 
 ## Hotfix 2026-09-29 — finalize repetido + corrida de conexão
 - **Sintoma**: 7x "⏰ Leilão encerrado: sem comprador" (grupo + terminal) em ~30s, e foto/lote antes do "@all O leilão vai começar!".
@@ -28,16 +28,20 @@
 14. **Limpeza 12 horas** (2026-10-05, era 24h; antes piso de 30 dias): retenção fixa de 12h no RPC (`cleanup_old_auctions(p_hours=12)`, parâmetro em HORAS com piso de 1h) e no bot (`p_hours: 12`); a limpeza continua exigindo backup na nuvem no mesmo dia. Migration `20261005120000` + `tests/cleanup-retention.sql` reescrito e incluído no CI.
 15. **Auto-save de rascunho**: 45s, fingerprint, silencioso em falha.
 16. **REMOÇÃO COMPLETA DO RECONHECIMENTO** (2026-10-05, decisão do operador): toda a IA de identificação de cartas saiu do projeto — `recognition/` (Python/FastAPI/ONNX/OCR), 26 módulos `lib/card-recognition-*`, `lib/card-catalog.ts` (validação de lote contra o catálogo — o campo `collection` já não vinha da UI, o check estava morto), API `/api/card-recognition/*`, toggle/debug/wiring do wizard, 6 scripts, 2 workflows, benchmarks, docs, 11 arquivos de teste e a tabela `card_recognition_examples` (migration `20261005130000` de drop). Dependências `@huggingface/transformers` + `onnxruntime-common` + override/stubs removidas. Wizard agora é 100% manual: imagem → preencher dados → preços → revisão → publicar. `npm start` sobe só site + bot. `doctor` sem checks de reconhecimento e com verificações de tabela em paralelo. Rascunhos antigos continuam abrindo (whitelist ignora campos de IA).
+17. **PAINEL DE GESTÃO DE PARTICIPANTES** (2026-10-07, migration 20261007100000): comandos idempotentes `PARTICIPANT_SUSPEND`/`PARTICIPANT_REACTIVATE` no RPC; UI com colunas Avisos (total + K de 3 via nova chave `participant_warning_stats` do snapshot), Suspensão e Notas; ações Suspender… (24h/48h/7d/data Brasília/indefinida), Reativar, Banir (relabel do PARTICIPANT_DELETE). Suspensão COM prazo auto-expira (status fica 'active' + suspension_until); indefinida = status 'suspended'; banido não é suspenso (participant_banned); reativar limpa status+prazo. Select de lances manuais filtra suspenso com prazo vigente.
+18. **REDUÇÃO VIA RETIRADA + RE-OFERTA** (2026-10-07, migration 20261007110000): o fluxo "retira o voto e dá lance menor" chegava como BID_PLACED e passava batido. ADDITION C no BID_PLACED compara com o último lance withdrawn (alias `prev`, índice novo `bids_auction_participant_recent_idx`) → nova função `register_participant_reduction` grava value_change_log/participant_warnings com `change_kind` ('change'|'withdraw_rebid'), aviso na redução, ciclo de 3 e DM com o MESMO payload do bot (zero mudança em bot/). Bloco B.2 (BID_CHANGED) permanece inline verbatim. Excel ganha coluna "Como" (3 abas); painel Avisos marca "após retirar o lance". Testes: `tests/participants-panel.sql` + `tests/withdraw-rebid-warning.sql` (17 SQL files no CI).
 
 ## Ponto EXATO onde paramos
 2026-09-29 (sessão de auditoria geral): (1) hotfix do spam "sem comprador" 7x no finalize; (2) CORREÇÃO RAIZ DOS VOTOS — votos de enquete encapsulados em ephemeralMessage nunca eram reconhecidos (check direto message.message.pollUpdateMessage); unwrapMessageContent agora normaliza em handleIncomingMessages/processIncomingPollMessage/decryptIncomingPollVote; (3) ideia .exe/Electron REMOVIDA por completo (P-14 cancelado). Migrations PENDENTES de aplicação manual (P-13 — ver 11_PENDING_WORK.md).
 2026-10-05 (limpeza 12h): retenção da limpeza de leilões 24h → 12h (pedido do operador). Migration `20261005120000_cleanup_12h_retention.sql` (PENDENTE — item 7 do P-13), bot já chama `p_hours=12`, `tests/cleanup-retention.sql` reescrito (janela 12h + granularidade em horas) e adicionado ao CI, docs e `.env.example` atualizados.
 2026-10-05 (remoção do reconhecimento): Toda a IA de cartas foi eliminada (itens da sessão: ver item 16 acima). Migrations PENDENTES de aplicação: `20261005120000` (limpeza 12h) + `20261005130000_drop_card_recognition_examples.sql` (P-13). `npm install` já feito (lockfile regenerado, 22 pacotes a menos); faltam `npm ci` local + build.
+2026-10-07 (participantes + retirada/re-oferta): duas migrations NOVAS e encadeadas — `20261007100000_participants_panel_commands.sql` (comandos SUSPEND/REACTIVATE + participant_warning_stats no snapshot) e `20261007110000_withdraw_rebid_reduction_warning.sql` (change_kind + register_participant_reduction + ADDITION C no BID_PLACED). Código validado localmente (typecheck, 71 testes node, 15 bot, build); SQL valida no CI. ZERO mudança em `bot/` (payload da DM idêntico). Migrations PENDENTES de aplicação manual (P-13 itens 9-10 — a #10 contém o corpo do RPC já com a #9, aplicar em ordem).
 
 ## Próximo passo EXATO
 1. **OPERADOR**: reiniciar o bot (npm run start) e testar um voto numa enquete de um grupo NOVO (mensagens temporárias) — o terminal deve logar "🗳️ Voto recebido".
-2. **OPERADOR (P-13)**: aplicar as migrations pendentes no SQL Editor (ver 11_PENDING_WORK.md — incl. a de drop do recognition e a da limpeza 12h) → `npm run doctor` → smokes.
+2. **OPERADOR (P-13)**: aplicar as migrations pendentes no SQL Editor (ver 11_PENDING_WORK.md — incl. as duas de 2026-10-07: participantes + retirada/re-oferta, NESSA ORDEM) → `npm run doctor` → smokes.
 3. Se novo trabalho: `npm run build` ANTES do `npm run start` (o build local precisa ter os últimos fixes).
+4. Smokes novos (após aplicar 20261007*): (h) suspender participante com prazo → voto rejeitado, expira sozinho; (i) retirar lance + dar menor → aviso "após retirar o lance" no painel e "Como" no Excel; 3 avisos somando troca direta + retirada = 1 DM.
 
 ## Arquivos de código prioritários
 - `supabase/migrations/` (pendentes — ver P-13), `bot/index.mjs` (sendOpeningSequence atômica), `bot/announce-sticker.mjs` (@all + regras)
@@ -72,3 +76,5 @@ node --test bot/*.test.mjs
 - Reconhecimento: REMOVIDO por completo (2026-10-05) — não reabrir; cadastro de cartas é manual.
 - Espanhol: CANCELADO do produto (0 es no índice, dropdown sem es).
 - Fotos de detalhe: até 4 por carta, em sequência após a principal.
+- Suspensão (2026-10-07): COM prazo = só suspension_until (status 'active', auto-expira pelo guard); SEM prazo = status 'suspended' (indefinida); banido não é suspenso; Reativar limpa status+prazo (desfaz ban também).
+- Redução via retirada (2026-10-07): retirar o lance e re-ofertar MENOR conta aviso no MESMO ciclo dos 3 (marcado 'withdraw_rebid' / "após retirar o lance"); subir/igualar após retirar só registra histórico, sem aviso.

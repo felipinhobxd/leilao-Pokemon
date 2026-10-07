@@ -1,5 +1,5 @@
 export const eventTypes = ["BID_PLACED", "BID_CHANGED", "BID_WITHDRAWN", "BUYOUT_REQUESTED", "BUYOUT_CONFIRMED"] as const;
-export const commandTypes = [...eventTypes, "CARD_CREATE", "CARD_UPDATE", "CARD_DELETE", "PARTICIPANT_CREATE", "PARTICIPANT_UPDATE", "PARTICIPANT_DELETE", "AUCTION_CREATE", "AUCTION_UPDATE", "AUCTION_DELETE", "AUCTION_OPEN", "AUCTION_FINALIZE"] as const;
+export const commandTypes = [...eventTypes, "CARD_CREATE", "CARD_UPDATE", "CARD_DELETE", "PARTICIPANT_CREATE", "PARTICIPANT_UPDATE", "PARTICIPANT_DELETE", "PARTICIPANT_SUSPEND", "PARTICIPANT_REACTIVATE", "AUCTION_CREATE", "AUCTION_UPDATE", "AUCTION_DELETE", "AUCTION_OPEN", "AUCTION_FINALIZE"] as const;
 export type Command = {
   type: typeof commandTypes[number]; eventId: string; id?: string;
   auctionId?: string; participantId?: string; amount?: number;
@@ -21,7 +21,16 @@ export function parseCommand(value: unknown): Command {
   if ((event || (c.type.startsWith("AUCTION_") && c.type !== "AUCTION_CREATE")) && !c.auctionId) return fail();
   if (event && !c.participantId) return fail();
   if (["BID_PLACED", "BID_CHANGED"].includes(c.type) && !validMoney(c.amount)) return fail();
-  if (/^(CARD|PARTICIPANT)_(UPDATE|DELETE)$/.test(c.type) && !c.id) return fail();
+  if (/^(CARD|PARTICIPANT)_(UPDATE|DELETE|SUSPEND|REACTIVATE)$/.test(c.type) && !c.id) return fail();
+  // PARTICIPANT_SUSPEND: data obrigatória; suspension_until ausente/null =
+  // suspensão indefinida; presente = ISO futura (o RPC revalida contra o
+  // relógio do banco). REACTIVATE só precisa do id.
+  if (c.type === "PARTICIPANT_SUSPEND") {
+    const d = c.data;
+    if (!d || typeof d !== "object" || Array.isArray(d)) return fail();
+    const until = d.suspension_until;
+    if (until !== null && until !== undefined && (typeof until !== "string" || !/^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/.test(until) || !Number.isFinite(Date.parse(until)))) return fail();
+  }
   if (c.type.endsWith("CREATE") || c.type.endsWith("UPDATE")) {
     const d = c.data;
     if (!d || typeof d !== "object" || Array.isArray(d)) return fail();

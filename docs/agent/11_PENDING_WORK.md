@@ -2,7 +2,7 @@
 
 > Área: Backlog
 > Escopo: Bugs, melhorias, features pedidas pelo operador, dívidas, testes faltantes
-> Última atualização: 2026-10-05
+> Última atualização: 2026-10-07
 > Fonte principal: pedidos explícitos do operador nas sessões de trabalho + diagnóstico das sessões
 
 ## Migrations para aplicar (P-13 — ação do OPERADOR)
@@ -26,6 +26,11 @@ PENDENTES (ordem lexical):
      estado: se a de 24h ainda não foi colada, cole SÓ esta. O bot já chama p_hours=12.)
   8. 20261005130000_drop_card_recognition_examples.sql   (REMOÇÃO DO RECONHECIMENTO: apaga a tabela
      card_recognition_examples — memória de IA que não existe mais. Opcional, mas recomendado.)
+  9. 20261007100000_participants_panel_commands.sql     (painel de participantes: comandos
+     PARTICIPANT_SUSPEND/REACTIVATE + chave participant_warning_stats no snapshot do dashboard)
+  10. 20261007110000_withdraw_rebid_reduction_warning.sql (redução via RETIRADA + re-oferta:
+     colunas change_kind, função register_participant_reduction, ADDITION C no BID_PLACED,
+     change_kind nos snapshots do dashboard — #10 DEPENDE da #9, aplicar em ordem)
 Próximo passo: colar as 8 no SQL Editor → `npm run doctor` → smokes:
   (a) excluir leilão de teste ("sim quero") some do Excel
   (b) 3+3 reduções → 2 DMs de ciclo (com reset)
@@ -34,6 +39,10 @@ Próximo passo: colar as 8 no SQL Editor → `npm run doctor` → smokes:
   (e) backup com cloudPath no log
   (f) regras+figurinha+@all na próxima fila (ordem correta, sem duplicar)
   (g) limpeza 12h: leilão terminal de 13h some no próximo ciclo; aberto/recente NUNCA é tocado
+  (h) suspender participante com prazo → voto rejeitado (participant_not_eligible) e volta sozinho
+      quando o prazo passa; reativar limpa suspensão/banimento
+  (i) retirar lance e dar lance MENOR → aviso global com marca "após retirar o lance" no painel
+      e coluna "Como" no Excel; 3 avisos somando os dois caminhos = 1 DM aos admins
 ```
 
 ## Bugs / Features pendentes

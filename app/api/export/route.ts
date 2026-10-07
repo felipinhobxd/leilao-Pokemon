@@ -13,8 +13,8 @@ const sheets: [Table, string, [string, string][]][] = [
   ["payments", "Pagamentos", [["ID","id"],["Compra","purchase_id"],["Valor","amount"],["Status","status"],["Método","method"],["Pago em","paid_at"],["Referência","reference"]]],
   ["deliveries", "Entregas", [["ID","id"],["Compra","purchase_id"],["Status","status"],["Rastreio","tracking_code"],["Enviado em","shipped_at"],["Entregue em","delivered_at"],["Observações","notes"]]],
   ["warnings", "Advertências", [["ID","id"],["Participante","participant_name"],["Leilão","auction_id"],["Tipo","type"],["Motivo","reason"],["Ativa","active"],["Início","starts_at"],["Fim","ends_at"]]],
-  ["value_change_log", "Alterações (bruto)", [["ID","id"],["Leilão","auction_id"],["Participante","participant_id"],["Valor anterior","previous_amount"],["Novo valor","new_amount"],["Diferença","difference"],["Evento externo","external_event_id"],["Quando","occurred_at"]]],
-  ["participant_warnings", "Avisos globais (bruto)", [["ID","id"],["Participante","participant_id"],["Carta","card_name"],["Lote","lot_number"],["Valor anterior","previous_amount"],["Novo valor","new_amount"],["Evento externo","external_event_id"],["Quando","occurred_at"]]],
+  ["value_change_log", "Alterações (bruto)", [["ID","id"],["Leilão","auction_id"],["Participante","participant_id"],["Valor anterior","previous_amount"],["Novo valor","new_amount"],["Diferença","difference"],["Como","change_kind"],["Evento externo","external_event_id"],["Quando","occurred_at"]]],
+  ["participant_warnings", "Avisos globais (bruto)", [["ID","id"],["Participante","participant_id"],["Carta","card_name"],["Lote","lot_number"],["Valor anterior","previous_amount"],["Novo valor","new_amount"],["Como","change_kind"],["Evento externo","external_event_id"],["Quando","occurred_at"]]],
   ["auction_events", "Auditoria", [["ID","id"],["Leilão","auction_id"],["Participante","participant_name"],["WhatsApp","participant_whatsapp"],["Telefone","participant_phone"],["Administrador","admin_user_id"],["Evento","event_type"],["ID externo","external_event_id"],["Ocorrido em","occurred_at"],["Registrado em","created_at"],["Detalhes","payload"]]],
 ];
 
@@ -38,6 +38,13 @@ function winTypeLabel(value: unknown) {
   if (type.includes("buyout") || type.includes("arremate")) return "Arremate";
   if (type.includes("bid") || type.includes("highest")) return "Maior lance";
   return type ? String(value) : "Venda";
+}
+
+// 20261007110000: como a alteração de valor aconteceu — troca direta na
+// enquete (BID_CHANGED) ou retirada do lance + re-oferta menor (BID_PLACED
+// pós-withdrawn). Legível em PT-BR nas abas de alterações.
+function changeKindLabel(value: unknown) {
+  return value === "withdraw_rebid" ? "Após retirar lance" : "Troca direta";
 }
 
 function excelDateValue(value: unknown) {
@@ -162,6 +169,7 @@ export async function GET(request: Request) {
       { header: "Diferença", key: "difference", width: 14 },
       { header: "Avisos (global)", key: "globalWarnings", width: 14 },
       { header: "Redução (aviso)", key: "warning", width: 14 },
+      { header: "Como", key: "how", width: 18 },
       { header: "Data e horário", key: "occurredAt", width: 22 },
     ];
     const changeRows = (data.value_change_log ?? [])
@@ -182,6 +190,7 @@ export async function GET(request: Request) {
         difference: next - previous,
         globalWarnings: change.participant_id ? (globalWarningCount.get(String(change.participant_id)) ?? 0) : 0,
         warning: next < previous ? "SIM" : "",
+        how: changeKindLabel(change.change_kind),
         occurredAt: excelDateValue(change.occurred_at),
       });
     }
@@ -230,6 +239,7 @@ export async function GET(request: Request) {
         };
         sheet.addRow(Object.fromEntries(Object.entries(enriched).map(([key, value]) => {
           if (dateKeys.has(key)) return [key, excelDateValue(value)];
+          if (key === "change_kind") return [key, changeKindLabel(value)];
           return [key, value !== null && typeof value === "object" ? JSON.stringify(value) : value];
         })));
       }

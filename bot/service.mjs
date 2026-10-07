@@ -7,7 +7,7 @@ import readline from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createClient } from "@supabase/supabase-js";
 import { WebSocket } from "ws";
-import { runBusinessBackup } from "./backup.mjs";
+import { BACKUP_BUCKET, runBusinessBackup } from "./backup.mjs";
 
 const required = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"];
 for (const key of required) {
@@ -64,6 +64,8 @@ let cleanupTimer = null;
 let backupTimer = null;
 let lastBackupDay = "";
 let backupBusy = false;
+let backupRetryAfter = 0;
+const BACKUP_RETRY_COOLDOWN_MS = 30 * 60_000;
 let cleanupBusy = false;
 let lastCleanupAttempt = 0;
 let commandBusy = false;
@@ -463,23 +465,58 @@ async function processPendingLogout() {
 // Backup diário dos dados de leilão (uma vez por dia, BOT_BACKUP_HOUR padrão
 // 4h30). O backup em nuvem precisa estar disponível antes de marcar o dia como
 // protegido; assim uma falha do Storage nunca deixa a limpeza sem uma cópia.
+async function getTodayKey(now = new Date()) {
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
+async function hasTodaysCloudBackup(now = new Date()) {
+  const today = await getTodayKey(now);
+  const prefix = `backup-${today.replaceAll("-", "")}-`;
+  const { data, error } = await db.storage.from(BACKUP_BUCKET)
+    .list("backups", { limit: 100, sortBy: { column: "name", order: "desc" } });
+  if (error) throw new Error(`backup_cloud_check_failed: ${error.message}`);
+  return (data ?? []).some(item => String(item?.name || "").startsWith(prefix));
+}
+
+// A exportação completa pode ser pesada (principalmente auction_events). Depois
+// de uma falha, não repete a consulta a cada tick do supervisor: aguarda 30 min.
+function backupRetryBlocked() {
+  return Date.now() < backupRetryAfter;
+}
+
+function markBackupFailure() {
+  backupRetryAfter = Date.now() + BACKUP_RETRY_COOLDOWN_MS;
+}
+
+function clearBackupFailure() {
+  backupRetryAfter = 0;
+}
+
 async function dailyBackup() {
   if (backupBusy || shuttingDown) return;
   const hour = Number(process.env.BOT_BACKUP_HOUR ?? 4.5);
   if (!Number.isFinite(hour) || hour < 0) return;
   const now = new Date();
-  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  const today = await getTodayKey(now);
   if (lastBackupDay === today) return;
   if (now.getHours() + now.getMinutes() / 60 < hour) return;
-  if (backupBusy) return;
+  if (backupRetryBlocked()) return;
   backupBusy = true;
   try {
+    if (await hasTodaysCloudBackup(now)) {
+      lastBackupDay = today;
+      clearBackupFailure();
+      console.log(`Backup diário já existe na nuvem: ${today}`);
+      return;
+    }
     const result = await runBusinessBackup(db, now);
     if (!result.cloudPath) throw new Error("backup_cloud_copy_missing");
     lastBackupDay = today;
+    clearBackupFailure();
     console.log(`Backup dos dados gravado: ${result.path} (${(result.bytes / 1024).toFixed(1)} KB, mantendo ${result.kept}, nuvem ${result.cloudPath})`);
   } catch (error) {
-    lastBackupDay = ""; // retry na próxima janela de 10 min
+    lastBackupDay = "";
+    markBackupFailure();
     console.error("Backup diário falhou:", error?.message || error);
   } finally {
     backupBusy = false;
@@ -490,17 +527,25 @@ async function dailyBackup() {
 // 1x/hora e só é autorizada depois de um backup na nuvem feito no mesmo dia.
 // O objetivo é evitar outra perda de histórico por variável de ambiente antiga.
 async function ensureCloudBackupForCleanup(now = new Date()) {
-  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  const today = await getTodayKey(now);
   if (lastBackupDay === today) return true;
-  if (backupBusy || shuttingDown) return false;
+  if (backupBusy || shuttingDown || backupRetryBlocked()) return false;
   backupBusy = true;
   try {
+    if (await hasTodaysCloudBackup(now)) {
+      lastBackupDay = today;
+      clearBackupFailure();
+      console.log(`Backup de segurança já existe na nuvem: ${today}`);
+      return true;
+    }
     const result = await runBusinessBackup(db, now);
     if (!result.cloudPath) throw new Error("backup_cloud_copy_missing");
     lastBackupDay = today;
+    clearBackupFailure();
     console.log(`Backup de segurança antes da limpeza: ${result.cloudPath}`);
     return true;
   } catch (error) {
+    markBackupFailure();
     console.error("Limpeza bloqueada: backup na nuvem indisponível.", error?.message || error);
     return false;
   } finally {

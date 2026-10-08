@@ -78,15 +78,20 @@ begin
   -- reinicia o contador (warnings_cycle=0), total global segue contando.
   snap:=public.read_dashboard_snapshot();
   perform pg_temp.check_that((select (snap->'participant_warnings'->0->>'change_kind')='withdraw_rebid'),'dashboard warnings expose change_kind');
-  perform pg_temp.check_that((select exists(select 1 from jsonb_array_elements(snap->'value_change_log') e where e->>'change_kind'='withdraw_rebid'),'dashboard value changes expose change_kind');
+  perform pg_temp.check_that(
+    exists(select 1 from jsonb_array_elements(snap->'value_change_log') e where e->>'change_kind'='withdraw_rebid'),
+    'dashboard value changes expose change_kind'
+  );
   perform pg_temp.check_that((select (s->>'warnings_total')::int=3 and (s->>'warnings_cycle')::int=0
     from jsonb_array_elements(snap->'participant_warning_stats') s
     where s->>'participant_id'=p1->>'id'),'closed cycle restarts the counter, total keeps counting');
 
   -- Helper é server-only.
   perform pg_temp.check_that(
-    not has_function_privilege('anon','public.register_participant_reduction(uuid,uuid,text,integer,text,numeric,numeric,text,timestamptz,text)','EXECUTE')
-    and not has_function_privilege('authenticated','public.register_participant_reduction(uuid,uuid,text,integer,text,numeric,numeric,text,timestamptz,text)','EXECUTE'),'reduction helper is server-only');
+    not has_function_privilege('anon','public.register_participant_reduction(uuid,uuid,text,bigint,text,numeric,numeric,text,timestamptz,text)','EXECUTE')
+    and not has_function_privilege('authenticated','public.register_participant_reduction(uuid,uuid,text,bigint,text,numeric,numeric,text,timestamptz,text)','EXECUTE'),
+    'reduction helper is server-only'
+  );
 end $$;
 reset role;
 rollback;

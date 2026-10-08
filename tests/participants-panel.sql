@@ -82,8 +82,11 @@ begin
   perform pg_temp.check_that((select (s->>'warnings_total')::int=2 and (s->>'warnings_cycle')::int=2
     from jsonb_array_elements(snap->'participant_warning_stats') s
     where s->>'participant_id'=p1->>'id'),'stats expose the global total and the open cycle');
-  perform pg_temp.check_that((select not (snap->'participants'->0 ? 'warnings_total')
-    and not (snap->'participants'->0 ? 'warnings_cycle'),'participants rows stay out of the stats contract'));
+  perform pg_temp.check_that(
+    not (snap->'participants'->0 ? 'warnings_total')
+    and not (snap->'participants'->0 ? 'warnings_cycle'),
+    'participants rows stay out of the stats contract'
+  );
   perform pg_temp.check_that((select jsonb_array_length(coalesce(snap->'participant_warning_stats','[]'::jsonb))=1),'stats only list participants with warnings');
 end $$;
 reset role;

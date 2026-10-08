@@ -2,7 +2,7 @@
 
 > Área: Backlog
 > Escopo: Bugs, melhorias, features pedidas pelo operador, dívidas, testes faltantes
-> Última atualização: 2026-10-07
+> Última atualização: 2026-10-08
 > Fonte principal: pedidos explícitos do operador nas sessões de trabalho + diagnóstico das sessões
 
 ## Migrations para aplicar (P-13 — ação do OPERADOR)
@@ -31,6 +31,11 @@ PENDENTES (ordem lexical):
   10. 20261007110000_withdraw_rebid_reduction_warning.sql (redução via RETIRADA + re-oferta:
      colunas change_kind, função register_participant_reduction, ADDITION C no BID_PLACED,
      change_kind nos snapshots do dashboard — #10 DEPENDE da #9, aplicar em ordem)
+  11. 20261008001511_fix_reduction_lot_number_bigint.sql  (CORREÇÃO CI/OPERADOR 2026-10-08:
+     recria register_participant_reduction com p_lot_number BIGINT — auctions.lot_number é
+     bigint e a assinatura integer causava erro de resolução de função: o 1º BID_PLACED
+     pós-retirada FALHAVA e abortava o lance inteiro. OBRIGATÓRIA junto com #9/#10, nesta
+     ordem — nunca aplicar #10 sem #11)
 Próximo passo: colar as 8 no SQL Editor → `npm run doctor` → smokes:
   (a) excluir leilão de teste ("sim quero") some do Excel
   (b) 3+3 reduções → 2 DMs de ciclo (com reset)

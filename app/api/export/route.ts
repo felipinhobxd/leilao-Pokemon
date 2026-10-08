@@ -1,6 +1,7 @@
 import ExcelJS from "exceljs";
 import { authorize, failure, snapshot, type Table } from "@/lib/backend";
 import { excelBrasiliaDate } from "@/lib/brasilia-time";
+import { buildChangeRows, buildSalesRows, buildSummaryRows, changeKindLabel, cleanPhone, excelDateValue } from "@/lib/export-rows";
 
 export const runtime = "nodejs";
 
@@ -23,35 +24,6 @@ const dateKeys = new Set([
   "processed_at", "confirmed_at", "paid_at", "shipped_at", "delivered_at",
   "starts_at", "ends_at", "occurred_at", "created_at", "updated_at", "suspension_until",
 ]);
-
-function cleanPhone(phone: unknown, whatsapp: unknown) {
-  const direct = String(phone ?? "").trim();
-  if (/^\+\d{8,15}$/.test(direct)) return direct;
-  const raw = String(whatsapp ?? "").trim();
-  if (/^\+\d{8,15}$/.test(raw)) return raw;
-  const local = raw.split("@")[0].split(":")[0];
-  return /^\d{8,15}$/.test(local) && raw.includes("@s.whatsapp.net") ? `+${local}` : "";
-}
-
-function winTypeLabel(value: unknown) {
-  const type = String(value ?? "").toLowerCase();
-  if (type.includes("buyout") || type.includes("arremate")) return "Arremate";
-  if (type.includes("bid") || type.includes("highest")) return "Maior lance";
-  return type ? String(value) : "Venda";
-}
-
-// 20261007110000: como a alteração de valor aconteceu — troca direta na
-// enquete (BID_CHANGED) ou retirada do lance + re-oferta menor (BID_PLACED
-// pós-withdrawn). Legível em PT-BR nas abas de alterações.
-function changeKindLabel(value: unknown) {
-  return value === "withdraw_rebid" ? "Após retirar lance" : "Troca direta";
-}
-
-function excelDateValue(value: unknown) {
-  if (value == null || value === "") return null;
-  if (value instanceof Date || typeof value === "string" || typeof value === "number") return excelBrasiliaDate(value);
-  return null;
-}
 
 function styleSheet(sheet: ExcelJS.Worksheet) {
   sheet.views = [{ state: "frozen", ySplit: 1 }];
@@ -82,9 +54,8 @@ export async function GET(request: Request) {
     workbook.creator = "Leilão Pokémon";
     workbook.created = excelBrasiliaDate(new Date()) ?? new Date();
 
-    const confirmedPurchases = data.purchases
-      .filter(p => p.status === "confirmed")
-      .sort((a, b) => String(b.confirmed_at ?? "").localeCompare(String(a.confirmed_at ?? "")));
+    // Lógica de linhas extraída para lib/export-rows.ts (testável via npm test).
+    const { rows: salesRows, totalFormula } = buildSalesRows(data);
 
     const sales = workbook.addWorksheet("Vendas");
     sales.columns = [
@@ -102,51 +73,14 @@ export async function GET(request: Request) {
       { header: "Observações", key: "notes", width: 34 },
     ];
 
-    const globalWarningCount = new Map<string, number>();
-    for (const warning of data.participant_warnings ?? []) {
-      const key = String(warning.participant_id ?? "");
-      if (key) globalWarningCount.set(key, (globalWarningCount.get(key) ?? 0) + 1);
-    }
-    const paidByPurchase = new Map<string, { paid_at: string | null }>();
-    for (const payment of data.payments ?? []) {
-      if (String(payment.status ?? "") === "paid") {
-        paidByPurchase.set(String(payment.purchase_id ?? ""), { paid_at: (payment.paid_at as string | null) ?? null });
-      }
-    }
-
-    for (const purchase of confirmedPurchases) {
-      const auction = data.auctions.find(a => a.id === purchase.auction_id);
-      const card = data.cards.find(c => c.id === purchase.card_id);
-      const person = data.participants.find(p => p.id === purchase.participant_id);
-      const paid = paidByPurchase.get(String(purchase.id));
-      const paidDate = paid?.paid_at ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeZone: "America/Sao_Paulo" }).format(new Date(paid.paid_at)) : "";
-      sales.addRow({
-        lot: auction?.lot_number ?? "",
-        card: card?.name ?? "",
-        cardNumber: card?.card_number ?? "",
-        variant: card?.variant ?? "",
-        buyer: person?.display_name ?? "",
-        phone: cleanPhone(person?.phone_e164, person?.whatsapp_id),
-        amount: Number(purchase.amount ?? 0),
-        winType: winTypeLabel(auction?.win_type),
-        globalWarnings: person ? (globalWarningCount.get(String(person.id)) ?? 0) : 0,
-        payment: paid ? (paidDate ? `✔ Pago (${paidDate})` : "✔ Pago") : "⏳ Pendente",
-        confirmedAt: excelDateValue(purchase.confirmed_at),
-        notes: "",
-      });
-    }
+    for (const row of salesRows) sales.addRow(row);
     sales.getColumn("amount").numFmt = '"R$" #,##0.00';
     sales.getColumn("confirmedAt").numFmt = "dd/mm/yyyy hh:mm:ss";
     // TOTAL: soma SOMENTE as linhas de valores (a fórmula cobre exatamente as
     // compras listadas — sem textos nem células soltas) e se atualiza sozinha
     // no Excel se algum valor for editado.
-    const firstDataRow = 2;
-    const lastDataRow = 1 + confirmedPurchases.length;
-    if (confirmedPurchases.length) {
-      const totalRow = sales.addRow({
-        lot: "TOTAL",
-        amount: { formula: `SUM(G${firstDataRow}:G${lastDataRow})` },
-      });
+    if (totalFormula) {
+      const totalRow = sales.addRow({ lot: "TOTAL", amount: totalFormula });
       totalRow.font = { bold: true };
       totalRow.getCell("amount").numFmt = '"R$" #,##0.00';
       totalRow.getCell("lot").font = { bold: true };
@@ -172,48 +106,17 @@ export async function GET(request: Request) {
       { header: "Como", key: "how", width: 18 },
       { header: "Data e horário", key: "occurredAt", width: 22 },
     ];
-    const changeRows = (data.value_change_log ?? [])
-      .slice()
-      .sort((a, b) => String(b.occurred_at ?? "").localeCompare(String(a.occurred_at ?? "")));
-    for (const change of changeRows) {
-      const auction = data.auctions.find(a => a.id === change.auction_id);
-      const card = auction ? data.cards.find(c => c.id === auction.card_id) : undefined;
-      const person = data.participants.find(p => p.id === change.participant_id);
-      const previous = Number(change.previous_amount ?? 0);
-      const next = Number(change.new_amount ?? 0);
-      changes.addRow({
-        lot: auction?.lot_number ?? "",
-        card: card?.name ?? "",
-        buyer: person?.display_name ?? "",
-        previousAmount: previous,
-        newAmount: next,
-        difference: next - previous,
-        globalWarnings: change.participant_id ? (globalWarningCount.get(String(change.participant_id)) ?? 0) : 0,
-        warning: next < previous ? "SIM" : "",
-        how: changeKindLabel(change.change_kind),
-        occurredAt: excelDateValue(change.occurred_at),
-      });
-    }
+    for (const row of buildChangeRows(data)) changes.addRow(row);
     for (const key of ["previousAmount", "newAmount", "difference"]) changes.getColumn(key).numFmt = '"R$" #,##0.00';
     changes.getColumn("occurredAt").numFmt = "dd/mm/yyyy hh:mm:ss";
     styleSheet(changes);
 
-    const totalRevenue = confirmedPurchases.reduce((total, purchase) => total + Number(purchase.amount ?? 0), 0);
-    const uniqueBuyers = new Set(confirmedPurchases.map(p => String(p.participant_id ?? "")).filter(Boolean)).size;
     const summary = workbook.addWorksheet("Resumo");
     summary.columns = [
       { header: "Indicador", key: "metric", width: 34 },
       { header: "Valor", key: "value", width: 28 },
     ];
-    summary.addRows([
-      { metric: "Exportado em (Brasília)", value: excelBrasiliaDate(new Date()) },
-      { metric: "Vendas confirmadas", value: confirmedPurchases.length },
-      { metric: "Compradores únicos", value: uniqueBuyers },
-      { metric: "Total vendido", value: totalRevenue },
-      { metric: "Ticket médio", value: confirmedPurchases.length ? totalRevenue / confirmedPurchases.length : 0 },
-      { metric: "Leilões cadastrados", value: data.auctions.length },
-      { metric: "Participantes identificados", value: data.participants.length },
-    ]);
+    summary.addRows(buildSummaryRows(data));
     summary.getCell("B2").numFmt = "dd/mm/yyyy hh:mm:ss";
     summary.getCell("B5").numFmt = '"R$" #,##0.00';
     summary.getCell("B6").numFmt = '"R$" #,##0.00';

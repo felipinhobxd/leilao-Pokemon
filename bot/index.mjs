@@ -12,6 +12,7 @@ import qrcode from "qrcode-terminal";
 import { dispatchMessageId, dispatchPollSecret } from "./dispatch-id.mjs";
 import { buildAuctionCaption } from "./format.mjs";
 import { phoneFromWhatsAppJid, syncGroupParticipants } from "./group-participants.mjs";
+import { describeVoteReceived } from "./vote-log.mjs";
 import { isLidJid, isPhoneJid, normalizeUserJid } from "./poll-identities.mjs";
 import { decryptIncomingPollVote, unwrapMessageContent } from "./poll-votes.mjs";
 import { createAdminNotificationDrain, parseAdminJids } from "./warning-notify.mjs";
@@ -766,7 +767,22 @@ async function handlePollVote(dispatch, pollUpdate, originalMessageOverride) {
       console.log(`🔄 Voto alterado: ${participant.display_name}${contact} → ${brl(previous.amount)} → ${brl(amount)} · lote ${lot}${reduced ? " · ⚠️ redução: aviso global registrado" : ""}`);
       await logCurrentLeader(dispatch.auction_id);
     } else {
-      console.log(`🗳️ Voto recebido: ${participant.display_name}${contact} → ${brl(amount)}`);
+      // 2026-10-08: re-oferta pós-retirada aparece no terminal com o valor
+      // retirado e a marca de redução (o aviso global é registrado pelo RPC;
+      // antes a redução só ficava visível quando o painel atualizava). O
+      // lookup espelha o do ADDITION C: último lance withdrawn do
+      // participante neste leilão — o lance novo (active) não entra.
+      const { data: withdrawnRows } = await db.from("bids")
+        .select("amount")
+        .eq("auction_id", dispatch.auction_id)
+        .eq("participant_id", participant.id)
+        .eq("status", "withdrawn")
+        .order("processed_at", { ascending: false })
+        .order("confirmation_order", { ascending: false })
+        .limit(1);
+      const withdrawnAmount = withdrawnRows?.[0]?.amount ?? null;
+      const lot = String(dispatch.poll_title ?? "—").split(".")[0].trim() || null;
+      console.log(describeVoteReceived({ displayName: participant.display_name, contact, amount, lot, withdrawnAmount }));
       await logCurrentLeader(dispatch.auction_id);
     }
   } catch (error) {

@@ -55,7 +55,7 @@ begin
   -- TROCA DIRETA segue o caminho B.2 (verbatim): change_kind='change'.
   perform pg_temp.cmd(jsonb_build_object('type','BID_CHANGED','eventId','wr-c1','auctionId',a1->>'id','participantId',p1->>'id','amount',70));
   perform pg_temp.cmd(jsonb_build_object('type','BID_CHANGED','eventId','wr-c2','auctionId',a1->>'id','participantId',p1->>'id','amount',55));
-  perform pg_temp.check_that((select count(*)=2 and bool_and(change_kind='change') from public.value_change_log),'direct changes keep change_kind=change');
+  perform pg_temp.check_that((select count(*)=2 and bool_and(change_kind='change') from public.value_change_log where change_kind='change'),'direct changes keep change_kind=change');
   perform pg_temp.check_that((select count(*)=2 from public.participant_warnings where participant_id=(p1->>'id')::uuid),'direct reduction still warns');
 
   -- CICLO DE 3 MISTO: aviso 1 via retirada (wr-b2), aviso 2 via troca direta

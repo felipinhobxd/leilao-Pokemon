@@ -75,5 +75,26 @@ Não reabrir. Cadastro de cartas é 100% manual.
 
 ## Não confirmado / fora de escopo atual
 
+```text
+ID: P-17
+Título: Crescimento perpétuo de auction_events (auditoria) e processed_commands —
+       raiz da queda do Supabase em 2026-10-08
+Prioridade: Alta — AGUARDANDO DECISÃO DO OPERADOR (janela de retenção)
+Contexto: a limpeza 12h remove leilões terminais + suas árvores, mas NUNCA toca em:
+  (a) ~39 mil auction_events com auction_id NULL — linhas do trigger audit_admin_change,
+      que dispara a CADA UPDATE de participants/cards/auctions (inclusive last_seen_at),
+      cada uma com payload before/after completo (99,6% das linhas da tabela);
+  (b) processed_commands (cache de idempotência — ~1 linha por comando, cresce para sempre).
+  Os dois engordam o export_business_backup sem parar. No free tier, gerar o backup
+  satura o compute por ~1min (Supabase responde 520/521/525 para TUDO — incidente
+  de 2026-10-08, inclusive derrubando o bot) e a rotina das 4h30 é o mesmo gargalo.
+Proposta (escolher a janela: 7 / 15 / 30 dias): migration que estende cleanup_old_auctions
+  para podar (a) eventos de auditoria mais velhos que N dias (drop/recreate do
+  immutable_audit dentro da transação, como o resto da rotina já faz) e
+  (b) processed_commands mais velhos que N dias. Janela de idempotência: retries do bot
+  são em segundos; eventIds de voto carregam timestamp único — 7 dias é folgado.
+Status: PROPOSTA — não implementada. Definir a janela com o operador e executar.
+```
+
 - Supabase Log Ingestion: 0.96/1 GB no free plan — polling reduzido ~56%, mas os logs acumulados só resetam no próximo ciclo de billing. Monitorar.
 - Conversão para desktop: ❌ CANCELADA pelo operador (2026-09-29) — toda a ideia .exe/Electron foi removida do repositório.

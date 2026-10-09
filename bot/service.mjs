@@ -6,6 +6,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createClient } from "@supabase/supabase-js";
+import { describeError } from "./error-log.mjs";
 import { WebSocket } from "ws";
 import { BACKUP_BUCKET, runBusinessBackup } from "./backup.mjs";
 
@@ -144,9 +145,9 @@ async function publishState(patch = {}) {
       }, { onConflict: "worker_id" }),
       timeout,
     ]);
-    if (error) console.error("Falha ao publicar status do bot:", error.message);
+    if (error) console.error("Falha ao publicar status do bot:", describeError(error));
   } catch (error) {
-    console.error("Falha ao publicar status do bot:", error?.message || error);
+    console.error("Falha ao publicar status do bot:", describeError(error));
   } finally {
     publishBusy = false;
   }
@@ -357,7 +358,7 @@ async function syncGroupsWithRestart(automatic = false) {
     runtime.lastError = String(error?.message || error).slice(0, 1000);
     await publishState({ status: "error" });
     if (!automatic) throw error;
-    console.error("Falha na sincronização automática de grupos:", error?.message || error);
+    console.error("Falha na sincronização automática de grupos:", describeError(error));
   } finally {
     desiredRunning = resume;
     if (automatic) automaticSyncBusy = false;
@@ -517,7 +518,7 @@ async function dailyBackup() {
   } catch (error) {
     lastBackupDay = "";
     markBackupFailure();
-    console.error("Backup diário falhou:", error?.message || error);
+    console.error("Backup diário falhou:", describeError(error));
   } finally {
     backupBusy = false;
   }
@@ -546,7 +547,7 @@ async function ensureCloudBackupForCleanup(now = new Date()) {
     return true;
   } catch (error) {
     markBackupFailure();
-    console.error("Limpeza bloqueada: backup na nuvem indisponível.", error?.message || error);
+    console.error("Limpeza bloqueada: backup na nuvem indisponível.", describeError(error));
     return false;
   } finally {
     backupBusy = false;
@@ -569,7 +570,7 @@ async function cleanupOldAuctions() {  if (cleanupBusy || shuttingDown) return;
     const hours = 12;
     const { data, error } = await db.rpc("cleanup_old_auctions", { p_hours: hours });
     if (error) {
-      console.warn("Limpeza de leilões antigos falhou:", error?.message || error);
+      console.warn("Limpeza de leilões antigos falhou:", describeError(error));
       return;
     }
     const deleted = data?.deleted ?? {};
@@ -597,10 +598,10 @@ async function pollBotCommands() {  if (commandBusy || shuttingDown) return;
       runtime.lastError = String(error?.message || error).slice(0, 1000);
       await publishState({ status: desiredRunning ? runtime.status : "error" });
       await finishBotCommand(command, error);
-      console.error("Falha no comando do bot:", error?.message || error);
+      console.error("Falha no comando do bot:", describeError(error));
     }
   } catch (error) {
-    console.error("Falha ao consultar comandos do bot:", error?.message || error);
+    console.error("Falha ao consultar comandos do bot:", describeError(error));
   } finally {
     commandBusy = false;
   }
@@ -699,7 +700,7 @@ if (!groupsSyncIsFresh()) {
       // O sync no boot é best-effort: o bot conecta mesmo assim e o
       // operador pode rodar "Atualizar grupos" quando quiser.
       runtime.lastError = String(error?.message || error).slice(0, 1000);
-      console.error("Falha na sincronização de grupos no boot:", error?.message || error);
+      console.error("Falha na sincronização de grupos no boot:", describeError(error));
     }
   }
 }

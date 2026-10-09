@@ -36,7 +36,7 @@ Regras de manutenção (valem para TODOS os arquivos desta pasta):
 | 03 | `03_DATABASE.md` | Supabase/PostgreSQL | ⚠️ Migrations pendentes de aplicação manual, incl. 20261005120000 (limpeza 12h) e as 20261007100000/110000 + 20261008001511 (participantes + retirada/re-oferta + fix bigint — as 3 JUNTAS) — ver 11_PENDING | 2026-10-08 |
 | 04 | `04_API.md` | API Next.js (app/api) | Estável; rotas novas `/api/auctions/drafts`, `/api/quick-polls`, `/api/auctions/delete`; comandos PARTICIPANT_SUSPEND/REACTIVATE em /api/commands | 2026-10-07 |
 | 05 | `05_FRONTEND.md` | Frontend (app/) | Estável; wizard com rascunhos + brinde por carta + auto-save; dashboard com painel de avisos, exclusão e GESTÃO DE PARTICIPANTES (suspender/reativar/banir) | 2026-10-07 |
-| 06 | `06_WHATSAPP_BOT.md` | Bot Baileys (bot/) | Estável; sequência de abertura ATÔMICA (regras+figurinha+@all); avisos com ciclo de 3; @all real; backup na nuvem | 2026-09-25 |
+| 06 | `06_WHATSAPP_BOT.md` | Bot Baileys (bot/) | Estável; abertura ATÔMICA; ciclo de 3; blindagem contra queda do Supabase (handlers no filho + describeError); bot 52 testes | 2026-10-08 |
 | 08 | `08_AUCTION_DOMAIN.md` | Domínio de leilão | Estável; exclusão real de leilão; ciclo de 3; brinde na fila; limpeza 12h; suspensão de participante; redução via retirada conta aviso | 2026-10-07 |
 | 09 | `09_TESTS_AND_VALIDATION.md` | Testes e validação | Estável — Node 78, bot 45, typecheck, build, 17 SQL test files | 2026-10-08 |
 | 10 | `10_SECURITY_AND_PERFORMANCE.md` | Segurança e performance | ⚠️ Supabase Log Ingestion quase no limite (0.96/1 GB); polling reduzido ~56% | 2026-09-25 |

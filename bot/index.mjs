@@ -13,6 +13,7 @@ import { dispatchMessageId, dispatchPollSecret } from "./dispatch-id.mjs";
 import { buildAuctionCaption } from "./format.mjs";
 import { phoneFromWhatsAppJid, syncGroupParticipants } from "./group-participants.mjs";
 import { describeVoteReceived } from "./vote-log.mjs";
+import { describeError } from "./error-log.mjs";
 import { isLidJid, isPhoneJid, normalizeUserJid } from "./poll-identities.mjs";
 import { decryptIncomingPollVote, unwrapMessageContent } from "./poll-votes.mjs";
 import { createAdminNotificationDrain, parseAdminJids } from "./warning-notify.mjs";
@@ -38,6 +39,20 @@ if (!globalThis.WebSocket) globalThis.WebSocket = WebSocket;
 
 const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
+});
+
+// 2026-10-08: o filho NÃO tinha handlers de rejeição — na queda do Supabase
+// (Cloudflare 520/521/525) um erro cru (throw do finalizeDueAuctions, que era
+// try/finally sem catch) virou UnhandledPromiseRejection e MATOU o bot no
+// meio da noite de leilão. O supervisor já tem handlers (service.mjs); o
+// filho agora também: loga em UMA linha e SEGUE VIVO — queda de rede não
+// pode derrubar quem precisa sobreviver a ela. Exit codes 1/2 continuam
+// sendo a via real de saída (logout / erro 440).
+process.on("uncaughtException", error => {
+  console.error("Exceção não capturada (bot segue vivo):", describeError(error, 1000));
+});
+process.on("unhandledRejection", reason => {
+  console.error("Rejeição não tratada (bot segue vivo):", describeError(reason, 1000));
 });
 
 let ADMIN_USER_ID = String(process.env.BOT_ADMIN_USER_ID || "").trim();
@@ -378,7 +393,7 @@ async function notifyAdminsDispatchFailed(dispatch, error) {
     }, { onConflict: "external_event_id", ignoreDuplicates: true });
   } catch (reason) {
     // Avisar os admins é complemento: nunca pode derrubar o fluxo de falha.
-    console.warn("Falha ao enfileirar aviso de lote falho:", reason?.message || reason);
+    console.warn("Falha ao enfileirar aviso de lote falho:", describeError(reason));
   }
 }
 
@@ -476,7 +491,7 @@ async function drainPendingPollVotes(pollMessageId) {
   // dispatch back to 'scheduled' upstream.
   for (const message of waiting) {
     try { await processIncomingPollMessage(message); }
-    catch (error) { console.error("Falha ao processar voto enfileirado:", error?.message || error); }
+      catch (error) { console.error("Falha ao processar voto enfileirado:", describeError(error)); }
   }
 }
 
@@ -611,11 +626,11 @@ async function runScheduler() {
       if (!dispatch) break;
       try { await deliverDispatch(dispatch); }
       catch (error) {
-        console.error("Falha no disparo:", error?.message || error);
+        console.error("Falha no disparo:", describeError(error));
         await markDispatchRetry(dispatch, error);
       }
     }
-  } catch (error) { console.error("Falha no agendador:", error?.message || error); }
+  } catch (error) { console.error("Falha no agendador:", describeError(error)); }
   finally { schedulerBusy = false; }
 }
 
@@ -902,9 +917,9 @@ async function handleIncomingMessages(messages) {
       // P-05: buffer da última figurinha por chat (o WhatsApp não expõe ID
       // nenhum ao usuário) + comando !figurinha na MESMA conversa captura.
       try { await maybeCaptureAnnouncementSticker(message); }
-      catch (error) { console.warn("Falha ao processar figurinha/comando:", error?.message || error); }
+      catch (error) { console.warn("Falha ao processar figurinha/comando:", describeError(error)); }
       try { await enrichParticipantFromMessage(message); }
-      catch (error) { console.warn("Falha ao enriquecer participante por mensagem:", error?.message || error); }
+      catch (error) { console.warn("Falha ao enriquecer participante por mensagem:", describeError(error)); }
     }
   }
 }
@@ -1003,7 +1018,7 @@ async function sendOpeningSequence() {
       }
     }
   } catch (error) {
-    console.error("Abertura: falha no ciclo:", error?.message || error);
+    console.error("Abertura: falha no ciclo:", describeError(error));
   } finally {
     openingBusy = false;
   }
@@ -1054,7 +1069,7 @@ async function sendDueQuickPolls() {
       console.log(`🎁 Brinde publicado: "${poll.title}" (${values.length} opções).`);
     }
   } catch (error) {
-    console.error("Brinde: falha ao publicar:", error?.message || error);
+    console.error("Brinde: falha ao publicar:", describeError(error));
   } finally {
     quickPollsBusy = false;
   }
@@ -1118,6 +1133,11 @@ async function finalizeDueAuctions() {
         console.error("Falha ao finalizar leilão:", message);
       }
     }
+  } catch (error) {
+    // 2026-10-08: este catch FALTAVA (era try/finally) — o `throw error` cru
+    // do supabase-js acima era a origem EXATA do crash da noite de
+    // 2026-10-08: rejeição não tratada via `void finalizeDueAuctions()`.
+    console.error("Falha ao finalizar leilões vencidos:", describeError(error));
   } finally { finalizeBusy = false; }
 }
 
@@ -1151,7 +1171,7 @@ async function connect() {
   sock.ev.on("contacts.upsert", contacts => contacts.forEach(rememberContact));
   sock.ev.on("contacts.update", contacts => contacts.forEach(rememberContact));
   sock.ev.on("messages.upsert", ({ messages }) => {
-    voteQueue = voteQueue.then(() => handleIncomingMessages(messages)).catch(error => console.error("Falha na fila de mensagens/votos:", error?.message || error));
+    voteQueue = voteQueue.then(() => handleIncomingMessages(messages)).catch(error => console.error("Falha na fila de mensagens/votos:", describeError(error)));
   });
   sock.ev.on("connection.update", ({ connection, qr, lastDisconnect }) => {
     if (sock !== activeSocket) return;
@@ -1180,7 +1200,7 @@ schedulerTimer = setInterval(() => {
           void adminNotificationDrain.tick();
           void sendDueQuickPolls();
           void paymentReminderDrain.tick();
-        })();
+        })().catch(error => console.error("Falha no ciclo (abertura/agendador):", describeError(error)));
       }, 5000);
       void syncOpenAuctionGroups().catch(error => console.warn("Falha ao sincronizar grupos abertos:", error?.message || error));
       // Disparos/finalize imediatos REMOVIDOS: rodavam em paralelo com a
@@ -1206,7 +1226,7 @@ schedulerTimer = setInterval(() => {
         reconnecting = true;
         console.log("Reconectando em 5 segundos...");
         setTimeout(() => void connect().catch(error => {
-          console.error("Falha ao recriar conexão:", error?.message || error);
+          console.error("Falha ao recriar conexão:", describeError(error));
           process.exit(1); // Let the supervisor retry instead of staying disconnected.
         }), 5000);
       }

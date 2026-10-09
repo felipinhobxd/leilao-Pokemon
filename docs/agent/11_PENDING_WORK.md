@@ -36,6 +36,11 @@ PENDENTES (ordem lexical):
      bigint e a assinatura integer causava erro de resolução de função: o 1º BID_PLACED
      pós-retirada FALHAVA e abortava o lance inteiro. OBRIGATÓRIA junto com #9/#10, nesta
      ordem — nunca aplicar #10 sem #11)
+  12. 20261008230000_prune_audit_and_commands.sql    (P-17: prune de 7 DIAS para
+     auction_events de auditoria — ~39k linhas com auction_id NULL que a limpeza nunca
+     tocava — e processed_commands. cleanup_old_auctions ganha p_audit_days default 7;
+     bot não muda. Depois de aplicada, o PRÓXIMO ciclo de limpeza (hourly, guard de
+     backup passa) poda os ~39k e o export_business_backup volta a ser leve)
 Próximo passo: colar as 8 no SQL Editor → `npm run doctor` → smokes:
   (a) excluir leilão de teste ("sim quero") some do Excel
   (b) 3+3 reduções → 2 DMs de ciclo (com reset)
@@ -79,21 +84,24 @@ Não reabrir. Cadastro de cartas é 100% manual.
 ID: P-17
 Título: Crescimento perpétuo de auction_events (auditoria) e processed_commands —
        raiz da queda do Supabase em 2026-10-08
-Prioridade: Alta — AGUARDANDO DECISÃO DO OPERADOR (janela de retenção)
-Contexto: a limpeza 12h remove leilões terminais + suas árvores, mas NUNCA toca em:
+Prioridade: Alta — RESOLVIDO (implementado 2026-10-08; migração PENDENTE de aplicação, P-13 item 12)
+Contexto: a limpeza 12h remove leilões terminais + suas árvores, mas NUNCA tocava em:
   (a) ~39 mil auction_events com auction_id NULL — linhas do trigger audit_admin_change,
       que dispara a CADA UPDATE de participants/cards/auctions (inclusive last_seen_at),
       cada uma com payload before/after completo (99,6% das linhas da tabela);
   (b) processed_commands (cache de idempotência — ~1 linha por comando, cresce para sempre).
-  Os dois engordam o export_business_backup sem parar. No free tier, gerar o backup
+  Os dois engordavam o export_business_backup sem parar. No free tier, gerar o backup
   satura o compute por ~1min (Supabase responde 520/521/525 para TUDO — incidente
-  de 2026-10-08, inclusive derrubando o bot) e a rotina das 4h30 é o mesmo gargalo.
-Proposta (escolher a janela: 7 / 15 / 30 dias): migration que estende cleanup_old_auctions
-  para podar (a) eventos de auditoria mais velhos que N dias (drop/recreate do
-  immutable_audit dentro da transação, como o resto da rotina já faz) e
-  (b) processed_commands mais velhos que N dias. Janela de idempotência: retries do bot
-  são em segundos; eventIds de voto carregam timestamp único — 7 dias é folgado.
-Status: PROPOSTA — não implementada. Definir a janela com o operador e executar.
+  de 2026-10-08, inclusive derrubando o bot).
+Implementado (2026-10-08, decisão do operador: 7 DIAS): migration 20261008230000 estende
+  cleanup_old_auctions com p_audit_days default 7 — poda eventos de auditoria e
+  processed_commands além da janela, dentro da transação que derruba/restaura o
+  immutable_audit e protegida pelo guard de backup do dia. Idempotência real precisa de
+  segundos (retries do bot); eventIds de voto carregam timestamp único — 7 dias é folgado.
+  ZERO mudança no bot (default via assinatura nova + drop/re-create com revoke/grant).
+Status: IMPLEMENTADA — aplicar 20261008230000 no SQL Editor (P-13 item 12) e deixar o
+  ciclo hourly de limpeza podar; conferir no log do supervisor as chaves novas
+  'audit_events' e 'processed_commands' no resumo de deletados.
 ```
 
 - Supabase Log Ingestion: 0.96/1 GB no free plan — polling reduzido ~56%, mas os logs acumulados só resetam no próximo ciclo de billing. Monitorar.

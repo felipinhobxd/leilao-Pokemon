@@ -33,7 +33,7 @@ Regras de manutenção (valem para TODOS os arquivos desta pasta):
 | ----- | ----------------------- | ------------------- | ------ | ------------------ |
 | 01 | `01_PROJECT_CONTEXT.md` | Contexto geral | Estável — leitura obrigatória de todo agente novo | 2026-09-23 |
 | 02 | `02_ARCHITECTURE.md` | Arquitetura real | Estável | 2026-09-23 |
-| 03 | `03_DATABASE.md` | Supabase/PostgreSQL | ⚠️ Migrations pendentes de aplicação manual, incl. 20261005120000 (limpeza 12h) e as 20261007100000/110000 + 20261008001511 (participantes + retirada/re-oferta + fix bigint — as 3 JUNTAS) — ver 11_PENDING | 2026-10-08 |
+| 03 | `03_DATABASE.md` | Supabase/PostgreSQL | ⚠️ Migrations pendentes de aplicação manual — 20261008230000 (P-17: prune 7 dias da auditoria, P-13 item 12) e possíveis anteriores — ver 11_PENDING | 2026-10-08 |
 | 04 | `04_API.md` | API Next.js (app/api) | Estável; rotas novas `/api/auctions/drafts`, `/api/quick-polls`, `/api/auctions/delete`; comandos PARTICIPANT_SUSPEND/REACTIVATE em /api/commands | 2026-10-07 |
 | 05 | `05_FRONTEND.md` | Frontend (app/) | Estável; wizard com rascunhos + brinde por carta + auto-save; dashboard com painel de avisos, exclusão e GESTÃO DE PARTICIPANTES (suspender/reativar/banir) | 2026-10-07 |
 | 06 | `06_WHATSAPP_BOT.md` | Bot Baileys (bot/) | Estável; abertura ATÔMICA; ciclo de 3; blindagem contra queda do Supabase (handlers no filho + describeError); bot 52 testes | 2026-10-08 |

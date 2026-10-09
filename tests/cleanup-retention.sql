@@ -121,6 +121,67 @@ begin
   if coalesce((result->'deleted'->>'auctions')::int,0) < 1 then
     raise exception 'ASSERT_FAILED: cleanup did not report the deleted auction';
   end if;
+
+  -- (5) P-17 (2026-10-08): auditoria (auction_events) e cache de idempotência
+  --     (processed_commands) são PODADOS com janela de 7 dias (p_audit_days).
+  -- 5a. Semear os dois lados da janela: 8 dias (vai embora) e 1 dia (fica).
+  insert into public.auction_events(admin_user_id,event_type,external_event_id,created_at)
+  values ('00000000-0000-0000-0000-000000000092','participants_UPDATE','prune-old-audit',now()-interval '8 days');
+  insert into public.auction_events(admin_user_id,event_type,external_event_id,created_at)
+  values ('00000000-0000-0000-0000-000000000092','participants_UPDATE','prune-fresh-audit',now()-interval '1 day');
+  insert into public.processed_commands(external_event_id,request,result,created_at)
+  values ('prune-old-command','{}'::jsonb,'{}'::jsonb,now()-interval '8 days');
+  insert into public.processed_commands(external_event_id,request,result,created_at)
+  values ('prune-fresh-command','{}'::jsonb,'{}'::jsonb,now()-interval '1 day');
+
+  result := public.cleanup_old_auctions();
+  if exists(select 1 from public.auction_events where external_event_id='prune-old-audit') then
+    raise exception 'ASSERT_FAILED: 8-day-old audit event survived the 7-day prune';
+  end if;
+  if not exists(select 1 from public.auction_events where external_event_id='prune-fresh-audit') then
+    raise exception 'ASSERT_FAILED: fresh audit event was pruned by the 7-day window';
+  end if;
+  if exists(select 1 from public.processed_commands where external_event_id='prune-old-command') then
+    raise exception 'ASSERT_FAILED: 8-day-old processed_commands row survived the 7-day prune';
+  end if;
+  if not exists(select 1 from public.processed_commands where external_event_id='prune-fresh-command') then
+    raise exception 'ASSERT_FAILED: fresh processed_commands row was pruned by the 7-day window';
+  end if;
+  if coalesce((result->'deleted'->>'audit_events')::int,0) < 1 then
+    raise exception 'ASSERT_FAILED: cleanup did not report pruned audit events';
+  end if;
+  if coalesce((result->'deleted'->>'processed_commands')::int,0) < 1 then
+    raise exception 'ASSERT_FAILED: cleanup did not report pruned processed_commands';
+  end if;
+
+  -- 5b. Eventos de negócio FRESCOS (deste teste, < 1 dia) sobrevivem ao prune
+  --     padrão — o prune nunca interfere na janela de disputa real.
+  if not exists(select 1 from public.auction_events where external_event_id='cleanup-retention-card') then
+    raise exception 'ASSERT_FAILED: fresh business event was pruned';
+  end if;
+  if not exists(select 1 from public.processed_commands where external_event_id='cleanup-retention-card') then
+    raise exception 'ASSERT_FAILED: fresh idempotency cache was pruned';
+  end if;
+
+  -- 5c. Granularidade: p_audit_days=1 apaga também o evento/comando de 1 dia.
+  result := public.cleanup_old_auctions(12, 1);
+  if exists(select 1 from public.auction_events where external_event_id='prune-fresh-audit') then
+    raise exception 'ASSERT_FAILED: p_audit_days=1 did not prune the 1-day-old audit event';
+  end if;
+  if not exists(select 1 from public.auction_events where external_event_id='cleanup-retention-card') then
+    raise exception 'ASSERT_FAILED: p_audit_days=1 pruned events created minutes ago';
+  end if;
+
+  -- 5d. O trigger immutable_audit VOLTOU depois do prune: UPDATE em
+  --     auction_events volta a ser bloqueado (append-only preservado).
+  begin
+    update public.auction_events set payload=payload where external_event_id='cleanup-retention-card';
+    raise exception 'ASSERT_FAILED: immutable_audit trigger did not come back after the prune';
+  exception when others then
+    if sqlerrm <> 'audit_is_append_only' then
+      raise;
+    end if;
+  end;
 end $$;
 
 reset role;

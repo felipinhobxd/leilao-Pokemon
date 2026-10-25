@@ -354,3 +354,5 @@ dialog::backdrop{background:#030712b8;backdrop-filter:blur(4px)}
 }
 
 .wizard-workspace{border:0;padding:0;margin:0;min-width:0}
+
+.panel>.actions+.stats-grid{margin-top:16px}

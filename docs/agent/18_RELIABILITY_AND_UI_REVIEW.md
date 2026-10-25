@@ -21,7 +21,7 @@ Autosave mostra pendência/salvando/salvo/falha; interrompe novas tentativas ap�
 
 - Operação e Novo leilão aparecem antes do diagnóstico, que fica recolhido. Temas escuro/claro/sistema preservados.
 - Leilão / Brinde / Quiz são seleção exclusiva e explícita. Não há conversão de enquetes legadas publicadas.
-- Busca por nome/número, filtro por tipo/pendências, janela de 12 itens, atalho de posição e recolher cartas. Filtrar/paginar nunca muda o índice ou a ordem de publicação. Erro abre a carta, limpa filtros e foca o campo, com aria-invalid/descrição.
+- Rótulos de opções/correta e pagamento têm nome acessível explícito, sem incorporar valores dos controles. Busca por nome/número, filtro por tipo/pendências, janela de 12 itens, atalho de posição e recolher cartas. Filtrar/paginar nunca muda o índice ou a ordem de publicação. Erro abre a carta, limpa filtros e foca o campo, com aria-invalid/descrição.
 - Etapa Valores oculta ações monetárias em fila só de jogos e oferece revisão recolhível. Revisão final distingue quantidades por tipo, lotes reais, última publicação prevista e prévia da enquete, com a correta marcada somente no painel.
 - Compras: busca por carta/pessoa/contato, filtros de pagamento, totais pendentes por participante no conjunto carregado e status traduzido. Cards/participantes/compras têm apresentação empilhada em telas estreitas.
 - Cronômetro isolado em componente próprio, sem renderizar todas as tabelas a cada segundo.
@@ -43,7 +43,7 @@ Advisors de segurança do Supabase: RLS sem policy é intencional nas tabelas pr
 
 ## Verificação
 
-- Validação local: **114 testes raiz, 70 do bot, 24 cenários SQL**, typecheck, build e smoke de autenticação aprovados. Resultado dos testes de navegador e da CI deve ser consultado após push.
+- Validação local: **117 testes raiz, 70 do bot, 24 cenários SQL**, typecheck, build e smoke de autenticação aprovados. Resultado dos testes de navegador e da CI deve ser consultado após push.
 - Banco descartável: schema, bridge e todas as migrations; cenário dashboard-auction reproduz mais de 500 registros alheios e confirma que o lance ativo de R$ 100 permanece; testa suspensão e grants/recuperação.
 - backup-restore.sql exporta e restaura registros operacionais em tabelas temporárias, validando Unicode, valores e referências entre participante/carta/leilão/compra. Não é certificação de recuperação integral de Auth/Storage/WhatsApp.
 - CI com Chromium desktop/celular: tipo e correta, retry com mesmo ID/horário, perda de resposta após commit + reload, detalhes após salvar/reabrir, paginação/foco do erro, compras/acessibilidade e reconexão. Backend/autenticação são fixtures; APIs/RPCs têm testes separados. Nenhuma mensagem real nestes testes.

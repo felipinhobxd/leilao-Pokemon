@@ -10,6 +10,10 @@
 
 Proteção conservadora de compras na limpeza automática/manual dos encerrados; backup v2 sem truncar drafts/quizzes; pacote opcional de imagens e restauração em schema privado descartável. Migration 20261025220841 instalada: 69 locais / 77 remotos. Bot 0.2.10 sem arquivos alterados nesta rodada. Documento 19.
 
+## Painel — implementação em etapas
+
+Documento [20_PANEL_FRESHNESS_AND_NAVIGATION.md](20_PANEL_FRESHNESS_AND_NAVIGATION.md): aviso de dados desatualizados, última leitura completa e tentativa manual, sem ampliar polling ou alterar o bot. Navegação de rascunhos é a próxima etapa, a ser anunciada ao operador antes de começar.
+
 ## Protocolo de início
 
 1. Ler este índice e `12_SESSION_HANDOFF.md`.

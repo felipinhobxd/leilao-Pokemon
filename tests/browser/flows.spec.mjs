@@ -36,3 +36,35 @@ test('completed cleanup explains financial protection and reports preserved sale
  await expect(page.getByText('3 leilão(ões) encerrado(s) excluído(s) definitivamente. 2 preservado(s) por terem compras vinculadas.',{exact:true})).toBeVisible();
  expect(submitted.confirm1).toBe('excluir leilões encerrados');expect(submitted.confirm2).toBe('quero excluir os encerrados');expect(submitted.eventId).toMatch(/^[a-f0-9-]{36}$/);
 });
+
+test('failed full refresh keeps cached data and warning across operation-only success, then recovers',async({page})=>{
+ await page.clock.install();let fail=false,operations=0;
+ await page.route('**/api/dashboard**',async route=>{
+  if(route.request().url().includes('scope=operations')){operations++;await route.continue();}
+  else if(fail)await route.fulfill({status:503,json:{error:'Simulated outage'}});
+  else await route.continue();
+ });
+ await page.goto('/');const status=page.getByRole('region',{name:'Atualização do painel'});
+ await expect(status.getByText('Painel atualizado',{exact:true})).toBeVisible();
+ const timestamp=await status.locator('time').getAttribute('datetime');fail=true;
+ await status.getByRole('button',{name:'Atualizar painel',exact:true}).click();
+ await expect(status.getByText('Falha ao atualizar o painel',{exact:true})).toBeVisible();
+ await expect(page.getByRole('heading',{name:'#1 Pikachu ex',exact:true})).toBeVisible();
+ await page.clock.runFor(30_001);await expect.poll(()=>operations).toBeGreaterThan(0);
+ await expect(status.getByText('Falha ao atualizar o painel',{exact:true})).toBeVisible();
+ await expect(status.locator('time')).toHaveAttribute('datetime',timestamp);
+ fail=false;await status.getByRole('button',{name:'Tentar novamente',exact:true}).click();
+ await expect(status.getByText('Painel atualizado',{exact:true})).toBeVisible();
+ await expect(status.locator('time')).not.toHaveAttribute('datetime',timestamp);
+});
+
+test('offline dashboard is visibly distinct from bot state and reconnects with one complete read',async({page,context})=>{
+ await page.goto('/');const status=page.getByRole('region',{name:'Atualização do painel'});
+ await expect(status.getByText('Painel atualizado',{exact:true})).toBeVisible();
+ await context.setOffline(true);
+ await expect(status.getByText('Painel sem conexão',{exact:true})).toBeVisible();
+ await expect(status.getByRole('button',{name:'Tentar novamente',exact:true})).toBeDisabled();
+ await expect(status.getByText('Esta conexão é do painel; o status do bot aparece na área de operação.',{exact:true})).toBeVisible();
+ await context.setOffline(false);
+ await expect(status.getByText('Painel atualizado',{exact:true})).toBeVisible();
+});

@@ -13,3 +13,6 @@ Backup v2 sem truncar rascunhos/quizzes, incluindo todas as colunas de lembretes
 Local: 123 testes raiz, 70 bot, 25 cenários SQL, typecheck, check e build aprovados; ensaio adicional de 22 tabelas aprovado. CI adiciona ensaio PostgreSQL17 e teste de dupla confirmação com contagem preservada (desktop/celular). Consultar CI/deploy do commit publicado antes de afirmar resultado remoto.
 
 Log Ingestion alvo 1GB: somente consultas pontuais de catálogo/advisors e uma instalação; sem backup real, imagens reais ou testes de carga. Último número conhecido 0,88/1GB é antigo; não medimos delta nem garantimos quota dos processos ativos. Não iniciar bot em testes.
+
+
+Etapa posterior: documento 20, aviso de atualização do painel implementado, 125 testes raiz/typecheck locais aprovados e CI de navegador ampliada. Não iniciou proteção de navegação ainda; operador pediu aviso de transição. Nenhum arquivo de bot ou migration alterado nesta etapa.

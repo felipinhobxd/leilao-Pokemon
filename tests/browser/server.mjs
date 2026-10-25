@@ -42,11 +42,13 @@ http.createServer(async(req,res)=>{
   if(path==='/api/whatsapp/bootstrap')return json(res,{botStatus,groups,dispatches:[]});
   if(path==='/api/whatsapp/bot')return json(res,req.method==='POST'?{ok:true}:botStatus);
   if(path==='/api/dashboard'){
+   if(config.dashboardFailures>0){config.dashboardFailures--;return json(res,{error:'Falha de leitura simulada'},503);}
    const data=empty();const person={id,display_name:'Maria de exemplo',phone_e164:'Contato de demonstração',status:'active'};const card={id,name:'Pikachu ex',starting_price:5,status:'in_auction'};const auction={id,card_id:id,status:'open',starting_price:5,scheduled_end_at:new Date(Date.now()+3600000).toISOString(),created_at:new Date().toISOString(),lot_number:1};
    const bid={id,auction_id:id,participant_id:id,amount:100,status:'active',participant:person};
    data.cards=[card];data.auctions=[auction];data.participants=[person];
    data.purchases=[{id,card_id:id,auction_id:id,participant_id:id,card_name:card.name,person_name:person.display_name,amount:50,status:'confirmed',paid:false}];
-   return json(res,{data,role:'admin',liveAuction:{auction,card,winner:null,bids:[bid],participantCount:1,purchases:data.purchases},operations:{bot:{online:true,connected:true,version:'0.2.10'},group:groups[0],dispatches:{sent:1,failed:0,pending:0,successRate:1}}});
+   const operations={bot:{online:true,connected:true,version:'0.2.10'},group:groups[0],dispatches:{sent:1,failed:0,pending:0,successRate:1}};
+   return json(res,url.searchParams.get('scope')==='operations'?{role:'admin',operations}:{data,role:'admin',liveAuction:{auction,card,winner:null,bids:[bid],participantCount:1,purchases:data.purchases},operations});
   }
   if(path==='/api/operations')return json(res,{checkedAt:new Date().toISOString(),worker:null,backups:[],backupReadFailed:false,notices:[],failures:[],sectionsUnavailable:[]});
   if(path==='/api/quick-polls')return json(res,{data:[]});

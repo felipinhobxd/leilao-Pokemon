@@ -4,6 +4,7 @@ import AuctionCountdown from "./auction-countdown";
 import PurchasesPanel from "./purchases-panel";
 import OperationHealthPanel from "./operation-health";
 import CompletedAuctionsDeleteDialog from "./completed-auctions-delete-dialog";
+import DashboardFreshness from "./dashboard-freshness";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { createPublicSupabaseClient } from "@/lib/supabase";
@@ -32,7 +33,12 @@ export default function Dashboard() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
-  const [realtime, setRealtime] = useState("Conectando…");
+  const [streamConnected, setStreamConnected] = useState(false);
+  const [online,setOnline] = useState(true);
+  const [refreshing,setRefreshing] = useState(false);
+  const [lastUpdatedAt,setLastUpdatedAt] = useState<number|null>(null);
+  const [syncFailure,setSyncFailure] = useState("");
+  const failedFullRefresh=useRef(false);
   const [selected, setSelected] = useState("");
   const [cardSearch, setCardSearch] = useState("");
   const [participantSearch, setParticipantSearch] = useState("");
@@ -89,6 +95,7 @@ export default function Dashboard() {
         revision.current++;
         fullLoadedAt.current=0;
         setData(null);setLiveAuction(null);loadedSelection.current=null;
+        setLastUpdatedAt(null);setSyncFailure("");failedFullRefresh.current=false;setStreamConnected(false);setRefreshing(false);
         setRole("viewer");
         setOperations({bot:null,group:null});
         setRetry(null);
@@ -111,37 +118,48 @@ export default function Dashboard() {
       if (!force) return;
     }
     if (!force && !operationsOnly && Date.now()-fullLoadedAt.current < 2000 && loadedSelection.current===selected) return;
+    if(navigator.onLine===false)return;
     const version = ++revision.current;
+    setRefreshing(true);
     const work = (async () => {
       try {
-        const response = await request(operationsOnly ? "/api/dashboard?scope=operations" : `/api/dashboard${selected ? `?auction=${encodeURIComponent(selected)}` : ""}`);
+        const response = await request(operationsOnly ? "/api/dashboard?scope=operations" : `/api/dashboard${selected ? `?auction=${encodeURIComponent(selected)}` : ""}`,{signal:AbortSignal.timeout(20_000)});
         const body = await response.json();
         if (version !== revision.current || !accessToken.current) return;
-        if (!response.ok) { if ([401, 403].includes(response.status)) { setData(null); fullLoadedAt.current=0; } throw new Error(body.error); }
-        if (body.data) {
+        if (!response.ok) { if ([401, 403].includes(response.status)) { setData(null);setLiveAuction(null);setRole("viewer");setOperations({bot:null,group:null});setLastUpdatedAt(null); fullLoadedAt.current=0; } throw new Error(body.error); }
+        if(!operationsOnly&&!body.data)throw new Error("A leitura completa do painel não foi confirmada.");
+        if (body.data&&!operationsOnly) {
           const live=body.liveAuction ?? null;
           const next=mergeLiveAuction(body.data as Snapshot,live);
           loadedSelection.current=selected; setLiveAuction(live ?? null); setData(next); fullLoadedAt.current=Date.now();
+          setLastUpdatedAt(fullLoadedAt.current);failedFullRefresh.current=false;
         }
-        setError(""); setRole(body.role); setOperations(body.operations ?? {bot:null,group:null});
-      } catch (e) { if (version === revision.current) setError(e instanceof Error ? e.message : "Falha ao atualizar."); }
+        if(!failedFullRefresh.current)setSyncFailure("");
+        setRole(body.role); setOperations(body.operations ?? {bot:null,group:null});
+      } catch { if (version === revision.current) {if(!operationsOnly)failedFullRefresh.current=true;setSyncFailure("Não foi possível confirmar a atualização. Os dados exibidos podem estar desatualizados.");} }
+      finally {if(version===revision.current)setRefreshing(false);}
     })();
     refreshPending.current=work;
     try { await work; } finally { if(refreshPending.current===work)refreshPending.current=null; }
   }, [request, selected]);
   useEffect(() => {
     if (!session) return;
+    setOnline(navigator.onLine!==false);
     let timer: ReturnType<typeof setTimeout>;
-    const reload = () => { clearTimeout(timer); timer = setTimeout(() => void refresh(), 5_000); };
+    const reload = () => { clearTimeout(timer); timer = setTimeout(() => {if(!document.hidden)void refresh();}, 5_000); };
     void refresh(false);
     const channel = db.channel("admin-auctions").on("postgres_changes", { event: "*", schema: "public", table: "auction_events" }, reload).subscribe(status => {
-      setRealtime(status === "SUBSCRIBED" ? "Ao vivo" : "Reconectando…");
+      setStreamConnected(status === "SUBSCRIBED");
       if (status === "SUBSCRIBED") void refresh(false);
     });
     const focusReload = () => { if(!document.hidden)void refresh(false); };
+    const offline=()=>setOnline(false);
+    const online=()=>{setOnline(true);if(!document.hidden)void refresh(false);};
     window.addEventListener("focus", focusReload);
+    document.addEventListener("visibilitychange",focusReload);
+    window.addEventListener("offline",offline);window.addEventListener("online",online);
     const fallback = setInterval(() => { if(!document.hidden)void refresh(false, Date.now()-fullLoadedAt.current < 60000); }, 30_000);
-    return () => { clearTimeout(timer); clearInterval(fallback); window.removeEventListener("focus", focusReload); void db.removeChannel(channel); };
+    return () => { clearTimeout(timer); clearInterval(fallback); window.removeEventListener("focus", focusReload);document.removeEventListener("visibilitychange",focusReload);window.removeEventListener("offline",offline);window.removeEventListener("online",online); void db.removeChannel(channel); };
   }, [db, session?.user.id, refresh]);
   async function execute(command: Command) {
     if (mutationLock.current) return;
@@ -295,12 +313,13 @@ export default function Dashboard() {
     command("PARTICIPANT_SUSPEND", { id: str(suspendTarget, "id"), data: { suspension_until: until } });
   }
   return <main id="main-content" tabIndex={-1} className="shell">
-    <header className="topbar"><div><p className="eyebrow">CENTRAL DE LEILÕES</p><h1>Leilão Pokémon</h1><p className="muted">Cartas, participantes e disputas em um só lugar.</p></div>{session && <div className="actions"><span className="status-pill">{realtime}</span><button className="secondary" disabled={busy || role === "viewer"} onClick={downloadBackup}>Baixar backup</button><button className="secondary" disabled={busy} onClick={exportExcel}>Exportar Excel</button><button disabled={busy} onClick={() => void db.auth.signOut()}>Sair</button></div>}</header>
+    <header className="topbar"><div><p className="eyebrow">CENTRAL DE LEILÕES</p><h1>Leilão Pokémon</h1><p className="muted">Cartas, participantes e disputas em um só lugar.</p></div>{session && <div className="actions"><button className="secondary" disabled={busy || role === "viewer"} onClick={downloadBackup}>Baixar backup</button><button className="secondary" disabled={busy} onClick={exportExcel}>Exportar Excel</button><button disabled={busy} onClick={() => void db.auth.signOut()}>Sair</button></div>}</header>
     {error && <p role="alert" className="alert">{error}</p>}{notice && <p role="status" className="notice">{notice}</p>}
     {deleteCompletedOpen && session && role === "admin" && <CompletedAuctionsDeleteDialog busy={busy} error={error} onClose={() => setDeleteCompletedOpen(false)} onConfirm={deleteCompletedAuctions} />}
     {retry && <button disabled={busy} onClick={() => void execute(retry)}>Reenviar a mesma operação</button>}
+    {session && <DashboardFreshness online={online} failure={syncFailure} lastUpdatedAt={lastUpdatedAt} streamConnected={streamConnected} refreshing={refreshing} onRetry={()=>void refresh()} />}
     {session && !data && <OperationHealthPanel key={session.user.id} request={request} writable={writable} onBackup={() => void downloadBackup()} backupBusy={busy} />}
-    {!ready ? <p>Carregando sessão…</p> : !session ? <form className="panel login form-grid" onSubmit={login}><h2>Acesso administrativo</h2><label>E-mail<input name="email" type="email" autoComplete="username" required /></label><label>Senha<input name="password" type="password" autoComplete="current-password" required /></label><button disabled={busy}>Entrar</button></form> : !data ? <section className="panel"><p>Carregando dados do banco…</p><button onClick={() => void refresh()}>Tentar novamente</button></section> : <>
+    {!ready ? <p>Carregando sessão…</p> : !session ? <form className="panel login form-grid" onSubmit={login}><h2>Acesso administrativo</h2><label>E-mail<input name="email" type="email" autoComplete="username" required /></label><label>Senha<input name="password" type="password" autoComplete="current-password" required /></label><button disabled={busy}>Entrar</button></form> : !data ? <section className="panel"><p>{syncFailure?"Os dados do banco ainda não estão disponíveis. Use Tentar novamente acima.":"Carregando dados do banco…"}</p></section> : <>
       <section className="panel" style={{marginBottom:14}}><div className="panel-title"><div><p className="eyebrow">OPERAÇÃO AO VIVO</p><h2>{botLabel}</h2></div><span className="status-pill">Próximo lote #{nextLot}</span></div><div className="actions" style={{marginTop:14}}><Link className="button-link" href="/auctions/new">＋ Novo leilão</Link><a className="button-link" href="#current-auction">Ver leilão atual</a><Link className="button-link" href="/whatsapp">Central WhatsApp</Link></div><div className="stats-grid"><div className="stat-card"><span>Bot</span><strong>{botLabel}</strong></div><div className="stat-card"><span>Grupo</span><strong>{operations.group?.name??"Não selecionado"}</strong></div><div className="stat-card"><span>Leilão atual</span><strong>{auction?`#${Number(auction.lot_number)||"—"} ${str(card,"name")}`:"Nenhum"}</strong></div><div className="stat-card"><span>Maior lance</span><strong>{price(amount)}</strong></div><div className="stat-card"><span>Participantes</span><strong>{participantCount}</strong></div><div className="stat-card"><span>Envios (24h)</span><strong title={dispatchLabel === "—" ? "Sem disparos terminais na janela" : `${dispatches?.sent ?? 0} enviados · ${dispatches?.failed ?? 0} falhos · ${dispatches?.pending ?? 0} pendentes`}>{dispatchLabel}</strong></div><div className="stat-card"><span>Tempo restante</span><strong>{auction?.status === "open" ? <AuctionCountdown end={auction.scheduled_end_at} /> : labelStatus[str(auction,"status")] ?? "—"}</strong></div></div></section>
       <details className="panel diagnostics-details"><summary>Diagnóstico e recuperação da operação</summary><OperationHealthPanel key={session.user.id} request={request} writable={writable} onBackup={() => void downloadBackup()} backupBusy={busy} /></details>
       <nav className="section-nav" aria-label="Seções do painel"><a href="#operation-health">Saúde da operação</a><a href="#current-auction">Disputa</a><a href="#cards-section">Cartas</a><a href="#participants-section">Participantes</a><a href="#purchases-section">Compras</a></nav>

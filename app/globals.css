@@ -360,3 +360,5 @@ dialog::backdrop{background:#030712b8;backdrop-filter:blur(4px)}
 .main-grid>*{min-width:0}
 .panel h2,.panel strong,.panel td{overflow-wrap:anywhere}
 
+.dashboard-freshness{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px}.dashboard-freshness p{margin:6px 0 0}.dashboard-freshness button{flex-shrink:0}.freshness-warning{border-color:var(--accent)}
+@media(max-width:640px){.dashboard-freshness{align-items:stretch;flex-direction:column}.dashboard-freshness button{width:100%}}

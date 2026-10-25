@@ -231,3 +231,6 @@ A limpeza automática de 12h e o botão **Excluir leilões encerrados** preserva
 `npm run backup:pack -- --file D:\Backups\backup.json.gz --output D:\Backups\pacote-novo` cria um pacote local de um backup v2 já baixado, com manifesto SHA-256 e SQL para ensaio em schema privado descartável. Imagens são opcionais com `--images --source-origin https://gsyuoggymjdzxibfujyv.supabase.co`, baixadas sequencialmente; falhas e URLs não suportadas são sinalizadas. Não executa SQL nem inicia o bot. Use `--verify --output D:\Backups\pacote-novo` para conferir a integridade. Não é restauração automática de produção/Auth/sessão.
 
 Migration 20261025220841 instalada; nenhum arquivo do bot foi alterado nesta rodada. [Procedimento, testes e limites](docs/agent/19_SETTLEMENT_PROTECTION_AND_RECOVERY.md).
+
+
+O painel mostra a última leitura completa e avisa sobre falha de atualização, perda de internet/canal ou dados desatualizados. **Tentar novamente** consulta os dados sem reenviar comandos ao bot. O contador de idade é local, sem consultas adicionais. [Detalhes](docs/agent/20_PANEL_FRESHNESS_AND_NAVIGATION.md).

@@ -43,7 +43,7 @@ Advisors de segurança do Supabase: RLS sem policy é intencional nas tabelas pr
 
 ## Verificação
 
-- Validação local: **117 testes raiz, 70 do bot, 24 cenários SQL**, typecheck, build e smoke de autenticação aprovados. Resultado dos testes de navegador e da CI deve ser consultado após push.
+- Validação local: **118 testes raiz, 70 do bot, 24 cenários SQL**, typecheck, build e smoke de autenticação aprovados. Resultado dos testes de navegador e da CI deve ser consultado após push.
 - Banco descartável: schema, bridge e todas as migrations; cenário dashboard-auction reproduz mais de 500 registros alheios e confirma que o lance ativo de R$ 100 permanece; testa suspensão e grants/recuperação.
 - backup-restore.sql exporta e restaura registros operacionais em tabelas temporárias, validando Unicode, valores e referências entre participante/carta/leilão/compra. Não é certificação de recuperação integral de Auth/Storage/WhatsApp.
 - CI com Chromium desktop/celular: tipo e correta, retry com mesmo ID/horário, perda de resposta após commit + reload, detalhes após salvar/reabrir, paginação/foco do erro, compras/acessibilidade e reconexão. Backend/autenticação são fixtures; APIs/RPCs têm testes separados. Nenhuma mensagem real nestes testes.

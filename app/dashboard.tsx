@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import type { Session } from "@supabase/supabase-js";
 import { createPublicSupabaseClient } from "@/lib/supabase";
 import type { Command } from "@/lib/commands";
+import {mergeLiveAuction,type LiveAuctionState} from "@/lib/dashboard-state";
 import type { Row, Snapshot } from "@/lib/backend";
 import { money } from "@/lib/domain";
 import { brasiliaInputToIso, formatBrasiliaTime, toBrasiliaInput } from "@/lib/brasilia-time";
@@ -38,7 +39,7 @@ export default function Dashboard() {
   useEffect(() => { setSelected(new URLSearchParams(window.location.search).get("auction") ?? ""); }, []);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [retry, setRetry] = useState<Command | null>(null);
-  const [liveAuction, setLiveAuction] = useState<{auction:Row|null;card:Row|null;winner:Row|null;bids:Array<Row & {participant:Row}>;participantCount:number}|null>(null);
+  const [liveAuction, setLiveAuction] = useState<LiveAuctionState|null>(null);
   const [purgeOpen, setPurgeOpen] = useState(false);
   const [deleteCompletedOpen, setDeleteCompletedOpen] = useState(false);
   const [purgeStep1, setPurgeStep1] = useState("");
@@ -118,11 +119,8 @@ export default function Dashboard() {
         if (version !== revision.current || !accessToken.current) return;
         if (!response.ok) { if ([401, 403].includes(response.status)) { setData(null); fullLoadedAt.current=0; } throw new Error(body.error); }
         if (body.data) {
-          const next = body.data as Snapshot;
-          const live = body.liveAuction;
-          if (Array.isArray(live?.purchases)) next.purchases = live.purchases;
-          if (live?.auction && !next.auctions.some(a=>a.id===live.auction.id)) next.auctions.unshift(live.auction);
-          if (live?.card && !next.cards.some(c=>c.id===live.card.id)) next.cards.push(live.card);
+          const live=body.liveAuction ?? null;
+          const next=mergeLiveAuction(body.data as Snapshot,live);
           loadedSelection.current=selected; setLiveAuction(live ?? null); setData(next); fullLoadedAt.current=Date.now();
         }
         setError(""); setRole(body.role); setOperations(body.operations ?? {bot:null,group:null});

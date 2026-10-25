@@ -1,5 +1,8 @@
 # 13_MIGRATION_AUDIT — Conferência de produção
 
+> Estado atual consolidado: [18_RELIABILITY_AND_UI_REVIEW.md](18_RELIABILITY_AND_UI_REVIEW.md), bot 0.2.10, Next.js 16.4.3. Seções de versões anteriores abaixo são histórico; não reaplicar migrations ou instruções antigas automaticamente.
+
+
 > Última atualização: 2026-10-25
 > Projeto: PokemonLeilao — `gsyuoggymjdzxibfujyv` (mesma referência do ambiente local)
 > Fonte: Dashboard Supabase autenticado pelo operador; histórico e consultas pontuais de catálogo, sem dados de negócio.
@@ -163,3 +166,7 @@ CLI gerou `20261025073504_operation_health_and_notice_errors.sql`. Instalada pel
 ## Atualização 0.2.9 — 20261025080442
 
 Migration quick_poll_prizes_and_quiz criada pela CLI, validada em banco descartável e instalada pelo SQL Editor. Source/versão registrados na mesma transação. Catálogo game_ready/answers_private/award_private=true, registered=1. Campos de jogo/chave/resultado, RPCs service-only, SELECT direto authenticated revogado, outbox de prêmio única e export atualizado. Nenhum jogo/prêmio real criado. Total 67 arquivos locais / 75 registros remotos. Histórico divergente permanece; não executar repair/db push geral.
+
+## Estado 0.2.10 — migration de disputa e recuperação
+
+20261025181640_dashboard_auction_detail instalada pelo conector; versão local alinhada ao registro retornado pelo catálogo. Duas funções invoker, search_path vazio e serviço somente; nenhuma alteração de tabelas/RLS ou registros de negócio. Catálogo live_ready/recovery_ready/private/invoker=true. Total **68 arquivos locais / 76 registros remotos**. Histórico antigo não foi reparado.

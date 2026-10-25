@@ -1,0 +1,3 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {probeHeaders,probeColumn,readableTable} from '../lib/doctor-probe.mjs';
+test('secret API keys use apikey without being treated as a JWT',()=>{assert.deepEqual(probeHeaders('sb_secret_fixture'),{apikey:'sb_secret_fixture'});assert.deepEqual(probeHeaders('legacy-fixture'),{apikey:'legacy-fixture',Authorization:'Bearer legacy-fixture'});});
+test('failed reads are never reported as an applied migration',()=>{for(const status of [400,401,403,404,500])assert.equal(readableTable(new Response(null,{status})),false);assert.equal(readableTable(new Response(null,{status:200})),true);assert.equal(probeColumn('payment_reminders'),'purchase_id');});

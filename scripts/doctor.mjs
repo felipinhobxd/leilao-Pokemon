@@ -7,6 +7,7 @@
 //
 // Uso:  npm run doctor          (no PC do bot, com npm run start rodando ou não)
 //       npm run doctor -- --verbose
+import {probeHeaders,probeColumn,readableTable} from "../lib/doctor-probe.mjs";
 import { existsSync, readdirSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,48 +52,39 @@ console.log("\n🩺 Check-up do leilão — rodando verificações...\n");
 
 // ---------------------------------------------------------------- migrations
 const supabaseUrl = (envLocal.NEXT_PUBLIC_SUPABASE_URL ?? botEnv.SUPABASE_URL ?? "").replace(/\/$/, "");
-const serviceKey = envLocal.SUPABASE_SERVICE_ROLE_KEY ?? botEnv.SUPABASE_SERVICE_ROLE_KEY ?? "";
+const serviceKey = envLocal.SUPABASE_SECRET_KEY ?? envLocal.SUPABASE_SERVICE_ROLE_KEY ?? botEnv.SUPABASE_SECRET_KEY ?? botEnv.SUPABASE_SERVICE_ROLE_KEY ?? "";
 if (!supabaseUrl || !serviceKey) {
-  check("Conexão com o Supabase", false, { fix: "Confira NEXT_PUBLIC_SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY no .env.local" });
+  check("Conexão com o Supabase", false, { fix: "Confira NEXT_PUBLIC_SUPABASE_URL e SUPABASE_SECRET_KEY (ou SUPABASE_SERVICE_ROLE_KEY) no .env.local" });
 } else {
-  const headers = { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` };
+  const headers = probeHeaders(serviceKey);
   // Tabelas da rodada de avisos (20260923093000), brindes/lembretes (20260924120000)
   // e rascunhos (20260924150000) — consultadas EM PARALELO (eram 6 fetches
   // sequenciais; um Supabase lento dobrava o tempo total do doctor).
   const expectedTables = ["participant_warnings", "value_change_log", "admin_notifications", "whatsapp_quick_polls", "payment_reminders", "auction_drafts"];
   const tableStates = await Promise.all(expectedTables.map(async table => {
     try {
-      const response = await fetchWithTimeout(`${supabaseUrl}/rest/v1/${table}?select=id&limit=1`, 4000, { headers });
-      return response.status === 404 ? table : null;
+      const response = await fetchWithTimeout(`${supabaseUrl}/rest/v1/${table}?select=${probeColumn(table)}&limit=1`, 4000, { headers });
+      return readableTable(response) ? null : `${table} (HTTP ${response.status})`;
     } catch {
       return table;
     }
   }));
   const missingTables = tableStates.filter(table => table !== null);
   if (missingTables.length === 0) {
-    check("Migrations aplicadas (tabelas novas)", true);
+    check("Acesso às tabelas necessárias (não certifica versões de migrations)", true);
   } else {
-    const known = {
-      participant_warnings: "20260923093000_global_warnings_value_history.sql",
-      value_change_log: "20260923093000_global_warnings_value_history.sql",
-      admin_notifications: "20260923093000_global_warnings_value_history.sql",
-      whatsapp_quick_polls: "20260924120000_quick_polls_extra_images_reminders.sql",
-      payment_reminders: "20260924120000_quick_polls_extra_images_reminders.sql",
-      auction_drafts: "20260924150000_auction_drafts.sql",
-    };
-    const files = [...new Set(missingTables.map(table => known[table]))];
-    check("Migrations aplicadas (tabelas novas)", false,
-      { detail: `faltando: ${missingTables.join(", ")}`, fix: `Abra o SQL Editor do Supabase e cole, na ordem: ${files.map(file => `supabase/migrations/${file}`).join(" → ")}` });
+    check("Acesso às tabelas necessárias", false, {detail:missingTables.join(", "),fix:"Confira URL, chave e permissões. Consulte docs/agent/13_MIGRATION_AUDIT.md; não reaplique migrations antigas automaticamente."});
   }
   // RPCs das rodadas 23120000 (backup), 24120000 (baixa de pagamento) e 24150000 (rascunhos).
   try {
     const specResponse = await fetchWithTimeout(`${supabaseUrl}/rest/v1/`, 6000, { headers: { ...headers, Accept: "application/openapi+json" } });
+    if(!specResponse.ok)throw new Error(`RPC catalog HTTP ${specResponse.status}`);
     const spec = await specResponse.json();
     const paths = Object.keys(spec?.paths ?? {});
-    const expectedRpcs = ["/rpc/export_business_backup", "/rpc/mark_purchase_paid", "/rpc/cleanup_old_auctions", "/rpc/upsert_auction_draft", "/rpc/delete_auction_draft"];
+    const expectedRpcs = ["/rpc/export_business_backup", "/rpc/mark_purchase_paid", "/rpc/cleanup_old_auctions", "/rpc/upsert_auction_draft", "/rpc/delete_auction_draft", "/rpc/read_dashboard_auction", "/rpc/recover_auction_creation"];
     const missingRpcs = expectedRpcs.filter(rpc => !paths.includes(rpc));
     check("Migrations aplicadas (RPCs: backup, baixa de pagamento, limpeza, rascunhos)", missingRpcs.length === 0,
-      { warn: false, detail: missingRpcs.length ? `faltando: ${missingRpcs.join(", ")}` : "", fix: missingRpcs.length ? `Aplique no SQL Editor: supabase/migrations/20260923120000_business_backup.sql → 20260924120000_quick_polls_extra_images_reminders.sql → 20260924140000_backup_covers_new_tables.sql → 20260924150000_auction_drafts.sql` : "" });
+      { warn: false, detail: missingRpcs.length ? `faltando: ${missingRpcs.join(", ")}` : "", fix: missingRpcs.length ? "Consulte docs/agent/13_MIGRATION_AUDIT.md e confira as funções necessárias sem reaplicar o histórico inteiro." : "" });
   } catch {
     check("Migrations aplicadas (RPCs: backup, baixa de pagamento, limpeza, rascunhos)", false, { fix: "Sem resposta do Supabase ao listar RPCs — confira a URL/chave no .env.local" });
   }

@@ -1,5 +1,8 @@
 # 00_INDEX — Memória persistente do projeto
 
+> Estado atual consolidado: [18_RELIABILITY_AND_UI_REVIEW.md](18_RELIABILITY_AND_UI_REVIEW.md), bot 0.2.10, Next.js 16.4.3. Seções de versões anteriores abaixo são histórico; não reaplicar migrations ou instruções antigas automaticamente.
+
+
 > Última atualização: 2026-10-25
 > Fonte: código local, validação da sessão anterior e conferência de produção em 2026-10-25.
 
@@ -46,6 +49,7 @@
 | [15_DEADLINE_BACKUP_AND_RECOVERY.md](15_DEADLINE_BACKUP_AND_RECOVERY.md) | Bot 0.2.7: horário comum, resultados de 15s, backup Gzip e evidência real |
 | [16_OPERATION_HEALTH_AND_UI.md](16_OPERATION_HEALTH_AND_UI.md) | Diagnóstico, recuperação segura, UI/UX e acessibilidade — 0.2.8 |
 | [17_QUIZ_AND_GIVEAWAY_PRIZES.md](17_QUIZ_AND_GIVEAWAY_PRIZES.md) | Jogos, prêmio único, privacidade e bot 0.2.9 |
+| [18_RELIABILITY_AND_UI_REVIEW.md](18_RELIABILITY_AND_UI_REVIEW.md) | Estado atual: segurança, recuperação, fotos, disputa e revisão UI — 0.2.10 |
 
 O número 07 foi retirado com o reconhecimento de cartas; não é documento faltante a recriar.
 

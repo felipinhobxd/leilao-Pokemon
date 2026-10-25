@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import GameAnswerFields from "@/app/game-answer-fields";
+import DraftToolbar from "./draft-toolbar";
+import {mergeImageUrls,removeUploadedFile,queuePollingDelay,pendingCreationKey,readPendingCreation,storePendingCreation} from "@/lib/wizard-state";
 import {parsePollGame} from "@/lib/poll-game";
 import { defaultCommonEndInput, validateCommonDeadline } from "@/lib/common-deadline";
 import { useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
@@ -104,7 +106,20 @@ export default function BulkAuctionWizard() {
   useEffect(() => { if (previousStep.current !== step) { stepTitle.current?.focus(); previousStep.current = step; } }, [step]);
   useEffect(() => { if (editingItem && editItemDialog.current && !editItemDialog.current.open) editItemDialog.current.showModal(); }, [editingItem]);
   const previewUrls = useRef(new Set<string>());
-  const submission = useRef<{ fingerprint: string; eventId: string } | null>(null);
+  const creationId = useRef(crypto.randomUUID());
+  const submission = useRef<{eventId:string;payload:Record<string,unknown>} | null>(null);
+  const [pendingConfirmation,setPendingConfirmation]=useState(false);
+  const [draftStatus,setDraftStatus]=useState("Alterações pendentes");
+  const [search,setSearch]=useState(""),[typeFilter,setTypeFilter]=useState("all"),[page,setPage]=useState(1);
+  const [invalidCard,setInvalidCard]=useState<{id:string;word:string;error:boolean}|null>(null);
+  const pageSize=12;
+  const filteredCards=cards.map((card,index)=>({card,index})).filter(({card})=>`${card.name} ${card.cardNumber}`.toLocaleLowerCase("pt-BR").includes(search.toLocaleLowerCase("pt-BR"))&&(typeFilter==="all"||typeFilter==="auction"&&!card.giveaway||card.giveaway&&card.giveawayKind===typeFilter||typeFilter==="pending"&&(!card.name.trim()||card.giveaway&&(card.giveawayCorrectIndex===""||card.giveawayKind==="quiz"&&!card.giveawayQuestion.trim())||!card.giveaway&&Boolean(pricingOf(card).error))));
+  const pages=Math.max(1,Math.ceil(filteredCards.length/pageSize));
+  const activePage=Math.min(page,pages);
+  const visibleCards=filteredCards.slice((activePage-1)*pageSize,activePage*pageSize);
+  function jumpToCard(position:number){const card=cards[position-1];if(!card)return;setSearch("");setTypeFilter("all");setPage(Math.floor((position-1)/pageSize)+1);setCards(current=>current.map(item=>item.id===card.id?{...item,expanded:true}:item));setInvalidCard({id:card.id,word:"Nome",error:false});}
+  useEffect(()=>{if(!invalidCard)return;const frame=requestAnimationFrame(()=>{const article=document.querySelector<HTMLElement>(`[data-card-id="${invalidCard.id}"]`);if(!article)return;article.querySelectorAll("details").forEach(detail=>detail.open=true);const labels=[...article.querySelectorAll("label")];const field=(labels.find(label=>label.textContent?.toLocaleLowerCase("pt-BR").includes(invalidCard.word.toLocaleLowerCase("pt-BR")))??labels[0])?.querySelector<HTMLElement>("input,select,textarea");article.scrollIntoView({block:"center",behavior:"auto"});field?.focus();if(invalidCard.error){field?.setAttribute("aria-invalid","true");field?.setAttribute("aria-describedby","wizard-error");}});return()=>cancelAnimationFrame(frame);},[invalidCard,step]);
+  useEffect(()=>{const guard=(event:BeforeUnloadEvent)=>{if(!queueId&&cardsRef.current.length&&(pendingConfirmation||latestDraftFingerprint.current()!==lastSavedDraftFingerprint.current)){event.preventDefault();event.returnValue="";}};window.addEventListener("beforeunload",guard);return()=>window.removeEventListener("beforeunload",guard);},[pendingConfirmation,queueId]);
   const lastSavedDraftFingerprint = useRef<string | null>(null);
   const autoSaveDisabled = useRef(false);
   const saveDraftRef = useRef<(auto?: boolean) => Promise<void>>(async () => {});
@@ -115,7 +130,7 @@ export default function BulkAuctionWizard() {
     if (!cards.length) return null;
     return auctionDraftJson(buildDraftState({
       step, firstLot, groupId, intervalValue, intervalUnit, publication, scheduledInput, endMode, commonEndInput,
-      cards: cards.map(card => ({
+      cards: cardsRef.current.map(card => ({
         ...card,
         imageUrl: card.imageUrl,
         extraImages: card.extraImages.length ? card.extraImages : [],
@@ -123,6 +138,8 @@ export default function BulkAuctionWizard() {
     }));
   }
   saveDraftRef.current = saveDraft;
+  const latestDraftFingerprint=useRef(currentDraftFingerprint);
+  latestDraftFingerprint.current=currentDraftFingerprint;
 
 
   // Auto-save ESTAVEL: o timer nasce UMA vez por sessao/fila (nao a cada
@@ -132,9 +149,9 @@ export default function BulkAuctionWizard() {
   // estado atual).
   useEffect(() => {
     if (!session || queueId) return;
-    const timer = setInterval(() => { void saveDraftRef.current(true); }, 45_000);
+    const timer = setInterval(() => { if(!document.hidden && !autoSaveDisabled.current && !pendingConfirmation) void saveDraftRef.current(true); }, 45_000);
     return () => clearInterval(timer);
-  }, [session?.user.id, queueId]);
+  }, [session?.user.id, queueId, pendingConfirmation]);
 
   async function authFetch(url: string, init?: RequestInit) {
     const { data } = await db.auth.getSession();
@@ -155,6 +172,8 @@ export default function BulkAuctionWizard() {
       const lot = Number(body.suggestedLotNumber ?? 1);
       setSuggestedLot(lot); setFirstLot(String(lot)); setGroups(body.groups ?? []);
       setGroupId(body.defaultGroupId ?? body.groups?.[0]?.id ?? "");
+      const pending=readPendingCreation(sessionStorage,pendingCreationKey("batch",data.session.user.id));
+      if(pending){submission.current=pending;creationId.current=pending.eventId;setPendingConfirmation(true);return;}
       // Rascunhos carregam ANTES do possível redirecionamento para a fila —
       // o painel "Rascunhos salvos" precisa existir mesmo com fila ativa (o
       // botão "Novo leilão" da tela da fila volta para este wizard).
@@ -187,17 +206,15 @@ export default function BulkAuctionWizard() {
 
   useEffect(() => {
     if (!queueId) return;
-    let stopped = false;
-    const load = async () => {
-      try {
-        const response = await authFetch(`/api/auctions/queue?queueId=${encodeURIComponent(queueId)}`);
-        const body = await response.json();
-        if (!response.ok) throw new Error(body.error ?? "Falha ao atualizar a fila.");
-        if (!stopped) setQueueView(body as QueueView);
-      } catch (reason) { if (!stopped) setError(reason instanceof Error ? reason.message : "Falha ao atualizar a fila."); }
+    let stopped=false,loading=false,timer:ReturnType<typeof setTimeout>|undefined;
+    const load=async()=>{clearTimeout(timer);if(stopped||loading||document.hidden)return;loading=true;let status:string|undefined;
+      try{const response=await authFetch(`/api/auctions/queue?queueId=${encodeURIComponent(queueId)}`);const body=await response.json();if(!response.ok)throw Error(body.error??"Falha ao atualizar a fila.");status=body.queue?.status;if(!stopped)setQueueView(body as QueueView);}
+      catch(reason){if(!stopped)setError(reason instanceof Error?reason.message:"Falha ao atualizar a fila.");}
+      finally{loading=false;const delay=queuePollingDelay(status,document.hidden);if(!stopped&&delay)timer=setTimeout(load,delay);}
     };
-    void load(); const timer = setInterval(() => void load(), 10_000);
-    return () => { stopped = true; clearInterval(timer); };
+    const visibility=()=>{clearTimeout(timer);if(!document.hidden)void load();};
+    void load();document.addEventListener("visibilitychange",visibility);
+    return()=>{stopped=true;clearTimeout(timer);document.removeEventListener("visibilitychange",visibility);};
   }, [queueId]);
 
   const intervalSeconds = useMemo(() => {
@@ -207,6 +224,9 @@ export default function BulkAuctionWizard() {
   const startInstant = publication === "now" ? new Date() : (() => { const iso = brasiliaInputToIso(scheduledInput); return iso ? new Date(iso) : null; })();
 
   function mutateCard(id: string, patch: Partial<Draft>) {
+    if(pendingConfirmation)return;
+    setDraftStatus("Alterações pendentes");setInvalidCard(null);
+    document.querySelectorAll('[aria-describedby="wizard-error"]').forEach(node=>{node.removeAttribute("aria-invalid");node.removeAttribute("aria-describedby");});
     submission.current = null;
     setCards(current => current.map(card => card.id === id ? { ...card, ...patch } : card));
   }
@@ -349,10 +369,14 @@ export default function BulkAuctionWizard() {
     }
     return "";
   }
+  function reportValidation(message:string,atStep:number){
+    setError(message);setStep(atStep);const index=Number(message.match(/Carta (\d+)/i)?.[1]??0)-1;
+    if(index>=0&&cards[index]){const id=cards[index].id;setSearch("");setTypeFilter("all");setPage(Math.floor(index/pageSize)+1);setCards(current=>current.map(card=>card.id===id?{...card,expanded:true}:card));setInvalidCard({id,error:true,word:/Nome/i.test(message)?"Nome":/resposta|correta/i.test(message)?"Única opção correta":/pergunta/i.test(message)?"Pergunta":/incremento/i.test(message)?"Incremento":/lote/i.test(message)?"Lote":/imagem/i.test(message)?"URL":"Inicial"});}
+  }
   function go(nextStep: number) {
-    if (nextStep >= 2) { const message = validateCards(); if (message) { setError(message); setStep(1); return; } }
-    if (nextStep >= 3) { const message = validateValues(); if (message) { setError(message); setStep(2); return; } }
-    if (nextStep >= 4) { const message = validatePublication(); if (message) { setError(message); setStep(3); return; } }
+    if (nextStep >= 2) { const message = validateCards(); if (message) { reportValidation(message,1); return; } }
+    if (nextStep >= 3) { const message = validateValues(); if (message) { reportValidation(message,2); return; } }
+    if (nextStep >= 4) { const message = validatePublication(); if (message) { reportValidation(message,3); return; } }
     setError(""); setStep(nextStep);
   }
 
@@ -403,9 +427,12 @@ export default function BulkAuctionWizard() {
           if (id.includes("#")) {
             if (card.id !== cardId) return card;
             const index = Number(id.split("#e")[1]);
-            const extraFiles = card.extraFiles.filter((_, i) => i !== index);
-            const extraImages = [...card.extraImages, result.url];
-            return { ...card, extraFiles, extraImages, imageStage: "done" as const, imageMessage: card.imageMessage || "Concluída" };
+            const completedFile=pending.find(item=>item.id===id)!.file;
+            const completedIndex=card.extraFiles.indexOf(completedFile);
+            const extraFiles = removeUploadedFile(card.extraFiles, completedFile);
+            const extraPreviews=card.extraPreviews.filter((_,i)=>i!==completedIndex);
+            const extraImages = mergeImageUrls(card.extraImages, [result.url]);
+            return { ...card, extraFiles, extraImages, extraPreviews, imageStage: "done" as const, imageMessage: card.imageMessage || "Concluída" };
           }
           if (card.id !== id) return card;
           return { ...card, file: keepFiles ? card.file : null, imageUrl: result.url, imageStage: "done" as const, imageMessage: card.imageMessage || "Concluída" };
@@ -433,7 +460,9 @@ export default function BulkAuctionWizard() {
   }
 
   async function saveDraft(auto = false) {
-    if (draftBusy || busy || uploadWork.current) return;
+    if (draftBusy || busy || uploadWork.current || pendingConfirmation) return;
+    if (auto && autoSaveDisabled.current) return;
+    if (!auto) autoSaveDisabled.current=false;
     if (previewQueue.current?.busy) { if (!auto) setError("Aguarde a preparação das fotos antes de salvar."); return; }
     if (auto) {
       // Nada mudou desde o ultimo save (ou sem cartas): o intervalo e inerte.
@@ -442,13 +471,14 @@ export default function BulkAuctionWizard() {
     }
     if (!cards.length) { if (!auto) setError("Adicione pelo menos uma carta antes de salvar o rascunho."); return; }
     uploadWork.current = true;
-    setDraftBusy(true); if (!auto) { setError(""); setDraftNotice(""); }
+    setDraftBusy(true); setDraftStatus("Salvando…"); if (!auto) { setError(""); setDraftNotice(""); }
     try {
       // As fotos SOBEM no salvar — é isso que torna o rascunho restaurável em
       // qualquer navegador; a sessão atual mantém os Files (uploadImages(true)).
       const { urls, extraUrls, failures } = await uploadImages(true);
       if (failures.length) {
         const firstReason = failures[0].message;
+        setDraftStatus("Há fotos pendentes de salvamento");
         if (!auto) {
           const proceed = window.confirm(`${failures.length} imagem(ns) falharam e não ficam salvas no rascunho (elas continuam nesta sessão — salvar de novo reenvia só as que falharam).\n\nSalvar o rascunho sem essas imagens?`);
           if (!proceed) {
@@ -461,14 +491,9 @@ export default function BulkAuctionWizard() {
           return;
         }
       }
-      const state = buildDraftState({
-        step, firstLot, groupId, intervalValue, intervalUnit, publication, scheduledInput, endMode, commonEndInput,
-        cards: cards.map(card => ({
-          ...card,
-          imageUrl: urls.get(card.id) ?? card.imageUrl,
-          extraImages: card.extraImages.length ? card.extraImages : (extraUrls.get(card.id) ?? []),
-        })),
-      });
+      const latest=latestDraftFingerprint.current();
+      if(!latest)throw new Error("Adicione uma carta antes de salvar.");
+      const state=JSON.parse(latest) as ReturnType<typeof buildDraftState>;
       if (auctionDraftJson(state).length > AUCTION_DRAFT_MAX_BYTES) throw new Error("Rascunho muito grande — reduza o número de cartas.");
       const draftId = activeDraftId ?? crypto.randomUUID();
       const response = await authFetch("/api/auctions/drafts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ draftId, title: buildDraftTitle(new Date(), state.cards.length), state }) });
@@ -476,6 +501,7 @@ export default function BulkAuctionWizard() {
       if (!response.ok) throw new Error(body.error ?? "Não foi possível salvar o rascunho.");
       setActiveDraftId(draftId);
       lastSavedDraftFingerprint.current = auctionDraftJson(state);
+      setDraftStatus("Salvo");
       setDraftNotice(auto ? `Rascunho salvo automaticamente às ${formatBrasiliaTime(new Date(), false)}.` : `Rascunho salvo às ${formatBrasiliaTime(new Date(), false)} — dá para fechar e continuar depois.`);
       await refreshDrafts();
     } catch (reason) {
@@ -483,8 +509,10 @@ export default function BulkAuctionWizard() {
         // Auto-save falhou (ex.: migration ainda não aplicada): desliga pelo
         // resto da sessão — o botão manual continua disponível e honesto.
         autoSaveDisabled.current = true;
-        console.warn("Auto-save do rascunho desativado nesta sessão:", reason instanceof Error ? reason.message : reason);
-      } else setError(reason instanceof Error ? reason.message : "Falha ao salvar o rascunho.");
+        setDraftStatus("Não foi possível salvar. Use Salvar rascunho para tentar novamente.");
+        setDraftNotice("O salvamento automático foi pausado após uma falha. Suas alterações continuam nesta página.");
+        // Status visible in the panel; no repeated background requests after failure.
+      } else {setDraftStatus("Não foi possível salvar");setError(reason instanceof Error ? reason.message : "Falha ao salvar o rascunho.");}
     }
     finally { uploadWork.current = false; setDraftBusy(false); }
   }
@@ -526,7 +554,8 @@ export default function BulkAuctionWizard() {
       setStep(state.step);
       setActiveDraftId(id);
       submission.current = null;
-      setDraftNotice("Rascunho aberto — salve de novo antes de fechar para não perder edições.");
+      lastSavedDraftFingerprint.current=auctionDraftJson(state);setDraftStatus("Salvo");
+      setDraftNotice("Rascunho aberto. Fotos e configurações restauradas.");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Falha ao abrir o rascunho."); }
     finally { setDraftBusy(false); }
   }
@@ -548,6 +577,7 @@ export default function BulkAuctionWizard() {
   async function startQueue() {
     if (busy || draftBusy || uploadWork.current) return;
     if (previewQueue.current?.busy) { setError("Aguarde a preparação das fotos antes de publicar."); return; }
+    if(submission.current){setBusy(true);setError("");try{await sendQueueCreation(true);}catch(reason){setError(reason instanceof Error?reason.message:"Confirmação pendente.");}finally{setBusy(false);}return;}
     const message = validateCards() || validateValues() || validatePublication();
     if (message) { setError(message); return; }
     uploadWork.current = true;
@@ -593,10 +623,23 @@ export default function BulkAuctionWizard() {
           };
         }),
       };
-      const payloadFingerprint = JSON.stringify(core);
-      if (!submission.current || submission.current.fingerprint !== payloadFingerprint) submission.current = { fingerprint: payloadFingerprint, eventId: crypto.randomUUID() };
-      const response = await authFetch("/api/auctions/batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ eventId: submission.current.eventId, ...core }) });
-      const body = await response.json(); if (!response.ok) throw new Error(body.error ?? "Não foi possível criar a fila.");
+      submission.current = {eventId:creationId.current,payload:core};
+      await sendQueueCreation(false);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Falha ao iniciar a fila."); }
+    finally { uploadWork.current = false; setBusy(false); }
+  }
+
+  async function sendQueueCreation(retry:boolean){
+    const pending=submission.current;if(!pending)return;
+    setPendingConfirmation(true);
+    if(session)storePendingCreation(sessionStorage,pendingCreationKey("batch",session.user.id),pending);
+    let body:any;
+    if(retry){const response=await authFetch(`/api/auctions/recover?eventId=${encodeURIComponent(pending.eventId)}`);const recovered=await response.json();if(!response.ok)throw Error(recovered.error??"Não foi possível confirmar a tentativa anterior.");if(recovered.data)body=recovered;}
+    if(!body){
+      const response=await authFetch("/api/auctions/batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({eventId:pending.eventId,...pending.payload})});
+      body=await response.json();
+      if(!response.ok){if(response.status<500 && !retry){submission.current=null;setPendingConfirmation(false);if(session)storePendingCreation(sessionStorage,pendingCreationKey("batch",session.user.id),null);}throw Error(body.error??"Não foi possível confirmar a criação. Repita a mesma operação.");}
+    }
       const id = String(body.data?.queue?.id ?? ""); if (!id) throw new Error("Fila criada sem identificador.");
       setQueueId(id); setUploadProgress(""); window.history.replaceState(null, "", `/auctions/new?queue=${encodeURIComponent(id)}`);
       // Publicou = o rascunho virou leilão de verdade: apaga sozinho
@@ -609,8 +652,7 @@ export default function BulkAuctionWizard() {
           .then(() => setDrafts(current => current.filter(draft => draft.id !== publishedDraftId)))
           .catch(() => undefined);
       }
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Falha ao iniciar a fila."); }
-    finally { uploadWork.current = false; setBusy(false); }
+      submission.current=null;setPendingConfirmation(false);if(session)storePendingCreation(sessionStorage,pendingCreationKey("batch",session.user.id),null);
   }
 
   // Edição de lote pendente: valores default do diálogo a partir do item atual.
@@ -671,7 +713,7 @@ export default function BulkAuctionWizard() {
     const status = queueView?.queue.status ?? "scheduled";
     const firstWaiting = queueView?.items.findIndex(item => item.dispatch?.status === "scheduled") ?? -1;
     return <main id="main-content" tabIndex={-1} className="shell batch-shell">
-      <header className="topbar"><div><p className="eyebrow">FILA DE PUBLICAÇÃO</p><h1>{queueView?.summary.published ?? 0} de {queueView?.summary.total ?? 0} publicados</h1><p className="muted">A fila fica no servidor e continua mesmo com o navegador fechado.</p></div><div className="topbar-actions"><button className="secondary" onClick={() => { setQueueId(null); setQueueView(null); window.history.replaceState(null, "", "/auctions/new"); }}>＋ Novo leilão</button><Link href="/">← Painel</Link></div></header>
+      <header className="topbar"><div><p className="eyebrow">FILA DE PUBLICAÇÃO</p><h1>{queueView?.summary.published ?? 0} de {queueView?.summary.total ?? 0} publicados</h1><p className="muted">A fila fica no servidor e continua mesmo com o navegador fechado.</p></div><div className="topbar-actions"><button className="secondary" onClick={() => { setQueueId(null); setQueueView(null); setCards([]); setStep(1); setSearch(""); setTypeFilter("all"); setPage(1); creationId.current=crypto.randomUUID(); window.history.replaceState(null, "", "/auctions/new"); }}>＋ Novo leilão</button><Link href="/">← Painel</Link></div></header>
       {error && <p className="alert" role="alert">{error}</p>}
       <section className="panel queue-summary"><div><span>Status</span><strong>{status === "paused" ? "⏸ Pausada" : status === "cancelled" ? "⛔ Cancelada" : status === "completed" ? "✅ Concluída" : "🟢 Em execução"}</strong></div><div><span>Próxima publicação</span><strong>{queueView?.summary.nextScheduledAt ? formatBrasiliaTime(queueView.summary.nextScheduledAt) : "—"}</strong></div><div><span>Intervalo</span><strong>{queueView ? `${queueView.queue.interval_seconds}s` : "—"}</strong></div><div><span>Grupo</span><strong>{queueView?.group?.name ?? "—"}</strong></div></section>
       <section className="panel"><div className="panel-title"><div><h2>Fila</h2><p className="muted">Horários em America/Sao_Paulo.</p></div><div className="actions">{["scheduled", "running"].includes(status) && <button disabled={busy} onClick={() => void control("pause")}>Pausar fila</button>}{status === "paused" && <button disabled={busy} onClick={() => void control("resume")}>Continuar fila</button>}{!["completed", "cancelled"].includes(status) && <button className="secondary" disabled={busy} onClick={() => void control("cancel")}>Cancelar fila</button>}</div></div>
@@ -696,23 +738,27 @@ export default function BulkAuctionWizard() {
   }
 
   return <main id="main-content" tabIndex={-1} className="shell batch-shell">
-    <header className="topbar"><div><p className="eyebrow">NOVOS LEILÕES</p><h1>Cadastro em lote</h1><p className="muted">Adicione várias cartas, defina a ordem e deixe o bot publicar sozinho.</p></div><div className="topbar-actions"><Link className="button-link" href="/auctions/brinde">🎁 Brindes e Quiz</Link><button className="secondary" disabled={draftBusy || busy || preparingPreviews || !cards.length} onClick={() => void saveDraft()}>{draftBusy ? "Salvando…" : "💾 Salvar rascunho"}</button><Link href="/">← Cancelar</Link></div></header>
+    <header className="topbar"><div><p className="eyebrow">NOVOS LEILÕES</p><h1>Cadastro em lote</h1><p className="muted">Adicione várias cartas, defina a ordem e deixe o bot publicar sozinho.</p></div><div className="topbar-actions"><Link className="button-link" href="/auctions/brinde">🎁 Brindes e Quiz</Link><button className="secondary" disabled={draftBusy || busy || pendingConfirmation || preparingPreviews || !cards.length} onClick={() => void saveDraft()}>{draftBusy ? "Salvando…" : "💾 Salvar rascunho"}</button><Link href="/">← Cancelar</Link></div></header>
+    {pendingConfirmation && <section className="panel pending-confirmation" role="status"><strong>Confirmação de publicação pendente</strong><p>A tentativa anterior pode ter sido salva. Confira a mesma operação antes de iniciar outra fila.</p><button disabled={busy} onClick={()=>void startQueue()}>{busy?"Conferindo…":"Confirmar envio anterior"}</button></section>}
+    <fieldset className="wizard-workspace" disabled={busy || pendingConfirmation}>
     <nav className="batch-steps" aria-label="Etapas do cadastro">{["Cartas", "Valores", "Publicação", "Revisar"].map((label, index) => <button key={label} aria-current={step === index + 1 ? "step" : undefined} aria-disabled={index + 1 > step} className={step === index + 1 ? "active" : step > index + 1 ? "done" : ""} onClick={() => index + 1 < step && setStep(index + 1)}>{index + 1}. {label}</button>)}</nav>
-    {error && <p className="alert" role="alert">{error}</p>}
-    {draftNotice && <p className="notice">{draftNotice}</p>}
+    {error && <p id="wizard-error" className="alert" role="alert">{error}</p>}
+    {draftNotice && <p className="notice" role="status">{draftStatus==="Alterações pendentes"?"Há alterações ainda não salvas.":draftNotice}</p>}
+    {!!cards.length && <><p className="draft-save-state" role="status">{draftStatus==="Salvo"&&currentDraftFingerprint()!==lastSavedDraftFingerprint.current?"Alterações pendentes":draftStatus}</p><DraftToolbar search={search} filter={typeFilter} page={activePage} pages={pages} count={filteredCards.length} onSearch={value=>{setSearch(value);setPage(1);}} onFilter={value=>{setTypeFilter(value);setPage(1);}} onPage={setPage} onJump={jumpToCard} onCollapse={()=>setCards(current=>current.map(card=>({...card,expanded:false})))}/></>}
     {preparingPreviews && <p className="notice" role="status">Preparando fotos: {previewProgress.completed} de {previewProgress.total}. Você pode continuar preenchendo as cartas.</p>}
 
     {step === 1 && <><section className="panel drop-panel" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); void addFiles(event.dataTransfer.files); }}><p className="eyebrow">ETAPA 1</p><h2 ref={stepTitle} tabIndex={-1}>Adicionar cartas</h2><p className="muted">Selecione até 200 fotos e preencha os dados enquanto as prévias são preparadas. As fotos originais são preservadas para a publicação.</p><div className="actions"><label className="button-like">＋ Selecionar imagens<input className="sr-only" type="file" multiple disabled={busy || draftBusy} accept="image/jpeg,image/png,image/webp" onChange={event => { if (event.target.files) void addFiles(event.target.files); event.currentTarget.value = ""; }} /></label><button className="secondary" type="button" disabled={busy || draftBusy} onClick={addEmpty}>Adicionar sem imagem</button></div></section>
       {!cards.length && drafts.length > 0 && <section className="panel drafts-panel"><div className="panel-title"><div><h2>Rascunhos salvos</h2><p className="muted">Continue de onde parou — as fotos já estão no servidor. Publicar a fila apaga o rascunho automaticamente.</p></div></div><div className="draft-list">{drafts.map(draft => <article className="draft-row" key={draft.id}><div className="draft-row-info"><strong>{draft.title}</strong><span>Salvo em {formatBrasiliaDateTime(draft.updated_at, false)}</span></div><div className="actions"><button disabled={draftBusy} onClick={() => void openDraft(draft.id)}>Abrir</button><button className="danger-link" disabled={draftBusy} onClick={() => { if (window.confirm("Excluir este rascunho?")) void discardDraft(draft.id); }}>Excluir</button></div></article>)}</div></section>}
       {!!cards.length && <section className="panel"><div className="panel-title"><div><h2>{cards.length} carta(s)</h2><p className="muted">A ordem é a ordem de publicação. Preencha os dados de cada carta; nada é preenchido automaticamente.</p></div></div><div className="bulk-bar"><label>Idioma para todas<select value={bulkLanguage} onChange={e => setBulkLanguage(e.target.value)}>{cardLanguages.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label><button onClick={() => applyAll("language", bulkLanguage)}>Aplicar</button><label>Condição para todas<select value={bulkCondition} onChange={e => setBulkCondition(e.target.value)}>{cardConditions.map(item => <option key={item}>{item}</option>)}</select></label><button onClick={() => applyAll("condition", bulkCondition)}>Aplicar</button></div>
-        <div className="draft-list">{cards.map((card, index) => <article key={card.id} className="draft-card" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); if (dragging != null) moveCard(dragging, index); setDragging(null); }}><div className="draft-head"><span className="drag-handle" title="Arraste para mudar a ordem" draggable onDragStart={() => setDragging(index)} onDragEnd={() => setDragging(null)}>☰</span><div className="draft-thumb">{card.preview || card.imageUrl ? <img src={card.preview || card.imageUrl} alt="" loading="lazy" decoding="async" /> : <span>🃏</span>}</div><div className="draft-title"><strong>{index + 1}. {card.giveaway ? (card.giveawayKind === "quiz" ? "🧩 " : "🎁 ") : ""}{card.name || "Carta sem nome"}</strong><span>{card.cardNumber || "Sem número"}</span>{card.giveaway && <span className="brinde-inline">{card.giveawayKind === "quiz" ? "🧩 Quiz — primeiro acerto ganha a carta" : "🎁 Brinde — primeiro acerto ganha a carta"}</span>}{card.imageMessage && <span className={card.imageStage === "error" ? "alert" : "muted"}>Imagem: {card.imageMessage}</span>}</div><div className="draft-actions"><button className="secondary" aria-label={`Mover carta ${index + 1} para cima`} onClick={() => moveCard(index, index - 1)} disabled={index === 0}>↑</button><button className="secondary" aria-label={`Mover carta ${index + 1} para baixo`} onClick={() => moveCard(index, index + 1)} disabled={index === cards.length - 1}>↓</button><button className="secondary" aria-pressed={card.giveaway && card.giveawayKind === "giveaway"} onClick={() => mutateCard(card.id, { giveaway: !card.giveaway || card.giveawayKind === "quiz", giveawayKind: "giveaway", expanded: true })}>{card.giveaway && card.giveawayKind === "giveaway" ? "✓ Brinde" : "🎁 Brinde"}</button><button className="secondary" aria-pressed={card.giveaway && card.giveawayKind === "quiz"} onClick={()=>mutateCard(card.id,{giveaway:!card.giveaway || card.giveawayKind !== "quiz",giveawayKind:"quiz",expanded:true})}>{card.giveaway && card.giveawayKind === "quiz" ? "✓ Quiz" : "🧩 Quiz"}</button><button className="secondary" onClick={() => mutateCard(card.id, { expanded: !card.expanded })}>{card.expanded ? "Fechar" : "Editar"}</button><button className="danger-link" onClick={() => removeCard(index)}>Remover</button></div></div>{card.expanded && <div className="draft-fields"><label>Nome<input value={card.name} onChange={e => mutateCard(card.id, { name: e.target.value })} /></label><label>Número da carta<input placeholder="35/64" value={card.cardNumber} onChange={e => mutateCard(card.id, { cardNumber: e.target.value })} /></label>{card.giveaway && <GameAnswerFields kind={card.giveawayKind} options={card.giveawayOptions} correctIndex={card.giveawayCorrectIndex} question={card.giveawayQuestion} disabled={busy || draftBusy} onOptions={value => mutateCard(card.id, { giveawayOptions: value, giveawayCorrectIndex: "" })} onCorrect={value => mutateCard(card.id, { giveawayCorrectIndex: value })} onQuestion={value => mutateCard(card.id, { giveawayQuestion: value })} />}{!card.giveaway && <div className="draft-fields-extra wide"><span className="extra-label">Fotos de detalhe ({card.extraFiles.length + card.extraImages.length}/4){card.extraFiles.length ? <span className="extra-thumbs">{card.extraPreviews.map((url, index) => <span className="extra-thumb" key={url}><img src={url} alt="" loading="lazy" decoding="async" /><button type="button" title="Remover" onClick={() => { const url = card.extraPreviews[index]; const shared = cards.some((other) => other.id !== card.id && other.extraPreviews.includes(url)); if (!shared) URL.revokeObjectURL(url); mutateCard(card.id, { extraFiles: card.extraFiles.filter((_, i) => i !== index), extraPreviews: card.extraPreviews.filter((_, i) => i !== index) }); }}>×</button></span>)}</span> : null}</span><label className="button-like">＋ Detalhes{card.extraFiles.length + card.extraImages.length < 4 ? <input className="sr-only" type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={event => { const room = 4 - card.extraFiles.length - card.extraImages.length; const files = Array.from(event.target.files ?? []).slice(0, room); if (files.length) { const urls = files.map(file => URL.createObjectURL(file)); for (const url of urls) previewUrls.current.add(url); mutateCard(card.id, { extraFiles: [...card.extraFiles, ...files], extraPreviews: [...card.extraPreviews, ...urls] }); } event.currentTarget.value = ""; }} /> : null}</label></div>}<label>Variante<input list={`variants-${card.id}`} value={card.variant} onChange={e => mutateCard(card.id, { variant: e.target.value })} /><datalist id={`variants-${card.id}`}>{variants.map(item => <option key={item} value={item} />)}</datalist></label><label>Condição<select value={card.condition} onChange={e => mutateCard(card.id, { condition: e.target.value })}>{cardConditions.map(item => <option key={item}>{item}</option>)}</select></label><label>Idioma<select value={card.language} onChange={e => mutateCard(card.id, { language: e.target.value })}>{cardLanguages.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>{!card.file && <label className="wide">URL HTTPS da imagem<input value={card.imageUrl} onChange={e => mutateCard(card.id, { imageUrl: e.target.value })} /></label>}{index > 0 && <button className="secondary wide" onClick={() => copyPrevious(index)}>Copiar configurações da carta anterior</button>}</div>}</article>)}</div></section>}
+        <div className="draft-list">{visibleCards.map(({card, index}) => <article data-card-id={card.id} key={card.id} className="draft-card" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); if (dragging != null) moveCard(dragging, index); setDragging(null); }}><div className="draft-head"><span className="drag-handle" title="Arraste para mudar a ordem" draggable onDragStart={() => setDragging(index)} onDragEnd={() => setDragging(null)}>☰</span><div className="draft-thumb">{card.preview || card.imageUrl ? <img src={card.preview || card.imageUrl} alt="" loading="lazy" decoding="async" /> : <span>🃏</span>}</div><div className="draft-title"><strong>{index + 1}. {card.giveaway ? (card.giveawayKind === "quiz" ? "🧩 " : "🎁 ") : ""}{card.name || "Carta sem nome"}</strong><span>{card.cardNumber || "Sem número"}</span>{card.giveaway && <span className="brinde-inline">{card.giveawayKind === "quiz" ? "🧩 Quiz — primeiro acerto ganha a carta" : "🎁 Brinde — primeiro acerto ganha a carta"}</span>}{card.imageMessage && <span className={card.imageStage === "error" ? "alert" : "muted"}>Imagem: {card.imageMessage}</span>}</div><div className="draft-actions"><button className="secondary" aria-label={`Mover carta ${index + 1} para cima`} onClick={() => moveCard(index, index - 1)} disabled={index === 0}>↑</button><button className="secondary" aria-label={`Mover carta ${index + 1} para baixo`} onClick={() => moveCard(index, index + 1)} disabled={index === cards.length - 1}>↓</button><label className="card-kind-control">Tipo da carta<select aria-label={`Tipo da carta ${index+1}`} value={card.giveaway ? card.giveawayKind : "auction"} onChange={e=>mutateCard(card.id,{giveaway:e.target.value!=="auction",giveawayKind:e.target.value==="quiz"?"quiz":"giveaway",expanded:true})}><option value="auction">🃏 Leilão</option><option value="giveaway">🎁 Brinde</option><option value="quiz">🧩 Quiz</option></select></label><button className="secondary" onClick={() => mutateCard(card.id, { expanded: !card.expanded })}>{card.expanded ? "Fechar" : "Editar"}</button><button className="danger-link" onClick={() => removeCard(index)}>Remover</button></div></div>{card.expanded && <div className="draft-fields"><label>Nome<input value={card.name} onChange={e => mutateCard(card.id, { name: e.target.value })} /></label><label>Número da carta<input placeholder="35/64" value={card.cardNumber} onChange={e => mutateCard(card.id, { cardNumber: e.target.value })} /></label>{card.giveaway && <GameAnswerFields kind={card.giveawayKind} options={card.giveawayOptions} correctIndex={card.giveawayCorrectIndex} question={card.giveawayQuestion} disabled={busy || pendingConfirmation} onOptions={value => mutateCard(card.id, { giveawayOptions: value, giveawayCorrectIndex: "" })} onCorrect={value => mutateCard(card.id, { giveawayCorrectIndex: value })} onQuestion={value => mutateCard(card.id, { giveawayQuestion: value })} />}{!card.giveaway && <div className="draft-fields-extra wide"><span className="extra-label">Fotos de detalhe ({card.extraFiles.length + card.extraImages.length}/4){card.extraImages.length>0&&<span className="extra-thumbs">{card.extraImages.map((url,imageIndex)=><span className="extra-thumb" key={url}><img src={url} alt={`Detalhe ${imageIndex+1}`} loading="lazy"/><button type="button" aria-label={`Remover detalhe salvo ${imageIndex+1}`} onClick={()=>mutateCard(card.id,{extraImages:card.extraImages.filter(image=>image!==url)})}>×</button></span>)}</span>}{card.extraFiles.length ? <span className="extra-thumbs">{card.extraPreviews.map((url, index) => <span className="extra-thumb" key={url}><img src={url} alt="" loading="lazy" decoding="async" /><button type="button" title="Remover" onClick={() => { const url = card.extraPreviews[index]; const shared = cards.some((other) => other.id !== card.id && other.extraPreviews.includes(url)); if (!shared) URL.revokeObjectURL(url); mutateCard(card.id, { extraFiles: card.extraFiles.filter((_, i) => i !== index), extraPreviews: card.extraPreviews.filter((_, i) => i !== index) }); }}>×</button></span>)}</span> : null}</span><label className="button-like">＋ Detalhes{card.extraFiles.length + card.extraImages.length < 4 ? <input className="sr-only" type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={event => { const room = 4 - card.extraFiles.length - card.extraImages.length; const files = Array.from(event.target.files ?? []).slice(0, room); if (files.length) { const urls = files.map(file => URL.createObjectURL(file)); for (const url of urls) previewUrls.current.add(url); mutateCard(card.id, { extraFiles: [...card.extraFiles, ...files], extraPreviews: [...card.extraPreviews, ...urls] }); } event.currentTarget.value = ""; }} /> : null}</label></div>}<label>Variante<input list={`variants-${card.id}`} value={card.variant} onChange={e => mutateCard(card.id, { variant: e.target.value })} /><datalist id={`variants-${card.id}`}>{variants.map(item => <option key={item} value={item} />)}</datalist></label><label>Condição<select value={card.condition} onChange={e => mutateCard(card.id, { condition: e.target.value })}>{cardConditions.map(item => <option key={item}>{item}</option>)}</select></label><label>Idioma<select value={card.language} onChange={e => mutateCard(card.id, { language: e.target.value })}>{cardLanguages.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>{!card.file && <label className="wide">URL HTTPS da imagem<input value={card.imageUrl} onChange={e => mutateCard(card.id, { imageUrl: e.target.value })} /></label>}{index > 0 && <button className="secondary wide" onClick={() => copyPrevious(index)}>Copiar configurações da carta anterior</button>}</div>}</article>)}</div></section>}
       <div className="wizard-footer"><Link href="/">Cancelar</Link><button onClick={() => go(2)}>Continuar para valores →</button></div></>}
 
-    {step === 2 && <><section className="panel"><p className="eyebrow">ETAPA 2</p><h2 ref={stepTitle} tabIndex={-1}>Valores</h2><p className="muted">Gere a enquete por incremento ou escolha Personalizado e digite os valores exatos (ex.: 1, 2, 5, 10 — o maior pode ser ARREMATE).</p><div className="bulk-bar values"><label>Primeiro lote<input type="number" min="1" value={firstLot} onChange={e => setFirstLot(e.target.value)} /></label><button onClick={sequentialLots}>Numerar lotes</button><label>Lance inicial para todas<input type="number" min="0" step="0.01" value={bulkStart} onChange={e => setBulkStart(e.target.value)} /></label><button onClick={() => applyAll("startingPrice", bulkStart)}>Aplicar</button><label>Incremento para todas<input type="number" min="0.01" step="0.01" value={bulkIncrement} onChange={e => setBulkIncrement(e.target.value)} /></label><button onClick={() => applyAll("increment", bulkIncrement)}>Aplicar</button><label>Valores personalizados p/ todas<input inputMode="decimal" placeholder="Ex.: 1, 2, 5, 10" value={bulkCustomValues} onChange={e => setBulkCustomValues(e.target.value)} /></label><button onClick={() => { setCards(current => current.map(card => ({ ...card, pricingMode: "custom" as const, customValues: bulkCustomValues }))); submission.current = null; }}>Aplicar personalizados</button>{endMode === "duration" && <><label>Duração para todas (min)<input type="number" min="0.1" step="0.1" value={bulkDuration} onChange={e => setBulkDuration(e.target.value)} /></label><button onClick={() => applyAll("durationMinutes", bulkDuration)}>Aplicar</button></>}</div>
-      <div className="value-list">{cards.map((card, index) => { const pricing = pricingOf(card); return <article className="value-row" key={card.id}><div><strong>{index + 1}. {card.name || "Carta"}</strong><span>{card.giveaway ? (card.giveawayKind === "quiz" ? "🧩 Quiz — primeiro acerto ganha a carta" : "🎁 Brinde — primeiro acerto ganha a carta") : pricing.error ? `⚠ ${pricing.error}` : `${pricing.options.length} opções`}</span></div>{card.giveaway ? <GameAnswerFields kind={card.giveawayKind} options={card.giveawayOptions} correctIndex={card.giveawayCorrectIndex} question={card.giveawayQuestion} onOptions={value=>mutateCard(card.id,{giveawayOptions:value,giveawayCorrectIndex:""})} onCorrect={value=>mutateCard(card.id,{giveawayCorrectIndex:value})} onQuestion={value=>mutateCard(card.id,{giveawayQuestion:value})} /> : <><label>Lote<input type="number" min="1" value={card.lotNumber} onChange={e => mutateCard(card.id, { lotNumber: e.target.value })} /></label><label>Valores<select value={card.pricingMode} onChange={e => mutateCard(card.id, { pricingMode: e.target.value === "custom" ? "custom" : "increment" })}><option value="increment">Automático</option><option value="custom">Personalizado</option></select></label>{endMode === "duration" && <label>Duração (min)<input type="number" min="0.1" step="0.1" value={card.durationMinutes} onChange={e => mutateCard(card.id, { durationMinutes: e.target.value })} /></label>}{card.pricingMode === "increment" ? <><label>Inicial<input type="number" min="0" step="0.01" value={card.startingPrice} onChange={e => mutateCard(card.id, { startingPrice: e.target.value })} /></label><label>Incremento<input type="number" min="0.01" step="0.01" value={card.increment} onChange={e => mutateCard(card.id, { increment: e.target.value })} /></label><label>ARREMATE<input type="number" min="0" step="0.01" placeholder="Opcional" value={card.buyout} onChange={e => mutateCard(card.id, { buyout: e.target.value })} /></label>{!card.buyout.trim() && <label>Opções<input type="number" min="2" max={MAX_POLL_OPTIONS} value={card.optionCount} onChange={e => mutateCard(card.id, { optionCount: e.target.value })} /></label>}</> : <><label className="wide">Valores da enquete (vírgula)<input inputMode="decimal" placeholder="Ex.: 1, 2, 5, 10" value={card.customValues} onChange={e => mutateCard(card.id, { customValues: e.target.value })} /></label><label className="radio-row"><input type="checkbox" checked={card.customBuyoutLast} onChange={e => mutateCard(card.id, { customBuyoutLast: e.target.checked })} /> Maior valor = ARREMATE</label></>}<div className="poll-mini">{pricing.options.slice(0, 4).map(option => <span key={option.label}>{option.label}</span>)}{pricing.options.length > 4 && <span>+{pricing.options.length - 4}</span>}</div></>}</article>; })}</div></section><div className="wizard-footer"><button className="secondary" onClick={() => setStep(1)}>← Cartas</button><button onClick={() => go(3)}>Continuar para publicação →</button></div></>}
+    {step === 2 && <><section className="panel"><p className="eyebrow">ETAPA 2</p><h2 ref={stepTitle} tabIndex={-1}>Valores</h2><p className="muted">{hasAuctions ? "Configure os valores dos leilões e revise os jogos. Brindes e quizzes não têm cobrança." : "Revise as respostas dos brindes e quizzes. Estes itens não têm lance ou cobrança."}</p>{hasAuctions && <div className="bulk-bar values"><label>Primeiro lote<input type="number" min="1" value={firstLot} onChange={e => setFirstLot(e.target.value)} /></label><button onClick={sequentialLots}>Numerar lotes</button><label>Lance inicial para todas<input type="number" min="0" step="0.01" value={bulkStart} onChange={e => setBulkStart(e.target.value)} /></label><button onClick={() => applyAll("startingPrice", bulkStart)}>Aplicar</button><label>Incremento para todas<input type="number" min="0.01" step="0.01" value={bulkIncrement} onChange={e => setBulkIncrement(e.target.value)} /></label><button onClick={() => applyAll("increment", bulkIncrement)}>Aplicar</button><label>Valores personalizados p/ todas<input inputMode="decimal" placeholder="Ex.: 1, 2, 5, 10" value={bulkCustomValues} onChange={e => setBulkCustomValues(e.target.value)} /></label><button onClick={() => { setCards(current => current.map(card => ({ ...card, pricingMode: "custom" as const, customValues: bulkCustomValues }))); submission.current = null; }}>Aplicar personalizados</button>{endMode === "duration" && <><label>Duração para todas (min)<input type="number" min="0.1" step="0.1" value={bulkDuration} onChange={e => setBulkDuration(e.target.value)} /></label><button onClick={() => applyAll("durationMinutes", bulkDuration)}>Aplicar</button></>}</div>}
+      <div className="value-list">{visibleCards.map(({card, index}) => { const pricing = pricingOf(card); return <article data-card-id={card.id} className="value-row" key={card.id}><div><strong>{index + 1}. {card.name || "Carta"}</strong><span>{card.giveaway ? (card.giveawayKind === "quiz" ? "🧩 Quiz — primeiro acerto ganha a carta" : "🎁 Brinde — primeiro acerto ganha a carta") : pricing.error ? `⚠ ${pricing.error}` : `${pricing.options.length} opções`}</span></div>{card.giveaway ? <details className="game-review wide"><summary>{card.giveawayKind==="quiz"?"Quiz":"Brinde"} · {card.giveawayOptions.split(/\r?\n/).map(x=>x.trim()).filter(Boolean)[Number(card.giveawayCorrectIndex)]||"Selecione a resposta correta"} · revisar opções</summary><GameAnswerFields kind={card.giveawayKind} options={card.giveawayOptions} correctIndex={card.giveawayCorrectIndex} question={card.giveawayQuestion} onOptions={value=>mutateCard(card.id,{giveawayOptions:value,giveawayCorrectIndex:""})} onCorrect={value=>mutateCard(card.id,{giveawayCorrectIndex:value})} onQuestion={value=>mutateCard(card.id,{giveawayQuestion:value})} /></details> : <><label>Lote<input type="number" min="1" value={card.lotNumber} onChange={e => mutateCard(card.id, { lotNumber: e.target.value })} /></label><label>Valores<select value={card.pricingMode} onChange={e => mutateCard(card.id, { pricingMode: e.target.value === "custom" ? "custom" : "increment" })}><option value="increment">Automático</option><option value="custom">Personalizado</option></select></label>{endMode === "duration" && <label>Duração (min)<input type="number" min="0.1" step="0.1" value={card.durationMinutes} onChange={e => mutateCard(card.id, { durationMinutes: e.target.value })} /></label>}{card.pricingMode === "increment" ? <><label>Inicial<input type="number" min="0" step="0.01" value={card.startingPrice} onChange={e => mutateCard(card.id, { startingPrice: e.target.value })} /></label><label>Incremento<input type="number" min="0.01" step="0.01" value={card.increment} onChange={e => mutateCard(card.id, { increment: e.target.value })} /></label><label>ARREMATE<input type="number" min="0" step="0.01" placeholder="Opcional" value={card.buyout} onChange={e => mutateCard(card.id, { buyout: e.target.value })} /></label>{!card.buyout.trim() && <label>Opções<input type="number" min="2" max={MAX_POLL_OPTIONS} value={card.optionCount} onChange={e => mutateCard(card.id, { optionCount: e.target.value })} /></label>}</> : <><label className="wide">Valores da enquete (vírgula)<input inputMode="decimal" placeholder="Ex.: 1, 2, 5, 10" value={card.customValues} onChange={e => mutateCard(card.id, { customValues: e.target.value })} /></label><label className="radio-row"><input type="checkbox" checked={card.customBuyoutLast} onChange={e => mutateCard(card.id, { customBuyoutLast: e.target.checked })} /> Maior valor = ARREMATE</label></>}<div className="poll-mini">{pricing.options.slice(0, 4).map(option => <span key={option.label}>{option.label}</span>)}{pricing.options.length > 4 && <span>+{pricing.options.length - 4}</span>}</div></>}</article>; })}</div></section><div className="wizard-footer"><button className="secondary" onClick={() => setStep(1)}>← Cartas</button><button onClick={() => go(3)}>Continuar para publicação →</button></div></>}
 
     {step === 3 && <><section className="panel publication-panel"><p className="eyebrow">ETAPA 3</p><h2 ref={stepTitle} tabIndex={-1}>Publicação</h2>{hasAuctions && <div className="form-grid"><label>Encerramento<select value={endMode} onChange={e=>{setEndMode(e.target.value as "common" | "duration"); submission.current=null;}}><option value="common">Mesmo horário para todas as cartas</option><option value="duration">Duração individual por carta</option></select></label>{endMode === "common" && <label>Fim dos lances — data e horário de Brasília<input type="datetime-local" value={commonEndInput} onChange={e=>{setCommonEndInput(e.target.value);submission.current=null;}} required /><small>Leilões encerram neste horário, com resultados a cada 15 segundos. Brindes e quizzes terminam no primeiro acerto.</small></label>}</div>}<div className="publication-grid"><label>Grupo do WhatsApp<select value={groupId} onChange={e => { setGroupId(e.target.value); submission.current = null; }}><option value="">Selecione…</option>{groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label><div><span id="interval-label">Publicar nova enquete a cada</span><div className="inline-fields"><input aria-label="Intervalo entre publicações" type="number" min="1" value={intervalValue} onChange={e => { setIntervalValue(e.target.value); submission.current = null; }} /><select aria-label="Unidade do intervalo" value={intervalUnit} onChange={e => { setIntervalUnit(e.target.value as "seconds" | "minutes"); submission.current = null; }}><option value="seconds">segundos</option><option value="minutes">minutos</option></select></div></div><fieldset><legend>Começar</legend><label className="radio-row"><input type="radio" checked={publication === "now"} onChange={() => setPublication("now")} /> ▶ Agora</label><label className="radio-row"><input type="radio" checked={publication === "scheduled"} onChange={() => setPublication("scheduled")} /> 🕒 Agendar</label></fieldset>{publication === "scheduled" && <label>Data e horário de Brasília<input type="datetime-local" value={scheduledInput} onChange={e => setScheduledInput(e.target.value)} /><small>America/Sao_Paulo</small></label>}</div><details className="more-options"><summary>Mais opções</summary><p className="muted">O horário comum encerra os lances de todas as cartas ao mesmo tempo. No modo de duração individual, cada carta usa seus minutos configurados.</p></details></section><div className="wizard-footer"><button className="secondary" onClick={() => setStep(2)}>← Valores</button><button onClick={() => go(4)}>Revisar fila →</button></div></>}
 
-    {step === 4 && <><section className="panel review-panel"><p className="eyebrow">ETAPA 4</p><h2 ref={stepTitle} tabIndex={-1}>Revisar e iniciar</h2><div className="review-summary"><div><span>Cartas</span><strong>{cards.length}</strong></div><div><span>Lotes</span><strong>{cards[0]?.lotNumber ?? "—"} → {cards[cards.length - 1]?.lotNumber ?? "—"}</strong></div><div><span>Primeira publicação</span><strong>{publication === "now" ? "Agora" : startInstant ? formatBrasiliaDateTime(startInstant, false) : "—"}</strong></div><div><span>Intervalo</span><strong>{intervalSeconds}s</strong></div><div><span>Grupo</span><strong>{groups.find(group => group.id === groupId)?.name ?? "—"}</strong></div></div><div className="review-list">{cards.map((card, index) => { const start = startInstant ? new Date(startInstant.getTime() + index * intervalSeconds * 1000) : null, end = endMode === "common" ? (()=>{const iso=brasiliaInputToIso(commonEndInput);return iso?new Date(iso):null;})() : start ? new Date(start.getTime() + Math.round(Number(card.durationMinutes) * 60_000)) : null; return <article key={card.id}><div className="draft-thumb">{card.preview || card.imageUrl ? <img src={card.preview || card.imageUrl} alt="" loading="lazy" decoding="async" /> : <span>🃏</span>}</div><div><strong>{card.giveaway ? (card.giveawayKind === "quiz" ? "Quiz" : "Brinde") : `Lote ${card.lotNumber}`} — {card.name}</strong><p>{card.giveaway ? `${card.giveawayKind === "quiz" ? "🧩 Quiz" : "🎁 Brinde"} · resposta vencedora: ${card.giveawayOptions.split(/\r?\n/).map(x=>x.trim()).filter(Boolean)[Number(card.giveawayCorrectIndex)] ?? "não selecionada"}` : card.pricingMode === "custom" ? (() => { const pricing = pricingOf(card); return `Valores personalizados (${pricing.options.length}) · ${pricing.buyoutPrice != null ? `ARREMATE ${money(pricing.buyoutPrice)}` : "Sem ARREMATE"}`; })() : `${money(Number(card.startingPrice))} + ${money(Number(card.increment))} · ${card.buyout ? `ARREMATE ${money(Number(card.buyout))}` : "Sem ARREMATE"}`}</p><p>Publica: {start ? formatBrasiliaTime(start) : "Agora"}{card.giveaway ? " · até o primeiro acerto" : " · Encerra:"} {!card.giveaway && (end ? (endMode === "common" ? formatBrasiliaDateTime(end, false) : formatBrasiliaTime(end)) : "—")}</p>{card.imageMessage && <p className="muted">Imagem: {card.imageMessage}</p>}</div></article>; })}</div>{uploadProgress && <p className="notice" role="status">{uploadProgress}</p>}</section><div className="wizard-footer"><button className="secondary" disabled={busy} onClick={() => setStep(3)}>← Publicação</button><button disabled={busy || draftBusy || preparingPreviews} onClick={() => void startQueue()}>{busy ? "Preparando fila…" : publication === "now" ? "▶ Iniciar fila agora" : "🕒 Agendar fila"}</button></div></>}
+    {step === 4 && <><section className="panel review-panel"><p className="eyebrow">ETAPA 4</p><h2 ref={stepTitle} tabIndex={-1}>Revisar e iniciar</h2><div className="review-summary"><div><span>Itens na fila</span><strong>{cards.length}</strong><small>{cards.filter(card=>!card.giveaway).length} leilões · {cards.filter(card=>card.giveaway&&card.giveawayKind==="giveaway").length} brindes · {cards.filter(card=>card.giveaway&&card.giveawayKind==="quiz").length} quizzes</small></div><div><span>Lotes</span><strong>{cards.filter(card=>!card.giveaway)[0]?.lotNumber ?? "—"} → {cards.filter(card=>!card.giveaway).at(-1)?.lotNumber ?? "—"}</strong></div><div><span>Primeira publicação</span><strong>{publication === "now" ? "Agora" : startInstant ? formatBrasiliaDateTime(startInstant, false) : "—"}</strong></div><div><span>Última publicação prevista</span><strong>{startInstant?formatBrasiliaDateTime(new Date(startInstant.getTime()+Math.max(0,cards.length-1)*intervalSeconds*1000),false):"—"}</strong><small>Intervalo de {intervalSeconds}s</small></div><div><span>Grupo</span><strong>{groups.find(group => group.id === groupId)?.name ?? "—"}</strong></div></div><div className="review-list">{visibleCards.map(({card, index}) => { const start = startInstant ? new Date(startInstant.getTime() + index * intervalSeconds * 1000) : null, end = endMode === "common" ? (()=>{const iso=brasiliaInputToIso(commonEndInput);return iso?new Date(iso):null;})() : start ? new Date(start.getTime() + Math.round(Number(card.durationMinutes) * 60_000)) : null; return <article key={card.id}><div className="draft-thumb">{card.preview || card.imageUrl ? <img src={card.preview || card.imageUrl} alt="" loading="lazy" decoding="async" /> : <span>🃏</span>}</div><div><strong>{card.giveaway ? (card.giveawayKind === "quiz" ? "Quiz" : "Brinde") : `Lote ${card.lotNumber}`} — {card.name}</strong><p>{card.giveaway ? `${card.giveawayKind === "quiz" ? "🧩 Quiz" : "🎁 Brinde"} · resposta vencedora: ${card.giveawayOptions.split(/\r?\n/).map(x=>x.trim()).filter(Boolean)[Number(card.giveawayCorrectIndex)] ?? "não selecionada"}` : card.pricingMode === "custom" ? (() => { const pricing = pricingOf(card); return `Valores personalizados (${pricing.options.length}) · ${pricing.buyoutPrice != null ? `ARREMATE ${money(pricing.buyoutPrice)}` : "Sem ARREMATE"}`; })() : `${money(Number(card.startingPrice))} + ${money(Number(card.increment))} · ${card.buyout ? `ARREMATE ${money(Number(card.buyout))}` : "Sem ARREMATE"}`}</p>{card.giveaway&&<details className="game-review"><summary>Prévia da enquete no WhatsApp</summary><p>{card.giveawayKind==="quiz"?card.giveawayQuestion:`Brinde: ${card.name}`}</p><ul>{card.giveawayOptions.split(/\r?\n/).map(x=>x.trim()).filter(Boolean).map((option,i)=><li key={i}>{option}{String(i)===card.giveawayCorrectIndex?" · correta (somente no painel)":""}</li>)}</ul></details>}<p>Publica: {start ? formatBrasiliaTime(start) : "Agora"}{card.giveaway ? " · até o primeiro acerto" : " · Encerra:"} {!card.giveaway && (end ? (endMode === "common" ? formatBrasiliaDateTime(end, false) : formatBrasiliaTime(end)) : "—")}</p>{card.imageMessage && <p className="muted">Imagem: {card.imageMessage}</p>}</div></article>; })}</div>{uploadProgress && <p className="notice" role="status">{uploadProgress}</p>}</section><div className="wizard-footer"><button className="secondary" disabled={busy} onClick={() => setStep(3)}>← Publicação</button><button disabled={busy || draftBusy || preparingPreviews} onClick={() => void startQueue()}>{busy ? "Preparando fila…" : publication === "now" ? "▶ Iniciar fila agora" : "🕒 Agendar fila"}</button></div></>}
+    </fieldset>
   </main>;
 }

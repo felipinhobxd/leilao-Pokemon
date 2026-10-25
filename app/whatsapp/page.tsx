@@ -10,7 +10,7 @@ type Dispatch = { id:string; auction_id:string; group_id:string; scheduled_at:st
 type BotWorker = { workerId:string; status:string; heartbeatAt:string|null; connectedAt:string|null; accountJid:string|null; lastError:string|null; qrText:string|null; qrExpiresAt:string|null; groupsSyncedAt:string|null; version:string|null; sessionActive:boolean };
 type BotData = { worker:BotWorker|null; online:boolean; canControl:boolean };
 
-function when(value:string|null|undefined){if(!value)return "—";const time=Date.parse(value);return Number.isFinite(time)?new Date(time).toLocaleString("pt-BR"):"—"}
+function when(value:string|null|undefined){if(!value)return "—";const time=Date.parse(value);return Number.isFinite(time)?new Date(time).toLocaleString("pt-BR", {timeZone:"America/Sao_Paulo"}):"—"}
 function botStatusLabel(status:string){return ({starting:"Iniciando",waiting_qr:"Aguardando QR",connecting:"Conectando",connected:"Conectado",reconnecting:"Reconectando",disconnected:"Desconectado",error:"Erro"} as Record<string,string>)[status]??status}
 function dispatchLabel(status:string){return ({scheduled:"Pendente",sending:"Enviando",sent:"Enviado",failed:"Falhou",cancelled:"Cancelado"} as Record<string,string>)[status]??status}
 
@@ -69,7 +69,8 @@ export default function WhatsAppPage(){
     const waitingQr = worker?.status === "waiting_qr";
     return <main id="main-content" tabIndex={-1} className="shell">
       <header className="topbar"><div><p className="eyebrow">CENTRAL DO BOT</p><h1>WhatsApp</h1><p className="muted">{waitingQr ? "O WhatsApp está aguardando autenticação." : "O WhatsApp não está conectado."}</p></div><div className="actions"><Link className="button-link" href="/auctions/new">＋ Novo leilão</Link><Link className="button-link" href="/">← Painel</Link></div></header>
-      {error&&<p className="alert" role="alert">{error}</p>}
+      {error&&<p className="alert" role="alert">{error}</p>}{notice&&<p className="notice" role="status">{notice}</p>}
+      {bot.canControl && worker && online && <section className="panel"><h2>Recuperar conexão</h2><p className="muted">O programa está online. Solicite uma nova conexão sem abrir outra instância do bot.</p><button disabled={busy} onClick={()=>void command("reconnect")}>{busy?"Solicitando…":"Reconectar WhatsApp"}</button></section>}
       <section className="panel">
         <div className="panel-title"><div><p className="eyebrow">{waitingQr ? "AGUARDANDO QR" : "AGUARDANDO CONEXÃO"}</p><h2>{waitingQr ? "Conecte o WhatsApp" : "Nenhum WhatsApp conectado"}</h2></div>{worker?.version&&<span className="status-pill">v{worker.version}</span>}</div>
         {waitingQr

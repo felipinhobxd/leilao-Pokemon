@@ -1,0 +1,3 @@
+import {authorize,failure,HttpError} from "@/lib/backend";
+export const runtime="nodejs";
+export async function GET(request:Request){try{const {db,user}=await authorize(request,true);const eventId=new URL(request.url).searchParams.get("eventId")??"";if(!/^[0-9a-f-]{36}$/i.test(eventId))throw new HttpError(400,"Operação inválida.");const {data,error}=await db.rpc("recover_auction_creation",{p_event_id:eventId,p_admin_user_id:user.id});if(error)throw Error("creation_recovery_failed");return Response.json({data},{headers:{"Cache-Control":"private, no-store"}});}catch(error){return failure(error);}}

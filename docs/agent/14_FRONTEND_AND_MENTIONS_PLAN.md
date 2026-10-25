@@ -1,5 +1,8 @@
 # 14_FRONTEND_AND_MENTIONS_PLAN — Fotos em lote e @all
 
+> Estado atual consolidado: [18_RELIABILITY_AND_UI_REVIEW.md](18_RELIABILITY_AND_UI_REVIEW.md), bot 0.2.10, Next.js 16.4.3. Seções de versões anteriores abaixo são histórico; não reaplicar migrations ou instruções antigas automaticamente.
+
+
 > Última atualização: 2026-10-25
 > Estado: **P-25 e P-26 implementados e validados localmente**.
 > Escopo: os dois problemas relatados pelo operador; sem alterações de banco ou consultas ao Supabase.

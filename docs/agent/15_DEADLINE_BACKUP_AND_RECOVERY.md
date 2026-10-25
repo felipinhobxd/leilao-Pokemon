@@ -1,5 +1,8 @@
 # 15 — Horário comum, resultados e recuperação do backup
 
+> Estado atual consolidado: [18_RELIABILITY_AND_UI_REVIEW.md](18_RELIABILITY_AND_UI_REVIEW.md), bot 0.2.10, Next.js 16.4.3. Seções de versões anteriores abaixo são histórico; não reaplicar migrations ou instruções antigas automaticamente.
+
+
 Atualizado em 2026-10-25. Implementação autorizada pelo operador; bot 0.2.7.
 
 ## Fluxo solicitado

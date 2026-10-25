@@ -1,4 +1,5 @@
 import "./session-guard.mjs";
+import { createSerialCycle } from "./serial-cycle.mjs";
 import makeWASocket, {
   BufferJSON,
   DisconnectReason,
@@ -1184,18 +1185,15 @@ async function connect() {
 // estao abertas ao mesmo tempo (bot que subiu atrasado), disparar ambas em
 // paralelo nao garante a ordem no grupo — o encadeamento espera as regras
 // chegarem antes de soltar a figurinha + @all.
+const schedulerCycle = createSerialCycle(async () => {
+        await sendOpeningSequence();
+        await Promise.all([runScheduler(), finalizeDueAuctions(), adminNotificationDrain.tick(), sendDueQuickPolls(), paymentReminderDrain.tick()]);
+      });
 schedulerTimer = setInterval(() => {
         // A sequência de abertura (regras + figurinha + @all) precisa TERMINAR
         // antes de qualquer dispatch ser publicado — se rodarem em paralelo,
         // o 1º lote chega no grupo antes do "O leilão vai começar!".
-        void (async () => {
-          await sendOpeningSequence();
-          void runScheduler();
-          void finalizeDueAuctions();
-          void adminNotificationDrain.tick();
-          void sendDueQuickPolls();
-          void paymentReminderDrain.tick();
-        })().catch(error => console.error("Falha no ciclo (abertura/agendador):", describeError(error)));
+        void schedulerCycle().catch(error => console.error("Falha no ciclo (abertura/agendador):", describeError(error)));
       }, 5000);
       void syncOpenAuctionGroups().catch(error => console.warn("Falha ao sincronizar grupos abertos:", error?.message || error));
       // Disparos/finalize imediatos REMOVIDOS: rodavam em paralelo com a

@@ -193,3 +193,7 @@ Reabra o supervisor e seu filho após atualizar os arquivos. O heartbeat existen
 ## Quiz/brindes — 0.2.9
 
 Requer migration 20261025080442. Mensagem original das novas enquetes é persistida para descriptografia após reinício. Resposta correta de participante elegível disputa um claim atômico; outbox anuncia nome e prêmio, com menção quando resolvida. Primeiro confirmado permanece vencedor após alteração/retirada. Enquetes legacy não são apuradas. Sem nova rotina de polling ou auditoria por voto errado. Reabrir supervisor e filho atualizados antes de criar jogos; não iniciar segunda instância.
+
+## Atualização 0.2.10
+
+Ciclo do scheduler sem sobreposição: abertura lenta precisa terminar antes de um tick posterior seguir para publicações. Dependências corrigidas e dois testes de regressão novos. Reabra supervisor/filho após atualizar o código; não abra uma segunda instância com a mesma sessão. Estado atual no [documento 18](../docs/agent/18_RELIABILITY_AND_UI_REVIEW.md).

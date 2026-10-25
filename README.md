@@ -44,7 +44,7 @@ SUPABASE_SECRET_KEY=CHAVE_PRIVADA_APENAS_NO_SERVIDOR
 
 Na Vercel, a integração do Supabase fornece `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` e `SUPABASE_SECRET_KEY`. Para instalações locais/self-hosted, `SUPABASE_SERVICE_ROLE_KEY` continua aceito como fallback. Nunca use uma chave secreta em variável `NEXT_PUBLIC_*`, no navegador, no GitHub ou em mensagens.
 
-O banco de produção atual é `PokemonLeilao`. A conferência de 2026-10-25 contou inicialmente 67 registros para 59 arquivos locais; após corrigir a RPC de fila para aceitar 100 a 200 cartas com a migration 20261025054810, são 68 registros para 60 arquivos locais; há versões remotas diferentes. Consulte [a auditoria de migrations](docs/agent/13_MIGRATION_AUDIT.md) antes de aplicar SQL; a antiga lista de pendências já foi atendida. Alterações de schema devem ser feitas por migrations versionadas em `supabase/migrations/`; o Supabase continua sendo a fonte oficial dos leilões, lances, vencedores e histórico.
+O banco de produção é `PokemonLeilao`. Estado de 2026-10-25: **68 migrations locais / 76 registros remotos**; existem divergências históricas de versão já mapeadas. A migration nova `20261025181640_dashboard_auction_detail.sql` foi instalada pelo conector e tem a mesma versão local/remota. Consulte [a auditoria](docs/agent/13_MIGRATION_AUDIT.md) antes de aplicar SQL; não executar `db push`/`repair` geral.
 
 ## Instalação do bot no Windows
 
@@ -194,7 +194,7 @@ Em 2026-10-25 o painel Supabase mostrou Log Ingestion 0,88/1 GB. Priorize consul
 
 Administradores têm o botão **Excluir leilões encerrados** no painel. É preciso digitar duas confirmações: **excluir leilões encerrados** e **quero excluir os encerrados**. Apaga todos os vendidos, encerrados sem vencedor e cancelados, com lances, compras, pagamentos e entregas vinculados (inclusive pendentes). Leilões abertos, rascunhos/agendados e em revisão permanecem. A ação é definitiva; participantes, sessão WhatsApp e numeração de lotes são mantidos.
 
-Migration 20261025055529 instalada em produção e versionada; agora são 61 arquivos locais e 69 registros no histórico remoto. A implementação não executou exclusões reais. Testes SQL são feitos em banco descartável.
+Migration 20261025055529 instalada em produção e versionada. As contagens atuais estão na seção Arquitetura e no documento 18; contagens das rodadas anteriores são históricas. A implementação não executou exclusões reais. Testes SQL são feitos em banco descartável.
 
 
 ## Horário comum, resultados e backup — bot 0.2.7
@@ -213,4 +213,12 @@ Navegação compartilhada, temas claro/escuro/sistema, buscas locais, tabelas ac
 
 ## Quiz e brindes com vencedor — 0.2.9
 
-Na área **Brindes e Quiz**, escolha o tipo, a carta/prêmio, opções e a única resposta correta. Quiz também pede a pergunta. No lote, use **Brinde** ou **Quiz** na carta e configure em Valores. O primeiro acerto confirmado ganha; o bot anuncia o nome e a carta e registra o resultado sem cobrança. Respostas ficam privadas, vencedor não muda após troca/retirada. Reabra o bot 0.2.9 antes de criar jogos. [Fluxo e validação](docs/agent/17_QUIZ_AND_GIVEAWAY_PRIZES.md).
+Na área **Brindes e Quiz**, escolha o tipo, a carta/prêmio, opções e a única resposta correta. Quiz também pede a pergunta. No lote, escolha **Leilão / Brinde / Quiz** no tipo da carta. Configure pergunta/opções/resposta na etapa Cartas e revise em Valores. O primeiro acerto confirmado ganha; o bot anuncia o nome e a carta e registra o resultado sem cobrança. Respostas ficam privadas, vencedor não muda após troca/retirada. Reabra o bot 0.2.9 antes de criar jogos. [Fluxo e validação](docs/agent/17_QUIZ_AND_GIVEAWAY_PRIZES.md).
+
+## Revisão de confiabilidade e interface — bot 0.2.10
+
+Criações com confirmação incerta preservam ID/payload e podem ser recuperadas após recarregar a aba. O painel lê o líder do conjunto completo de lances elegíveis da disputa selecionada, sem depender dos 500 lances globais. Rascunhos preservam novos detalhes, mostram estado de salvamento e pausam tentativas após falha.
+
+Cadastro com busca, filtros, páginas de 12 cartas (limite de 200 preservado), escolha explícita do tipo e foco no erro. Painel prioriza operação, diagnóstico recolhível, compras com busca/pagamento/totais e leitura adaptada ao celular. A fila não consulta em segundo plano ou depois de concluída/cancelada; o bot impede sobreposição de ciclos de abertura.
+
+Dependências atualizadas, Next.js 16.4.3 e auditorias npm sem alertas nesta rodada. Testes de navegador com dados isolados na CI: `npm run test:browser` (instalar Chromium com `npx playwright install chromium`). Não usam credenciais Supabase ou WhatsApp. Reabra o supervisor e o filho do bot para carregar **0.2.10**; a atualização do site não reinicia o bot local. [Estado e limites](docs/agent/18_RELIABILITY_AND_UI_REVIEW.md).

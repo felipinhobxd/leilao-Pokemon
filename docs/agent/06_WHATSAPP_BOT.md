@@ -1,5 +1,8 @@
 # 06_WHATSAPP_BOT — Worker Baileys (bot/)
 
+> Estado atual consolidado: [18_RELIABILITY_AND_UI_REVIEW.md](18_RELIABILITY_AND_UI_REVIEW.md), bot 0.2.10, Next.js 16.4.3. Seções de versões anteriores abaixo são histórico; não reaplicar migrations ou instruções antigas automaticamente.
+
+
 > Área: Bot WhatsApp
 > Escopo: Supervisor, filho Baileys, fila, votos, avisos, sessão, segurança
 > Última atualização: 2026-10-25

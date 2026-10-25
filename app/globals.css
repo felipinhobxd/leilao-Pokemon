@@ -336,3 +336,21 @@ dialog::backdrop{background:#030712b8;backdrop-filter:blur(4px)}
 
 .game-fields{display:grid;gap:14px;padding:18px;margin:10px 0;background:var(--surface-soft)}
 .game-fields .muted{font-size:.85rem;margin-top:0}
+
+/* Operation first; details are available without dominating the mobile viewport. */
+.diagnostics-details>summary,.purchase-totals>summary{cursor:pointer;min-height:44px;display:flex;align-items:center;font-weight:700}
+.diagnostics-details[open]>.health-panel{margin-top:18px;border:0;padding:0}
+.filter-bar{display:flex;flex-wrap:wrap;align-items:end;gap:14px;margin:18px 0}
+.filter-bar label{display:grid;gap:6px;flex:1 1 180px}
+.filter-bar button{flex:0 0 auto}
+.purchase-totals{margin:16px 0}
+@media(max-width:560px){
+ .mobile-stacked table,.mobile-stacked tbody,.mobile-stacked tr,.mobile-stacked td{display:block;width:100%}
+ .mobile-stacked thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+ .mobile-stacked tr{padding:14px;border-bottom:1px solid var(--line)}
+ .mobile-stacked td{display:flex;justify-content:space-between;gap:14px;padding:7px 0;white-space:normal;border:0;overflow-wrap:anywhere}
+ .mobile-stacked td::before{content:attr(data-label);font-weight:700;color:var(--muted);flex:0 0 90px}
+ .mobile-stacked td>.actions{justify-content:flex-end}
+}
+
+.wizard-workspace{border:0;padding:0;margin:0;min-width:0}

@@ -1,5 +1,8 @@
 # 11_PENDING_WORK — Trabalho pendente
 
+> Estado atual consolidado: [18_RELIABILITY_AND_UI_REVIEW.md](18_RELIABILITY_AND_UI_REVIEW.md), bot 0.2.10, Next.js 16.4.3. Seções de versões anteriores abaixo são histórico; não reaplicar migrations ou instruções antigas automaticamente.
+
+
 > Última atualização: 2026-10-25
 > Escopo desta sessão: conferir migrations e atualizar documentação, preservando a cota de Log Ingestion. Nenhuma correção funcional ou migration foi aplicada.
 
@@ -80,3 +83,7 @@ Autorizado pelo operador: diagnóstico no painel, recuperação segura de avisos
 ## P-33 — Quiz e brindes com vencedor (concluído)
 
 Uma correta configurável, Quiz separado na área e no lote, primeiro acerto confirmado imutável, anúncio durável com nome/prêmio/menção. Migration instalada, bot 0.2.9, rascunhos e APIs atualizados. Documento 17 registra testes e limites de ordem de chegada. Legados publicados não convertidos; sem prêmio ou mensagem real durante a implementação.
+
+## Revisão 0.2.10
+
+P-21 resolvido por ciclo assíncrono compartilhado; P-22 resolvido no doctor. P-23 recebe limites visíveis e ensaio de restauração operacional descartável, sem ampliar cobertura do backup. Problemas novos de retry/leader/fotos/autosave/UI/dependências resolvidos conforme documento 18. P-18/P-19 e decisões de exclusão/retencão permanecem explícitos, sem alteração automática.

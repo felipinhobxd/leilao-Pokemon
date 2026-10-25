@@ -1,5 +1,8 @@
 # 10_SECURITY_AND_PERFORMANCE — Segurança e performance
 
+> Estado atual consolidado: [18_RELIABILITY_AND_UI_REVIEW.md](18_RELIABILITY_AND_UI_REVIEW.md), bot 0.2.10, Next.js 16.4.3. Seções de versões anteriores abaixo são histórico; não reaplicar migrations ou instruções antigas automaticamente.
+
+
 > Área: Segurança + Performance
 > Escopo: Auth, RLS, secrets, riscos de exposição; gargalos, concorrência, memória
 > Última atualização: 2026-10-25

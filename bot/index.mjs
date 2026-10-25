@@ -14,6 +14,9 @@ import { buildAuctionCaption } from "./format.mjs";
 import { phoneFromWhatsAppJid, syncGroupParticipants } from "./group-participants.mjs";
 import { describeVoteReceived } from "./vote-log.mjs";
 import { describeError } from "./error-log.mjs";
+import { createSupabaseFetch, createErrorReporter } from "./supabase-resilience.mjs";
+import { createAuctionNoticeDrain } from "./auction-notices.mjs";
+const reportServiceError = createErrorReporter();
 import { isLidJid, isPhoneJid, normalizeUserJid } from "./poll-identities.mjs";
 import { decryptIncomingPollVote, unwrapMessageContent } from "./poll-votes.mjs";
 import { createAdminNotificationDrain, parseAdminJids } from "./warning-notify.mjs";
@@ -39,6 +42,7 @@ if (!globalThis.WebSocket) globalThis.WebSocket = WebSocket;
 
 const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
+  global: {fetch:createSupabaseFetch()},
 });
 
 // 2026-10-08: o filho NÃO tinha handlers de rejeição — na queda do Supabase
@@ -80,10 +84,8 @@ let sock;
 let schedulerTimer;
 let schedulerBusy = false;
 let finalizeBusy = false;
-// Finalize: um anúncio de encerramento por leilão por processo. O leilão que
-// não sai de 'open' (RPC falho, corrida com compra) não pode re-anunciar
-// "sem comprador" a cada ciclo de 5s — 7x seguidos vistos em 2026-09-29.
-const finalizeAnnounced = new Set();
+// Finalizations and their announcements are tracked durably in the database.
+const auctionNoticeDrain = createAuctionNoticeDrain({db,getSocket:()=>socketReady?sock:null,workerId:WORKER_ID,resolveJid:id=>resolveParticipantJid(db,id)});
 let socketReady = false;
 let dispatchQueue = null;
 let voteQueue = Promise.resolve();
@@ -444,7 +446,7 @@ async function markDispatchRetry(dispatch, error) {
 async function fetchAuctionContext(dispatch) {
   const [{ data: group, error: groupError }, { data: auction, error: auctionError }] = await Promise.all([
     db.from("whatsapp_groups").select("id,group_jid,name,active").eq("id", dispatch.group_id).single(),
-    db.from("auctions").select("*").eq("id", dispatch.auction_id).single(),
+    db.from("auctions").select("*,dispatches:whatsapp_dispatches(queue:auction_publish_queues(ends_at))").eq("id", dispatch.auction_id).single(),
   ]);
   if (groupError || !group?.active) throw new Error("whatsapp_group_unavailable");
   if (auctionError || !auction) throw new Error("auction_not_found");
@@ -499,6 +501,10 @@ async function sendDispatchInternal(claimedDispatch) {
   let dispatch = await persistDispatchMessageIds(claimedDispatch);
   const { group, auction, card } = await fetchAuctionContext(dispatch);
   trackedGroupJids.add(group.group_jid);
+  const linkedDispatches = Array.isArray(auction.dispatches) ? auction.dispatches : [auction.dispatches];
+  const commonEnd = linkedDispatches.find(row => row?.queue?.ends_at)?.queue.ends_at;
+  const checkCommonEnd = () => { if (commonEnd && Date.parse(commonEnd) <= Date.now()) throw new Error("auction_deadline_passed"); };
+  checkCommonEnd();
   if (!["draft", "open"].includes(auction.status)) throw new Error("auction_not_publishable");
   const options = Array.isArray(dispatch.poll_options) ? dispatch.poll_options : [];
   if (!options.length || options.length > 12) throw new Error("invalid_poll_options");
@@ -539,6 +545,7 @@ async function sendDispatchInternal(claimedDispatch) {
     // retentativa (anúncio já enviado antes, enquete pendente) o envio é
     // imediato, sem queimar tempo de retry.
     if (announcementJustSent && POLL_AFTER_PHOTO_MS > 0) await sleep(POLL_AFTER_PHOTO_MS);
+    checkCommonEnd();
     const poll = await sock.sendMessage(group.group_jid, {
       poll: {
         name: dispatch.poll_title,
@@ -595,6 +602,7 @@ async function sendDispatchInternal(claimedDispatch) {
   const remotePollId = dispatch.poll_remote_message_id || dispatch.poll_message_id;
   const cached = pollMessageCache.get(remotePollId);
   if (cached) pollMessageCache.set(remotePollId, { ...cached, dispatch, ready: true });
+  auctionNoticeDrain.wake();
   console.log(`📤 Enquete enviada: ${card.name} → ${group.name}`);
   await drainPendingPollVotes(remotePollId);
   void syncAuctionGroup(group.group_jid);
@@ -630,7 +638,7 @@ async function runScheduler() {
         await markDispatchRetry(dispatch, error);
       }
     }
-  } catch (error) { console.error("Falha no agendador:", describeError(error)); }
+  } catch (error) { reportServiceError("Falha no agendador", error); }
   finally { schedulerBusy = false; }
 }
 
@@ -1012,7 +1020,7 @@ async function sendOpeningSequence() {
       }
     }
   } catch (error) {
-    console.error("Abertura: falha no ciclo:", describeError(error));
+    reportServiceError("Abertura: falha no ciclo", error);
   } finally {
     openingBusy = false;
   }
@@ -1060,79 +1068,27 @@ async function sendDueQuickPolls() {
       await db.from("whatsapp_quick_polls")
         .update({ sent_at: new Date().toISOString(), poll_message_id: String(message.key.id) })
         .eq("id", poll.id);
+      auctionNoticeDrain.wake();
       console.log(`🎁 Brinde publicado: "${poll.title}" (${values.length} opções).`);
     }
   } catch (error) {
-    console.error("Brinde: falha ao publicar:", describeError(error));
+    reportServiceError("Brinde: falha ao publicar", error);
   } finally {
     quickPollsBusy = false;
   }
 }
 
 async function finalizeDueAuctions() {
-  if (!sock || finalizeBusy) return;
-  finalizeBusy = true;
+  if (!sock || !socketReady || finalizeBusy) return;
+  finalizeBusy=true;
   try {
-    const now = new Date().toISOString();
-    const { data: auctions, error } = await db.from("auctions").select("id,card_id,whatsapp_group_id,scheduled_end_at").eq("status", "open").not("scheduled_end_at", "is", null).lte("scheduled_end_at", now).order("scheduled_end_at").limit(10);
-    if (error) throw error;
-    for (const auction of auctions ?? []) {
-      const eventId = `bot-finalize:${auction.id}:${auction.scheduled_end_at}`.slice(0, 200);
-      if (finalizeAnnounced.has(eventId)) continue;
-      try {
-        const result = await processCommand({ type: "AUCTION_FINALIZE", eventId, auctionId: auction.id });
-        if (finalizeAnnounced.size >= 200) finalizeAnnounced.clear();
-        finalizeAnnounced.add(eventId);
-        const finalAuction = result?.auction;
-        const finalStatus = finalAuction?.status;
-        if (finalStatus !== "closed" && finalStatus !== "sold") {
-          // RPC resolveu SEM transição (leilão ainda open/draft): anunciar de
-          // novo a cada ciclo inundaria o grupo — loga UMA vez com o estado
-          // real para decisão humana, sem mensagem no grupo.
-          console.warn(`⚠️ Finalize sem transição (status: ${finalStatus ?? "sem resultado"}): lote ${auction.id} — sem anúncio no grupo.`);
-          continue;
-        }
-        if (!auction.whatsapp_group_id) continue;
-        const { data: card } = await db.from("cards").select("name").eq("id", auction.card_id).single();
-        if (finalAuction?.winner_participant_id) {
-          const { data: winner } = await db.from("participants").select("display_name,phone_e164").eq("id", finalAuction.winner_participant_id).single();
-          // Tie transparency: when 2+ active bids share the winning amount,
-          // the database crowns the EARLIEST vote — say so in the announcement.
-          const { count: tiedAtPrice } = await db.from("bids")
-            .select("id", { count: "exact", head: true })
-            .eq("auction_id", auction.id)
-            .eq("status", "active")
-            .eq("amount", finalAuction.final_price);
-          const tieNote = finalAuction.win_type === "highest_bid" && (tiedAtPrice ?? 0) > 1
-            ? "\n⚖️ Empate no valor: venceu quem deu o lance primeiro."
-            : "";
-          console.log(`⏰ Leilão encerrado: ${winner?.display_name ?? "Participante"} venceu por ${brl(finalAuction.final_price)}${(tiedAtPrice ?? 0) > 1 ? " (empate: lance mais antigo)" : ""}`);
-          // P-06: @menção real ao vencedor (mesma resolução do ARREMATADO).
-          const winnerJid = await resolveParticipantJid(db, finalAuction.winner_participant_id);
-          const winnerMention = mentionMessage(winner?.display_name ?? "Participante", finalAuction.winner_participant_id, winnerJid, who => who);
-          await sock.sendMessage(auction.whatsapp_group_id, { text: `🏁 *Leilão encerrado!*\n\n🃏 ${card?.name ?? "Carta"}\n👤 Vencedor: ${winnerMention.text}\n💰 ${brl(finalAuction.final_price)}${tieNote}`, mentions: winnerMention.mentions });
-        } else {
-          console.log("⏰ Leilão encerrado: sem comprador");
-          await sock.sendMessage(auction.whatsapp_group_id, { text: `🏁 Leilão de *${card?.name ?? "carta"}* encerrado sem lances válidos.` });
-        }
-      } catch (error) {
-        const message = String(error?.message || error);
-        if (message.includes("auction_not_open")) {
-          // Esperado (fechado por ARREMATE corrida paralela): garante que o
-          // anúncio não repita no próximo ciclo para o mesmo evento.
-          if (finalizeAnnounced.size >= 200) finalizeAnnounced.clear();
-          finalizeAnnounced.add(eventId);
-          continue;
-        }
-        console.error("Falha ao finalizar leilão:", message);
-      }
-    }
-  } catch (error) {
-    // 2026-10-08: este catch FALTAVA (era try/finally) — o `throw error` cru
-    // do supabase-js acima era a origem EXATA do crash da noite de
-    // 2026-10-08: rejeição não tratada via `void finalizeDueAuctions()`.
-    console.error("Falha ao finalizar leilões vencidos:", describeError(error));
-  } finally { finalizeBusy = false; }
+    await voteQueue;
+    const {data,error}=await db.rpc("finalize_due_auction_batch",{p_admin_user_id:ADMIN_USER_ID});
+    if(error)throw error;
+    if(data>0)auctionNoticeDrain.wake();
+    await auctionNoticeDrain.tick();
+  } catch(error){reportServiceError("Falha ao finalizar leilões vencidos",error);}
+  finally{finalizeBusy=false;}
 }
 
 async function connect() {

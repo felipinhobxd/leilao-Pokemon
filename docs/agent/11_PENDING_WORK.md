@@ -26,7 +26,7 @@ Limite da conclusão: correspondência de histórico por nome + metadados/trecho
 |---|---|---|
 | P-18 | Alta | Limpeza 12h de leilão terminal apaga compras/pagamentos/entregas sem preservar pendência; lembrete padrão exige 7d. Avaliar retenção separada do pós-venda, preservando a decisão de limpeza do operador. Código: cleanup_old_auctions e bot/payment-reminder.mjs. |
 | P-19 | Alta | Guard de backup verifica arquivo do dia e não cobertura dos registros apagados posteriormente. Banco em UTC; arquivos Node usam fuso local. Definir cobertura temporal e validar restauração antes de mudar a rotina. |
-| P-20 | Média | Resultado pode fechar no banco e falhar ao ser anunciado. finalizeDueAuctions busca só abertos e marca finalizeAnnounced antes do envio. Avaliar outbox persistente. |
+| P-20 | Concluído para finalização agendada | Bot 0.2.7 finaliza em lote e registra resultado na outbox transacional, com entrega persistente/retry e intervalo de 15s. Não unifica notificações imediatas de ARREMATE. |
 | P-21 | Média | openingBusy retorna imediatamente ao próximo tick; abertura que dura mais de 5s pode não bloquear dispatch de outro tick. Avaliar Promise compartilhada ou exclusão do ciclo inteiro. Cenário inferido do código, sem reprodução WhatsApp. |
 | P-22 | Média | doctor valida presença parcial, trata respostas não-404 como tabela presente, usa select=id para payment_reminders e não aceita SUPABASE_SECRET_KEY como o backend. Fortalecer diagnóstico sem loops. |
 | P-23 | Média | Snapshots limitados podem gerar relatório parcial; backup limita drafts/quick polls e não inclui bytes de imagens/sessão. Tornar limites explícitos e testar recuperação. |
@@ -65,3 +65,10 @@ Smokes reais de WhatsApp, pausa/retomada, dois ciclos de avisos, suspensão/expi
 ## P-28 — Concluído: botão para excluir todos os encerrados
 
 Solicitação explícita do operador substituiu a proposta de preservar pós-venda nesta etapa. Admin deve digitar duas frases; UI/API/RPC verificam ambas. Exclui sold/closed/cancelled e dependências, inclusive pendências financeiras; preserva open/draft/review e filas futuras. Operação transacional/idempotente por eventId e auditoria resumida. Migration 20261025055529 instalada/registrada e conferida sem exclusão de dados reais. P-18 permanece como decisão futura, não implementar a proteção de pós-venda por iniciativa própria.
+
+
+## P-29/P-30/P-31 — implementação 0.2.7
+
+P-29: horário absoluto comum, mensagem com @all após a última publicação e resultados espaçados. P-30: backup em snapshot/blocos com link privado/Gzip, sem limite de resposta grande da Vercel. P-31: timeout real do heartbeat, recuo de consultas durante indisponibilidade e saneamento de HTML/repetição no terminal. Não garante uptime do Supabase nem entrega exatamente uma vez no WhatsApp (messageIds estáveis mitigam repetição).
+
+P-18/P-19/P-21/P-22/P-23/P-24 continuam conforme decisões anteriores; não ampliar escopo automaticamente. Histórico com mais de 41k eventos em 7d foi contado nesta tarefa para diagnosticar o backup, não durante a antiga revisão documental.

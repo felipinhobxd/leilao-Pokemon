@@ -1,3 +1,5 @@
+import { createErrorReporter } from "./supabase-resilience.mjs";
+const reportServiceError=createErrorReporter();
 // Lembrete de pagamento pós-leilão: DM ao arrematante a cada N dias (padrão 7,
 // BOT_PAYMENT_REMINDER_DAYS) enquanto a compra seguir sem pagamento marcado.
 // SEM aviso nem punição (decisão do operador 2026-09-24): é apenas um
@@ -112,7 +114,7 @@ export function createPaymentReminderDrain({ db, getSocket, resolveJid, interval
         }
         return sent;
       } catch (error) {
-        console.error("Lembrete de pagamento: falha no ciclo:", error?.message || error);
+        reportServiceError("Lembrete de pagamento: falha no ciclo",error);
         return 0;
       } finally {
         inFlight = false;

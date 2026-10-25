@@ -86,3 +86,10 @@ Admin ativo apenas. JSON `{eventId,confirm1,confirm2}`; UUID da operação e as 
 - Dashboard: `dashboard/route`.
 - Central WhatsApp: `whatsapp/*` + `commands`.
 - Bot: **NÃO chama a API HTTP** — fala direto com o Supabase (RPCs/tables).
+
+
+## Atualização 0.2.7
+
+POST /api/auctions/batch aceita queue.ends_at opcional (ISO UTC). Valida prazo após a última posição e até 7d, exige worker 0.2.7+ no modo comum e chama create_auction_queue_with_deadline. Sem ends_at, preserva duração individual. Drafts guardam endMode/commonEndInput opcionais com compatibilidade da versão 1.
+
+GET /api/admin/backup agora retorna JSON pequeno {downloadUrl,filename,exported_at,bytes,compressedBytes}, privado/no-store, com link assinado por 120s para .json.gz; não retorna mais o backup inteiro através da Vercel. Autoriza admin/operator. maxDuration 120s; erro controlado 503 e Retry-After 30, ou 429 se já existe preparação em andamento. Snapshot/RPC somente service_role; link não é logado. Um arquivo manual por administrador, sem varrer cópias automáticas.

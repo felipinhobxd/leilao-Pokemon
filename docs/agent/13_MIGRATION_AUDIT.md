@@ -146,3 +146,12 @@ A única consulta SQL manual foi a conferência de catálogo acima. Alterações
 Referência oficial consultada: [Manage Logs Ingest usage](https://supabase.com/docs/guides/platform/manage-your-usage/logs-ingest). A ingestão reúne logs dos serviços, não deve ser confundida com egress, tamanho do banco ou a tabela auction_events.
 
 Na leitura posterior à correção P-27, o Dashboard passou a mostrar **0,88/1 GB**. Continua abaixo de 1 GB; não é possível atribuir o delta à tarefa, pois o valor é agregado/arredondado e os processos ativos também geram logs. Não houve carga de teste na produção.
+
+
+## Inclusão posterior — horário comum, outbox e backup 0.2.7
+
+Quatro migrations criadas pela CLI e instaladas pelo SQL Editor, cada uma com registro versão/nome/SQL na mesma transação: 20261025062419_common_auction_deadline_and_delivery_notices, 20261025065040_chunked_business_backup_export, 20261025065722_backup_prepare_timeout_budget e 20261025070438_efficient_backup_chunks_and_compression. Totais atuais: **65 locais / 73 remotos**; o mapeamento histórico permanece. PostgREST recebeu reload schema após alterações de orçamento.
+
+Conferidos os hashes dos seis novos helpers de deadline/outbox e do export alterado, compatíveis com o banco descartável. Novas tabelas de notices/snapshot/chunks têm RLS, sem SELECT para authenticated e RPCs sem EXECUTE para anon/authenticated. Apenas service_role. O guard de limpeza foi alterado pontualmente para reconhecer Gzip sem remover a exigência diária. Não foi executada limpeza/exclusão de leilões nem teste de envio. Houve exportações reais autorizadas pelo pedido de conserto do backup; os dois primeiros testes no caminho antigo não geraram arquivo e o erro 57014 do preparo motivou orçamento específico na RPC chamada. Mais de 41k eventos/105 leilões foram vistos somente como contagens agregadas para diagnóstico. Documento 15 registra resultado final e limites.
+
+Encerramento desta implementação: as quatro versões novas foram conferidas no histórico, tabelas temporárias vazias após download e RLS ativo. Dashboard ainda exibe 0,88/1GB. Valores e tempos do teste final no documento 15; trata-se de leitura arredondada com possível atraso de contabilização.

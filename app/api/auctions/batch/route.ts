@@ -1,4 +1,5 @@
 import { authorize, failure, HttpError } from "@/lib/backend";
+import { validateCommonDeadline } from "@/lib/common-deadline";
 import { buildCustomValuesPlan, buildPollPlan, cardConditions, cardLanguages, DEFAULT_POLL_OPTIONS, MAX_POLL_OPTIONS, parseCustomValues } from "@/lib/auction-wizard";
 
 export const runtime = "nodejs";
@@ -30,6 +31,14 @@ export async function POST(request: Request) {
     if (!Number.isFinite(startsTime) || startsTime < Date.now() - 120_000) throw new HttpError(400, "Horário de início inválido.");
     const intervalSeconds = Number(queue.interval_seconds);
     if (!Number.isSafeInteger(intervalSeconds) || intervalSeconds < 1 || intervalSeconds > 86400) throw new HttpError(400, "Intervalo entre publicações inválido.");
+    const endsAt = queue.ends_at ? String(queue.ends_at) : null;
+    if (endsAt && (!validateCommonDeadline(endsAt,startsAt,sourceItems.length,intervalSeconds) || Date.parse(endsAt)<=Date.now())) throw new HttpError(400,"O encerramento comum deve ser depois da última publicação e em até sete dias do início.");
+    if (endsAt) {
+      const {data:worker,error:workerError}=await db.from("whatsapp_bot_workers").select("version").order("heartbeat_at",{ascending:false}).limit(1).maybeSingle();
+      if (workerError) throw new HttpError(503,"Não foi possível conferir o bot. Tente novamente em alguns instantes.");
+      const version=String(worker?.version??"").match(/^(\d+)\.(\d+)\.(\d+)/);
+      if (!version || !(Number(version[1])>0 || Number(version[2])>2 || Number(version[2])===2 && Number(version[3])>=7)) throw new HttpError(409,"Reabra o bot atualizado (0.2.7 ou mais recente) antes de usar o horário comum de encerramento.");
+    }
 
     const seenLots = new Set<number>();
     const items = sourceItems.map((source: any, index: number) => {
@@ -72,7 +81,7 @@ export async function POST(request: Request) {
       const startingPrice = Number(auction.starting_price);
       const increment = Number(auction.bid_increment);
       const buyout = auction.buyout_price === null || auction.buyout_price === "" || auction.buyout_price === undefined ? null : Number(auction.buyout_price);
-      const durationSeconds = Number(auction.duration_seconds);
+      const durationSeconds = endsAt ? Math.max(1,Math.round((Date.parse(endsAt)-startsTime-index*intervalSeconds*1000)/1000)) : Number(auction.duration_seconds);
       if (!Number.isSafeInteger(durationSeconds) || durationSeconds < 1 || durationSeconds > 604800) throw new HttpError(400, `${label}: duração inválida.`);
 
       // Modo de valores por item (o mesmo do wizard de carta única): "increment"
@@ -146,12 +155,14 @@ export async function POST(request: Request) {
         group_id: groupId,
         starts_at: new Date(startsTime).toISOString(),
         interval_seconds: intervalSeconds,
+        ...(endsAt ? { ends_at: new Date(endsAt).toISOString() } : {}),
       },
       items,
     };
 
-    const { data, error } = await db.rpc("create_auction_publish_queue", { p_payload: payload, p_admin_user_id: user.id });
+    const { data, error } = await db.rpc("create_auction_queue_with_deadline", { p_payload: payload, p_admin_user_id: user.id });
     if (error) {
+      if (/invalid_common_deadline/i.test(error.message)) throw new HttpError(400,"O horário de encerramento deve ser depois da última publicação e ainda não pode ter passado.");
       if (/lot_number_in_use/i.test(error.message)) throw new HttpError(409, "Um dos números de lote já está em uso.");
       if (/whatsapp_group_unavailable/i.test(error.message)) throw new HttpError(409, "O grupo escolhido não está mais disponível.");
       if (/event_id_conflict/i.test(error.message)) throw new HttpError(409, "Essa criação já foi enviada com dados diferentes.");

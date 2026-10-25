@@ -1,25 +1,21 @@
 import { authorize, failure } from "@/lib/backend";
+import { prepareBackupDownload } from "@/lib/backup-download";
 
-// Download manual do backup completo (mesma fonte da cópia diária automática
-// do bot). Idempotente por natureza (leitura), service_role-only via authorize.
+// Generate a consistent snapshot and return a private, expiring Storage link.
+// The large compressed file goes directly from Storage to the browser.
 export const runtime = "nodejs";
+export const maxDuration = 120;
 
 export async function GET(request: Request) {
   try {
-    const { db } = await authorize(request, true);
-    const { data, error } = await db.rpc("export_business_backup");
-    if (error) throw new Error("backup_read_failed");
-    const now = new Date();
-    const pad = (value: number) => String(value).padStart(2, "0");
-    const filename = `leilao-backup-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.json`;
-    const payload = JSON.stringify({ exported_at: now.toISOString(), tables: data ?? {} }, null, 1);
-    return new Response(payload, {
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-        "Content-Disposition": `attachment; filename="${filename}"`,
-        "Cache-Control": "private, no-store",
-      },
-    });
+    const { db, user } = await authorize(request, true);
+    try {
+      const download = await prepareBackupDownload(db,user.id);
+      return Response.json(download,{headers:{"Cache-Control":"private, no-store"}});
+    } catch (issue) {
+      if (issue instanceof Error && String((issue.cause as {message?:unknown})?.message??"").includes("backup_busy")) return Response.json({error:"Já há um backup sendo preparado. Aguarde alguns minutos e tente novamente."},{status:429,headers:{"Cache-Control":"no-store","Retry-After":"30"}});
+      return Response.json({error:"Não foi possível preparar o backup. O Supabase pode estar indisponível ou sem espaço no Storage. Tente novamente em alguns instantes."},{status:503,headers:{"Cache-Control":"no-store","Retry-After":"30"}});
+    }
   } catch (error) {
     return failure(error);
   }

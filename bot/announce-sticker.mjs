@@ -56,7 +56,7 @@ Estamos testando um bot para facilitar a dinâmica dos nossos leilões! Ele regi
 
 ♡ 3. Nos lances sem arremate, se você marcar um valor maior e depois mudar para um menor, sem que outra pessoa tenha dado lance, será considerado o maior valor selecionado. O bot registra todas as alterações e avisa sempre que alguém muda o voto! Isso não permite desfazer um arremate nem retirar um lance após o prazo de 1 minuto.
 
-♡ 4. Os lances valem até 1h da manhã, conforme o encerramento anunciado para cada leilão. No dia seguinte, enviamos os relatórios no privado de cada um.
+♡ 4. Os lances valem até o horário de encerramento anunciado para a fila. No dia seguinte, enviamos os relatórios no privado de cada um.
 
 ♡ 5. Os brindes vão para quem clicar primeiro, mas é obrigatório ter arrematado pelo menos uma carta no leilão. Caso contrário, o brinde passa para o próximo.
 

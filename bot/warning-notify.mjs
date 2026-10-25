@@ -1,3 +1,5 @@
+import { createErrorReporter } from "./supabase-resilience.mjs";
+const reportServiceError=createErrorReporter();
 // Avisos globais: disparo da notificação aos administradores.
 //
 // O CONTADOR é global por participante e vive no banco
@@ -128,7 +130,7 @@ export function createAdminNotificationDrain({ db, getSocket, adminJids = DEFAUL
         }
         return delivered;
       } catch (error) {
-        console.error("Aviso global: falha ao processar notificações:", error?.message || error);
+        reportServiceError("Aviso global: falha ao processar notificações",error);
         return 0;
       } finally {
         inFlight = false;

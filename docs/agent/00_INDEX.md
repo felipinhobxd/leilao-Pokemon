@@ -15,9 +15,10 @@
 - Sistema web de leilões de cartas Pokémon: painel Next.js, PostgreSQL/Supabase e bot local Baileys. Cadastro manual; IA/OCR e Electron foram removidos por decisão do operador.
 - Filas de até 200 itens, rascunhos com auto-save 45s, brindes, quatro fotos extras, preços automáticos/personalizados, pausa/retomada e edição pendente.
 - Avisos globais por redução direta ou retirada/re-oferta: histórico total preservado, ciclo de três com reset e DM apenas aos administradores. Suspensão com prazo/indefinida, banimento e reativação.
-- **Banco**: 69 registros remotos / 61 arquivos locais após as migrations 20261025054810 (fila 200) e 20261025055529 (exclusão manual de encerrados). Histórico por nome não comprova corpo integral. Mapeamento anterior: 23 versões diferentes e oito extras; não reaplicar por timestamp. Ver documento 13.
+- **Banco**: 73 registros remotos / 65 arquivos locais. Quatro migrations de prazo comum e backup de 2026-10-25 instaladas para prazo comum, outbox e backup em blocos/Gzip; não reaplicar história antiga. Mapeamento e limites no documento 13.
 - **Excluir leilões encerrados**: botão admin no painel, duas frases escritas verificadas na UI/API/RPC. Remove todos sold/closed/cancelled e dependências, inclusive pendências financeiras; preserva open/draft/review e agendados. Nenhuma exclusão real feita na implementação. Testes 87 raiz, typecheck, build e smoke aprovados, SQL isolado com mais de 500 registros.
-- Backup mais recente: local 20261010100000 / remoto 20261010192429; sete dias de auditoria/cache, timeout 55s e work_mem 32MB.
+- **Bot 0.2.7**: novo horário comum nas filas, @all após última publicação e resultados a cada >=15s/grupo com outbox. API exige worker atualizado; reabrir supervisor/filho antes de usar modo comum. Detalhes no documento 15.
+- **Backup validado**: snapshot consistente em blocos e link privado .json.gz. Teste real: 52,3MB para 6,4MB, 22 tabelas, ~71s. Snapshots/chunks temporários esvaziados; limites históricos de cobertura permanecem.
 - **Log Ingestion observado: 0,88/1 GB** em 2026-10-25, arredondado no Dashboard. Não é previsão nem consumo medido desta sessão. Evitar chamadas repetidas; não desligar proteções.
 - Validação anterior à correção P-25/P-26: typecheck, 78 testes da raiz, 52 do bot, check do bot (27), build e smoke sem login passaram. CI aprovado no commit d79feb9b; testes SQL do CI são em Postgres isolado.
 
@@ -32,18 +33,19 @@
 | [05_FRONTEND.md](05_FRONTEND.md) | Wizard, painel e Realtime confirmado |
 | [06_WHATSAPP_BOT.md](06_WHATSAPP_BOT.md) | Bot, supervisor, votos, fila e limitações de envio |
 | [08_AUCTION_DOMAIN.md](08_AUCTION_DOMAIN.md) | Regras e invariantes; sem reconhecimento de cartas |
-| [09_TESTS_AND_VALIDATION.md](09_TESTS_AND_VALIDATION.md) | 78 raiz, 52 bot, check 27, SQL/CI e lacunas |
+| [09_TESTS_AND_VALIDATION.md](09_TESTS_AND_VALIDATION.md) | 96 raiz, 62 bot, SQL/CI e limites |
 | [10_SECURITY_AND_PERFORMANCE.md](10_SECURITY_AND_PERFORMANCE.md) | Auth, custos e restrição de Log Ingestion |
 | [11_PENDING_WORK.md](11_PENDING_WORK.md) | Pendências reais; aplicação antiga de migrations encerrada |
 | [12_SESSION_HANDOFF.md](12_SESSION_HANDOFF.md) | Checkpoint atual e próxima ação |
 | [13_MIGRATION_AUDIT.md](13_MIGRATION_AUDIT.md) | Mapeamento completo local/remoto e verificação de produção |
 | [14_FRONTEND_AND_MENTIONS_PLAN.md](14_FRONTEND_AND_MENTIONS_PLAN.md) | P-25/P-26 implementados: fila de prévias + @all nativo; validação e limites |
+| [15_DEADLINE_BACKUP_AND_RECOVERY.md](15_DEADLINE_BACKUP_AND_RECOVERY.md) | Bot 0.2.7: horário comum, resultados de 15s, backup Gzip e evidência real |
 
 O número 07 foi retirado com o reconhecimento de cartas; não é documento faltante a recriar.
 
 ## Atenções para o próximo trabalho
 
-Riscos identificados, ainda sem correção autorizada nesta sessão: retenção 12h remove pós-venda pendente; backup do dia não prova cobertura de todas as exclusões; anúncio final sem nova tentativa persistente; janela de concorrência da abertura; limites de snapshots e diagnóstico doctor incompleto. Ver backlog.
+Riscos identificados, ainda sem correção autorizada nesta sessão: retenção 12h remove pós-venda pendente; backup do dia não prova cobertura de todas as exclusões; janela de concorrência da abertura; limites de snapshots e diagnóstico doctor incompleto. Ver backlog.
 
 P-25/P-26 implementados: seleção de até 200 fotos com duas prévias simultâneas e progresso; bot 0.2.6 envia @all nativo com verificação de permissão e fallback explícito. Validação atual: typecheck, 83 testes raiz, 56 bot, check 41 e build aprovados; navegador isolado com 200 fotos sintéticas. Documento 14 contém limites e evidência.
 

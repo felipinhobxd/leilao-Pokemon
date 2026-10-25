@@ -176,3 +176,12 @@ Log Ingestion mostrado no painel em 2026-10-25: 0,86/1 GB. Não iniciar/reinicia
 ## Correções do bot 0.2.6 — @all nativo
 
 A abertura agora envia `mentionAll: true`, com validação de administrador para grupos acima de 32 participantes. Sem permissão ou metadata confiável, o bot envia aviso simples sem @all e explica no log. Não concede admin automaticamente. Atualize/reinicie o processo na janela operacional adequada para carregar a versão nova; arquivos atualizados não mudam um processo Node já aberto. Não se garante alerta sonoro a quem silenciou @all.
+
+
+## Bot 0.2.7 — encerramento comum e recuperação
+
+- Novo finalizador por lote e outbox whatsapp_auction_notices: fecha no prazo do banco e entrega resultados espaçados por pelo menos 15s/grupo, com locks, retry e messageId estável.
+- Após publicação completa de uma fila com ends_at, resumo com @all nativo e horário de Brasília. Falha de metadata/permissão mantém o aviso pendente; não informa sucesso sem a menção solicitada.
+- Supabase: fetch com timeout real e circuito de recuperação para fundo; erros HTML resumidos e repetidos no máximo uma vez por minuto/escopo. RPCs de lance e resolução do participante não são bloqueados apenas porque um heartbeat falhou. Sem replay automático de escritas.
+- Backup: snapshot consistente, leitura em blocos de 262144 caracteres, compressão Gzip nas cópias da nuvem. O JSON no disco local continua normal. Guard da limpeza reconhece .json e .json.gz. A política diária/retentiva e a questão de cobertura temporal P-19 permanecem.
+- É preciso carregar a nova versão do supervisor e do processo filho; a API bloqueia novo horário comum enquanto o worker mais recente ainda informa versão anterior a 0.2.7. Não iniciar um segundo bot sobre a mesma sessão. Nenhum envio WhatsApp de teste foi feito nesta implementação.

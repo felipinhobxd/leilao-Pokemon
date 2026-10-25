@@ -7,6 +7,8 @@ import readline from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createClient } from "@supabase/supabase-js";
 import { describeError } from "./error-log.mjs";
+import { createSupabaseFetch, createErrorReporter } from "./supabase-resilience.mjs";
+const reportServiceError=createErrorReporter();
 import { WebSocket } from "ws";
 import { BACKUP_BUCKET, runBusinessBackup } from "./backup.mjs";
 
@@ -37,6 +39,7 @@ if (!globalThis.WebSocket) globalThis.WebSocket = WebSocket;
 
 const db = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
+  global:{fetch:createSupabaseFetch()},
 });
 
 async function ensureBotAdminUserId() {
@@ -119,16 +122,8 @@ async function publishState(patch = {}) {
     runtime.sessionActive = session.sessionActive;
     if (session.accountJid) runtime.accountJid = session.accountJid;
     const now = new Date().toISOString();
-    // Guard de 10s (2026-09-30): um upsert do status pode ficAR pendurado
-    // num Supabase degradado (statement timeout). Sem o race, publishBusy
-    // travava para sempre e o site mostrava "desconectado" mesmo com o bot
-    // no ar — o heartbeat nunca mais atualizava a linha do worker.
-    const timeout = new Promise(resolve => {
-      const timer = setTimeout(() => resolve({ error: new Error("timeout de 10s ao publicar status (Supabase sem responder)") }), 10_000);
-      timer.unref?.();
-    });
-    const { error } = await Promise.race([
-      db.from("whatsapp_bot_workers").upsert({
+    // Cancel the actual HTTP request after 10s; do not leave timed-out writes in flight.
+    const { error } = await db.from("whatsapp_bot_workers").upsert({
       worker_id: WORKER_ID,
       status: runtime.status,
       heartbeat_at: now,
@@ -142,12 +137,10 @@ async function publishState(patch = {}) {
       version: BOT_VERSION,
       session_active: runtime.sessionActive,
       updated_at: now,
-      }, { onConflict: "worker_id" }),
-      timeout,
-    ]);
-    if (error) console.error("Falha ao publicar status do bot:", describeError(error));
+      }, { onConflict: "worker_id" }).abortSignal(AbortSignal.timeout(10_000));
+    if (error) reportServiceError("Falha ao publicar status do bot", error);
   } catch (error) {
-    console.error("Falha ao publicar status do bot:", describeError(error));
+    reportServiceError("Falha ao publicar status do bot", error);
   } finally {
     publishBusy = false;
   }
@@ -601,7 +594,7 @@ async function pollBotCommands() {  if (commandBusy || shuttingDown) return;
       console.error("Falha no comando do bot:", describeError(error));
     }
   } catch (error) {
-    console.error("Falha ao consultar comandos do bot:", describeError(error));
+    reportServiceError("Falha ao consultar comandos do bot", error);
   } finally {
     commandBusy = false;
   }

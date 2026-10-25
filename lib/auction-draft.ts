@@ -44,6 +44,8 @@ export type AuctionDraftState = {
   intervalUnit: "seconds" | "minutes";
   publication: "now" | "scheduled";
   scheduledInput: string;
+  endMode?: "common" | "duration";
+  commonEndInput?: string;
   cards: AuctionDraftCard[];
 };
 
@@ -122,6 +124,8 @@ export function buildDraftState(input: {
   intervalUnit: string;
   publication: string;
   scheduledInput: string;
+  endMode?: string;
+  commonEndInput?: string;
   cards: readonly AuctionDraftCardSource[];
 }): AuctionDraftState {
   if (!Array.isArray(input.cards) || !input.cards.length) throw new Error("Adicione pelo menos uma carta antes de salvar o rascunho.");
@@ -135,6 +139,7 @@ export function buildDraftState(input: {
     intervalUnit: input.intervalUnit === "minutes" ? "minutes" : "seconds",
     publication: input.publication === "scheduled" ? "scheduled" : "now",
     scheduledInput: text(input.scheduledInput),
+    ...(input.endMode ? {endMode: input.endMode === "common" ? "common" as const : "duration" as const, commonEndInput: text(input.commonEndInput)} : {}),
     cards: input.cards.map(normalizeDraftCard),
   };
 }
@@ -152,6 +157,7 @@ export function restoreDraftState(raw: unknown): AuctionDraftState {
     intervalUnit: raw.intervalUnit === "minutes" ? "minutes" : "seconds",
     publication: raw.publication === "scheduled" ? "scheduled" : "now",
     scheduledInput: text(raw.scheduledInput),
+    ...(typeof raw.endMode === "string" ? {endMode:raw.endMode,commonEndInput:text(raw.commonEndInput)} : {}),
     cards: raw.cards as AuctionDraftCardSource[],
   });
 }

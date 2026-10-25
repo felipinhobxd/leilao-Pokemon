@@ -78,3 +78,10 @@ Mesmo contrato de valores (`pricingMode` custom/increment) para 1 carta; cria le
 Botão “Excluir leilões encerrados” no topo do painel, visível apenas ao admin. Modal nativo exige `excluir leilões encerrados` e depois `quero excluir os encerrados`; alterar a primeira frase apaga a segunda. Cancelar/reabrir zera os campos. Bloqueia confirmação/cancelamento durante envio, mostra erros dentro do modal e atualiza o painel com a quantidade excluída. O mesmo eventId é mantido em tentativas no modal aberto; API/RPC validam ambas as frases. Não depende da lista visível ou do limite de 500 do snapshot.
 
 Escopo explicado antes da confirmação: vendidos, sem vencedor e cancelados, incluindo compras/pagamentos/entregas pendentes; preserva abertos, rascunhos/agendados e em revisão. Mantém participantes/avisos globais, sessão WhatsApp e numeração dos lotes. Imagens do Storage não são apagadas por esta ação, pois podem ter outras referências.
+
+
+## Horário comum e download — 0.2.7
+
+Novo cadastro inicia em horário comum, próxima 1h de Brasília, com data explícita. Etapa Publicação permite alternar para duração individual. No modo comum, os campos de minutos são ocultos; revisão mostra a data/hora final e edições pendentes preservam o prazo da fila. Rascunhos antigos restauram duração individual. API exige bot atualizado; não criar fila comum usando worker antigo.
+
+Backup exibe preparo, recebe link privado e inicia download .json.gz diretamente do Storage; sem blob de dezenas de MB passando pela resposta da Vercel. Erros não JSON e indisponibilidade geram aviso curto, sem baixar arquivo falso.

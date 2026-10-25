@@ -194,16 +194,16 @@ export default function Dashboard() {
   // Backup completo em JSON (mesma fonte da cópia diária automática do bot):
   // o download exige Authorization, então é fetch+blob e não um <a> direto.
   async function downloadBackup() {
-    setBusy(true); setError("");
+    setBusy(true); setError(""); setNotice("Preparando o backup. Aguarde a geração do link privado…");
     try {
-      const response = await request("/api/admin/backup"); if (!response.ok) throw new Error((await response.json()).error);
-      const blob = await response.blob();
-      const now = new Date(); const pad = (v: number) => String(v).padStart(2, "0");
-      const url = URL.createObjectURL(blob); const a = document.createElement("a");
-      a.href = url; a.download = `leilao-backup-${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.json`; a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      setNotice("Backup completo baixado em JSON.");
-    } catch (e) { setError(e instanceof Error ? e.message : "Falha no backup."); } finally { setBusy(false); }
+      const response = await request("/api/admin/backup");
+      const body = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(body?.error ?? "O serviço de backup não respondeu. Tente novamente em alguns instantes.");
+      if (!body?.downloadUrl || !/^https:\/\//.test(body.downloadUrl)) throw new Error("O link do backup não foi gerado.");
+      const a = document.createElement("a"); a.href = body.downloadUrl; a.download = body.filename; a.rel = "noreferrer";
+      document.body.appendChild(a); a.click(); a.remove();
+      setNotice("Download do backup iniciado. O link privado expira em dois minutos.");
+    } catch (e) { setNotice(""); setError(e instanceof Error ? e.message : "Falha no backup."); } finally { setBusy(false); }
   }
   async function purgeEverything() {
     if (mutationLock.current) return;

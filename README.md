@@ -195,3 +195,14 @@ Em 2026-10-25 o painel Supabase mostrou Log Ingestion 0,88/1 GB. Priorize consul
 Administradores têm o botão **Excluir leilões encerrados** no painel. É preciso digitar duas confirmações: **excluir leilões encerrados** e **quero excluir os encerrados**. Apaga todos os vendidos, encerrados sem vencedor e cancelados, com lances, compras, pagamentos e entregas vinculados (inclusive pendentes). Leilões abertos, rascunhos/agendados e em revisão permanecem. A ação é definitiva; participantes, sessão WhatsApp e numeração de lotes são mantidos.
 
 Migration 20261025055529 instalada em produção e versionada; agora são 61 arquivos locais e 69 registros no histórico remoto. A implementação não executou exclusões reais. Testes SQL são feitos em banco descartável.
+
+
+## Horário comum, resultados e backup — bot 0.2.7
+
+Na etapa Publicação do cadastro em lote, escolha **Mesmo horário para todas as cartas** e a data/hora de Brasília (padrão: próxima 1h da manhã). O prazo deve ser depois da última publicação e em até sete dias do início. Cartas antigas e rascunhos antigos mantêm o modo de duração individual. É necessário reabrir o bot atualizado antes de criar uma fila com horário comum.
+
+Após a última carta/brinde ser publicada com sucesso, o bot envia @all nativo e “LEILÃO FINALIZADO! LANCES VÁLIDOS ATÉ [horário escolhido]!”. Os lances encerram juntos; os resultados são entregues com intervalo mínimo de 15s por grupo. Avisos pendentes ficam no banco para nova tentativa após falhas/reinício. @all exige permissão de administrador em grupos com mais de 32 membros.
+
+**Baixar backup** gera uma cópia consistente, transfere blocos menores e entrega um link privado com validade de dois minutos. O arquivo é JSON compactado (.json.gz); extraia-o para ler o JSON. Mantém-se uma cópia manual por administrador. O bot também envia cópias compactadas para a nuvem e mantém JSON normal no PC. Há limites históricos de rascunhos/quick polls e retenção de sete dias da auditoria/cache; imagens/sessão não estão incluídas. Detalhes em docs/agent/15_DEADLINE_BACKUP_AND_RECOVERY.md.
+
+Os erros 521/522 indicam indisponibilidade do endereço Supabase. O código usa timeout real, pausa progressiva em consultas de fundo e logs resumidos; isso não garante disponibilidade do provedor. Comandos reais de lance/participante mantêm sua própria tentativa, sem replay automático de escritas.

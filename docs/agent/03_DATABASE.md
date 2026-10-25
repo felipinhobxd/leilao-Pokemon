@@ -124,3 +124,12 @@ Toda tabela de negócio: `enable row level security` + `revoke from public,anon,
 - Auditoria/cache exportados só nos últimos sete dias; quick polls limitadas a 500 e rascunhos a 50. Demais tabelas exportadas pelo corpo atual sem aqueles LIMITs. JSON não inclui bytes de imagens nem sessão Baileys.
 - `cleanup_old_auctions` atual: `(integer, integer)` defaults 12h/7d; registrado remotamente como `20261009001546`. Não executar para conferir: ler catálogo.
 - Atenção: a seleção de limpeza não preserva compra não paga/entrega pendente; o guard verifica arquivo do dia, não cobertura temporal. São pendências separadas da aplicação de migrations.
+
+
+## 2026-10-25 — prazo comum e backup escalável
+
+Migrations 20261025062419, 20261025065040, 20261025065722 e 20261025070438 instaladas e registradas. Queue.ends_at é opcional. create_auction_queue_with_deadline reutiliza o criador existente; trigger preserva prazo absoluto ao publicar/retomar/editar. finalize_due_auction_batch encerra até 200 devidos e insere outbox transacional; claim/finish persistem espaçamento de 15s por grupo e tentativas.
+
+whatsapp_auction_notices tem FKs CASCADE para fila/leilão; guarda resumo/resultados até exclusão dos pais. business_backup_exports e business_backup_export_chunks são estado temporário do snapshot, com RLS e acesso exclusivo service_role; não integram o próprio backup. prepare_business_backup tem timeout 55s/work_mem 32MB; read_business_backup_chunk, 15s. Payload é dividido no banco em linhas para evitar descompactar repetidamente um único TOAST gigante. Discard elimina snapshot/blocos após leitura; sob falha, a próxima preparação pode recolher sobras após cinco minutos. Há uma preparação de cada vez.
+
+export_business_backup_text preserva tabelas/filtros do export original com agregação JSON textual. A cópia do snapshot é uma transação; leitura posterior dos blocos usa o material imutável, não tabelas vivas. Cleanup continua exigindo cópia do dia, agora aceita .json.gz também. Não executar cleanup para verificar produção. Documento 15 contém contratos e testes.

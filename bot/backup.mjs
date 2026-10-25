@@ -12,6 +12,7 @@
 import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readBusinessBackup, compressBusinessBackup } from "../lib/business-backup.mjs";
 
 const here = join(fileURLToPath(new URL(".", import.meta.url)));
 export const BACKUPS_DIR = join(here, "backups");
@@ -25,25 +26,24 @@ export async function uploadBackupToCloud(db, payload, now = new Date()) {
   }
   const pad = value => String(value).padStart(2, "0");
   const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
+  const compressed = await compressBusinessBackup(payload);
   const { error } = await db.storage
     .from(BACKUP_BUCKET)
-    .upload(`backups/backup-${stamp}.json`, Buffer.from(payload, "utf8"), { contentType: "application/json", upsert: true });
+    .upload(`backups/backup-${stamp}.json.gz`, compressed, { contentType: "application/gzip", upsert: true });
   if (error) throw new Error(error.message);
   // Retenção na nuvem: mantém os N mais recentes (padrão 7 — ponto de
   // recuperação externo semanal; o disco continua guardando 30).
   const keep = Math.max(1, Number(process.env.BOT_BACKUP_CLOUD_KEEP || 7));
   const { data: listed } = await db.storage.from(BACKUP_BUCKET).list("backups", { limit: 100, sortBy: { column: "name", order: "desc" } });
   for (const stale of (listed ?? []).slice(keep)) {
-    if (!/^backup-\d{8}-\d{4}\.json$/.test(String(stale.name))) continue;
+    if (!/^backup-\d{8}-\d{4}\.json(?:\.gz)?$/.test(String(stale.name))) continue;
     await db.storage.from(BACKUP_BUCKET).remove([`backups/${stale.name}`]);
   }
-  return `backups/backup-${stamp}.json`;
+  return `backups/backup-${stamp}.json.gz`;
 }
 
 export async function runBusinessBackup(db, now = new Date()) {
-  const { data, error } = await db.rpc("export_business_backup");
-  if (error) throw new Error(error.message);
-  const payload = JSON.stringify({ exported_at: now.toISOString(), tables: data ?? {} }, null, 1);
+  const { payload } = await readBusinessBackup(db);
   const pad = value => String(value).padStart(2, "0");
   const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
   mkdirSync(BACKUPS_DIR, { recursive: true });

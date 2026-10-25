@@ -88,6 +88,13 @@ jobs:
         run: |
           npx playwright install --with-deps chromium
           npm run test:browser
+      - name: Preserve browser failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-failure-diagnostics
+          path: test-results/
+          retention-days: 3
       - name: Build
         run: npm run build
       - name: Authenticated route guards

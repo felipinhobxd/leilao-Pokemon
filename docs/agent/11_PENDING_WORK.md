@@ -76,3 +76,7 @@ P-18/P-19/P-21/P-22/P-23/P-24 continuam conforme decisões anteriores; não ampl
 ## P-32 — Saúde da operação e revisão UI/UX (concluído)
 
 Autorizado pelo operador: diagnóstico no painel, recuperação segura de avisos, visual/acessibilidade. Implementado em 0.2.8, migration instalada, testes e evidência em documento 16. Sem polling novo, retry automático de cartas, mudança na retenção ou execução de exclusões/mensagens reais. Teste automático de acessibilidade não certifica todos os estados dinâmicos ou uso por leitor de tela real.
+
+## P-33 — Quiz e brindes com vencedor (concluído)
+
+Uma correta configurável, Quiz separado na área e no lote, primeiro acerto confirmado imutável, anúncio durável com nome/prêmio/menção. Migration instalada, bot 0.2.9, rascunhos e APIs atualizados. Documento 17 registra testes e limites de ordem de chegada. Legados publicados não convertidos; sem prêmio ou mensagem real durante a implementação.

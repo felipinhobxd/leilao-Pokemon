@@ -27,6 +27,9 @@ export type AuctionDraftCard = {
   // "quem clicar primeiro leva"); opções livres pré-preenchidas e editáveis.
   giveaway: boolean;
   giveawayOptions: string;
+  giveawayKind?: "quiz" | "giveaway";
+  giveawayCorrectIndex?: string;
+  giveawayQuestion?: string;
   lotNumber: string;
   startingPrice: string;
   increment: string;
@@ -85,6 +88,9 @@ export function normalizeDraftCard(raw: unknown): AuctionDraftCard {
     customBuyoutLast: raw.customBuyoutLast !== false,
     giveaway: raw.giveaway === true,
     giveawayOptions: text(raw.giveawayOptions, GIVEAWAY_DEFAULT_OPTIONS),
+    giveawayKind: raw.giveawayKind === "quiz" ? "quiz" : "giveaway",
+    giveawayCorrectIndex: typeof raw.giveawayCorrectIndex === "string" ? raw.giveawayCorrectIndex : "",
+    giveawayQuestion: text(raw.giveawayQuestion),
     lotNumber: text(raw.lotNumber, "1"),
     startingPrice: text(raw.startingPrice),
     increment: text(raw.increment),
@@ -108,6 +114,9 @@ export type AuctionDraftCardSource = {
   customBuyoutLast: boolean;
   giveaway: boolean;
   giveawayOptions: string;
+  giveawayKind?: "quiz" | "giveaway";
+  giveawayCorrectIndex?: string;
+  giveawayQuestion?: string;
   lotNumber: string;
   startingPrice: string;
   increment: string;

@@ -36,3 +36,10 @@ test('mention permission failure records a diagnostic and releases the claim eve
   const drain=createAuctionNoticeDrain({db,getSocket:()=>socket,workerId:'w',resolveJid:async()=>null,report:()=>{}});
   assert.equal(await drain.tick(),0);assert.match(recorded[0].last_error,/@all/);assert.deepEqual(finished,[false]);
 });
+
+test('quiz prize announcement includes the winner name, prize and actual mention before marking delivery',async()=>{
+ const sends=[],acks=[];const row={id:'prize',kind:'quick_poll_winner',group_jid:'g@g.us',payload:{winner_participant_id:'person',winner_name:'Maria',prize_name:'Pikachu ex'}};
+ const db={async rpc(name,args){if(name==='claim_auction_notice')return {data:row};acks.push(args);return {};}};
+ const drain=createAuctionNoticeDrain({db,getSocket:()=>({async sendMessage(_,payload){sends.push(payload);return {key:{id:'sent'}}}}),workerId:'w',resolveJid:async()=>'5511999999999@s.whatsapp.net',schedule:()=>({unref(){}}),report:()=>{}});
+ assert.equal(await drain.tick(),1);assert.match(sends[0].text,/Parabéns, Maria, você acertou e ganhou Pikachu ex!/);assert.deepEqual(sends[0].mentions,['5511999999999@s.whatsapp.net']);assert.equal(acks[0].p_success,true);
+});

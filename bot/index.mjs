@@ -16,6 +16,7 @@ import { describeVoteReceived } from "./vote-log.mjs";
 import { describeError } from "./error-log.mjs";
 import { createSupabaseFetch, createErrorReporter } from "./supabase-resilience.mjs";
 import { createAuctionNoticeDrain } from "./auction-notices.mjs";
+import { handleGameVote } from './poll-game.mjs';
 const reportServiceError = createErrorReporter();
 import { isLidJid, isPhoneJid, normalizeUserJid } from "./poll-identities.mjs";
 import { decryptIncomingPollVote, unwrapMessageContent } from "./poll-votes.mjs";
@@ -301,8 +302,10 @@ async function getStoredPollMessage(key) {
   if (error) throw new Error(error.message);
   if (data?.poll_message_json) return reviveStoredMessage(data.poll_message_json);
   const remote = await db.from("whatsapp_dispatches").select("poll_message_json").eq("poll_remote_message_id", key.id).maybeSingle();
-  if (remote.error || !remote.data?.poll_message_json) return undefined;
-  return reviveStoredMessage(remote.data.poll_message_json);
+  if(remote.error)throw new Error(remote.error.message);
+  if(remote.data?.poll_message_json)return reviveStoredMessage(remote.data.poll_message_json);
+  const game=await db.from('whatsapp_quick_polls').select('poll_message_json').eq('poll_message_id',key.id).maybeSingle();
+  return game.data?.poll_message_json?reviveStoredMessage(game.data.poll_message_json):undefined;
 }
 
 async function processCommand(command) {
@@ -823,13 +826,22 @@ async function handlePollVote(dispatch, pollUpdate, originalMessageOverride) {
 
 async function loadDispatchForPoll(pollMessageId) {
   const cached = pollMessageCache.get(pollMessageId);
+  if(cached?.ready && cached.gamePoll)return {gamePoll:cached.gamePoll,cached};
   if (cached?.ready && cached.dispatch) return { dispatch: cached.dispatch, cached };
   const primary = await db.from("whatsapp_dispatches").select("*").eq("poll_message_id", pollMessageId).maybeSingle();
   if (primary.error) throw new Error(primary.error.message);
   if (primary.data) return { dispatch: primary.data, cached };
   const remote = await db.from("whatsapp_dispatches").select("*").eq("poll_remote_message_id", pollMessageId).maybeSingle();
   if (remote.error) throw new Error(remote.error.message);
-  return { dispatch: remote.data ?? null, cached };
+  if(remote.data)return {dispatch:remote.data,cached};
+  const game=await db.from('whatsapp_quick_polls').select('id,game_kind,options,correct_index,poll_message_json,winner_event_id,group:whatsapp_groups(group_jid)').eq('poll_message_id',pollMessageId).maybeSingle();
+  if(game.error)throw new Error(game.error.message);
+  if(game.data){
+    pollMessageCache.set(pollMessageId,{gamePoll:game.data,message:game.data.poll_message_json?reviveStoredMessage(game.data.poll_message_json):null,ready:true});
+    while(pollMessageCache.size>200)pollMessageCache.delete(pollMessageCache.keys().next().value);
+    return {gamePoll:game.data,cached:pollMessageCache.get(pollMessageId)};
+  }
+  return {dispatch:null,cached};
 }
 
 async function processIncomingPollMessage(message, contentOverride) {
@@ -849,7 +861,22 @@ async function processIncomingPollMessage(message, contentOverride) {
     return;
   }
 
+  if(!cached && unknownPollWarned.has(pollMessageId))return;
+
   const loaded = await loadDispatchForPoll(pollMessageId);
+  if(loaded.gamePoll){
+    const poll=loaded.gamePoll;
+    if(poll.game_kind==='legacy'||poll.winner_event_id)return;
+    const group=Array.isArray(poll.group)?poll.group[0]:poll.group;
+    if(String(message?.key?.remoteJid)!==group?.group_jid)return;
+    const original=loaded.cached?.message || (poll.poll_message_json?reviveStoredMessage(poll.poll_message_json):null);
+    if(!original)return;
+    try {
+      const decrypted=await decryptIncomingPollVote({sock,message,content,pollMessage:original,pollKey:loaded.cached?.key??creationKey});
+      if(decrypted && await handleGameVote({db,poll,pollUpdate:decrypted.pollUpdate,resolveIdentity:resolveVoterIdentity,ensureParticipant,eventTime}))auctionNoticeDrain.wake();
+    }catch(error){reportServiceError('Quiz/brinde: falha ao processar voto',error);}
+    return;
+  }
   const dispatch = loaded.dispatch;
   if (!dispatch?.poll_message_json && !loaded.cached?.message) {
     // Loga UMA vez por enquete por sessão (Set limitado): cada voto de cada
@@ -1034,7 +1061,7 @@ async function sendDueQuickPolls() {
   try {
     const nowIso = new Date().toISOString();
     const { data: pending, error } = await db.from("whatsapp_quick_polls")
-      .select("id,group_id,title,options,image_url,scheduled_at,queue:auction_publish_queues(status)")
+      .select("id,group_id,title,options,image_url,scheduled_at,game_kind,correct_index,prize_name,winner_event_id,queue:auction_publish_queues(status)")
       .is("sent_at", null)
       .lte("scheduled_at", nowIso)
       .order("scheduled_at", { ascending: true })
@@ -1059,16 +1086,33 @@ async function sendDueQuickPolls() {
       // com messageId estável — crash no meio reenvia imagem+enquete (o
       // WhatsApp deduplica os messageIds), igual ao fluxo de dispatches.
       if (typeof poll.image_url === "string" && /^https:\/\//.test(poll.image_url)) {
-        const announcement = await sock.sendMessage(group.group_jid, { image: { url: poll.image_url }, caption: String(poll.title) }, { messageId: dispatchMessageId(poll.id, "quick-announce") });
+        const announcement = await sock.sendMessage(group.group_jid, { image: { url: poll.image_url }, caption: poll.game_kind === "quiz" ? `🧩 Quiz · ${poll.prize_name}\n\n${poll.title}` : String(poll.title) }, { messageId: dispatchMessageId(poll.id, "quick-announce") });
         if (!announcement?.key?.id) throw new Error("quick_poll_announcement_send_failed");
+      } else if(poll.game_kind==='quiz') {
+        const introduction=await sock.sendMessage(group.group_jid,{text:`🧩 Quiz · Prêmio: ${poll.prize_name}`},{messageId:dispatchMessageId(poll.id,'quick-announce')});
+        if(!introduction?.key?.id)throw new Error('quick_poll_announcement_send_failed');
       }
+      const stableId=dispatchMessageId(poll.id,'quick-poll');
+      if(poll.game_kind!=='legacy')pollMessageCache.set(stableId,{gamePoll:poll,ready:false});
       const message = await sock.sendMessage(group.group_jid, {
         poll: { name: String(poll.title), values, selectableCount: 1, messageSecret: dispatchPollSecret(`quick-${poll.id}`) },
       }, { messageId: dispatchMessageId(poll.id, "quick-poll") });
-      if (!message?.key?.id) throw new Error("quick_poll_send_failed");
-      await db.from("whatsapp_quick_polls")
-        .update({ sent_at: new Date().toISOString(), poll_message_id: String(message.key.id) })
+      if (!message?.key?.id || poll.game_kind!=='legacy' && !message.message) throw new Error("quick_poll_send_failed");
+      const {error:recordError}=await db.from("whatsapp_quick_polls")
+        .update({ sent_at: new Date().toISOString(), poll_message_id: String(message.key.id),...(poll.game_kind!=='legacy'?{poll_message_json:serializeMessage(message.message)}:{}) })
         .eq("id", poll.id);
+      if(recordError)throw new Error(recordError.message);
+      if(poll.game_kind!=='legacy'){
+        const entry={gamePoll:{...poll,group:{group_jid:group.group_jid}},key:message.key,message:message.message,ready:false};
+        pollMessageCache.set(stableId,entry);pollMessageCache.set(String(message.key.id),entry);
+        while(pollMessageCache.size>200){const oldest=[...pollMessageCache.keys()].find(id=>pollMessageCache.get(id)?.ready);if(!oldest)break;pollMessageCache.delete(oldest);}
+        voteQueue=voteQueue.catch(error=>reportServiceError('Quiz/brinde: fila de votos',error)).then(async()=>{
+          entry.ready=true;
+          await drainPendingPollVotes(stableId);
+          if(message.key.id!==stableId)await drainPendingPollVotes(String(message.key.id));
+        });
+        await voteQueue;
+      }
       auctionNoticeDrain.wake();
       console.log(`🎁 Brinde publicado: "${poll.title}" (${values.length} opções).`);
     }

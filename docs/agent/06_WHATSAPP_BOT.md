@@ -99,3 +99,7 @@
 ## Telemetria 0.2.8
 
 `operation-health.mjs` mantém estado limitado e restaurado do worker. `createSupabaseFetch.onHealth` informa falha/recuperação ao supervisor. Backup diário e antes da limpeza publicam estado; nenhuma mudança de retenção. Abertura transmite motivo de @all ao supervisor por marcador stdout, sem chamada extra ao banco; o heartbeat existente o publica apenas quando mudou. Outbox persiste last_error sob o lock e libera claim mesmo se gravar diagnóstico falhar. Nenhuma nova mensagem de teste foi enviada; reinício operacional do bot continua necessário.
+
+## Apuração de jogos — 0.2.9
+
+Votos de quick polls configurados são descriptografados como leilões. Hash da única opção selecionada é comparado localmente; errados/retirada/múltiplos não disputam e não geram auditoria. Certo resolve identidade e usa claim_quick_poll_prize (lock/resultado/outbox/evento atômicos). Mensagem/chave persistidas, pendências liberadas pela fila serial após publicação; cache limitado. Outbox anuncia nome/carta com menção. Primeiro confirmado ganha permanentemente; legacy não converte. Reabrir bot atualizado. Documento 17.

@@ -210,3 +210,7 @@ Os erros 521/522 indicam indisponibilidade do endereço Supabase. O código usa 
 ## Painel e recuperação — 0.2.8
 
 Navegação compartilhada, temas claro/escuro/sistema, buscas locais, tabelas acessíveis e layout para celular. A área **Saúde da operação** consulta o bot, backups automáticos, avisos pendentes e falhas de publicação somente ao clicar. **Tentar novamente** libera apenas avisos ainda pendentes e sem remetente ativo; nunca republica cartas automaticamente. Reabra o bot atualizado para registrar falhas de backup, recuperação do Supabase e problemas de @all. [Detalhes e validação](docs/agent/16_OPERATION_HEALTH_AND_UI.md).
+
+## Quiz e brindes com vencedor — 0.2.9
+
+Na área **Brindes e Quiz**, escolha o tipo, a carta/prêmio, opções e a única resposta correta. Quiz também pede a pergunta. No lote, use **Brinde** ou **Quiz** na carta e configure em Valores. O primeiro acerto confirmado ganha; o bot anuncia o nome e a carta e registra o resultado sem cobrança. Respostas ficam privadas, vencedor não muda após troca/retirada. Reabra o bot 0.2.9 antes de criar jogos. [Fluxo e validação](docs/agent/17_QUIZ_AND_GIVEAWAY_PRIZES.md).

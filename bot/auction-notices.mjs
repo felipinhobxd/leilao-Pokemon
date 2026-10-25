@@ -3,6 +3,7 @@ import { openingMentionPermission } from './announce-sticker.mjs';
 import { mentionMessage } from './participant-contact.mjs';
 import { createErrorReporter } from './supabase-resilience.mjs';
 import { describeError } from './error-log.mjs';
+import { prizeWinnerText } from './poll-game.mjs';
 
 export function finishedQueueText(endsAt, collective=true, now=null) {
   const parts=new Intl.DateTimeFormat('pt-BR',{timeZone:'America/Sao_Paulo',hour:'numeric',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(endsAt));
@@ -35,6 +36,11 @@ export function createAuctionNoticeDrain({db,getSocket,workerId,resolveJid,now=D
           catch{throw new Error('Não foi possível validar a permissão de @all. O aviso será tentado novamente.');}
           if(!permission.allowed)throw new Error(permission.reason);
           payload={text:finishedQueueText(notice.payload.ends_at,true,now()),mentionAll:true};
+        }else if(notice.kind==='quick_poll_winner'){
+          const row=notice.payload;
+          const jid=await resolveJid(row.winner_participant_id);
+          const winner=mentionMessage(row.winner_name??'Participante',row.winner_participant_id,jid,who=>who);
+          payload={text:prizeWinnerText(row.winner_name??'Participante',row.prize_name??'a carta')+(jid?`\n\n${winner.text}`:''),mentions:winner.mentions};
         }else{
           const row=notice.payload;
           if(row.winner_participant_id){

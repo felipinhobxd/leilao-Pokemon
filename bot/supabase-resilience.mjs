@@ -8,7 +8,7 @@ export function createSupabaseFetch({ fetchImpl = globalThis.fetch, now = Date.n
     const url = String(typeof input === 'string' || input instanceof URL ? input : input.url);
     // A real bid/participant command must still get its own attempt even if
     // a background status request failed. Never replay it automatically.
-    const essential = /\/rpc\/(process_auction_command|resolve_whatsapp_participant|prepare_business_backup|read_business_backup_chunk|discard_business_backup)(?:\?|$)/.test(url);
+    const essential = /\/rpc\/(process_auction_command|claim_quick_poll_prize|resolve_whatsapp_participant|prepare_business_backup|read_business_backup_chunk|discard_business_backup)(?:\?|$)/.test(url);
     if (!essential && (now() < nextAttempt || probing)) throw new Error('Supabase temporariamente indisponível; aguardando reconexão.');
     const isProbe = failures > 0 && !essential;
     if (isProbe) probing = true;

@@ -12,7 +12,7 @@ async function readQueue(db: Awaited<ReturnType<typeof authorize>>["db"], queueI
   const [{ data: group, error: groupError }, { data: dispatches, error: dispatchError }, { data: quickPolls, error: pollsError }] = await Promise.all([
     db.from("whatsapp_groups").select("id,name,group_jid").eq("id", queue.group_id).maybeSingle(),
     db.from("whatsapp_dispatches").select("id,auction_id,status,scheduled_at,sent_at,attempts,last_error,queue_position,announcement_sent_at,poll_sent_at,duration_seconds,poll_options").eq("queue_id", queueId).order("queue_position"),
-    db.from("whatsapp_quick_polls").select("id,title,image_url,scheduled_at,sent_at,poll_message_id,queue_position").eq("queue_id", queueId).order("queue_position"),
+    db.from("whatsapp_quick_polls").select("id,title,image_url,scheduled_at,sent_at,poll_message_id,queue_position,game_kind,prize_name,winner_name,won_at").eq("queue_id", queueId).order("queue_position"),
   ]);
   if (groupError || dispatchError || pollsError) throw new Error("queue_read_failed");
 

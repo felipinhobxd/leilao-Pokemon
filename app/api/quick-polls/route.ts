@@ -1,3 +1,4 @@
+import {parsePollGame,requireGameBot} from "@/lib/poll-game";
 import { authorize, failure, HttpError } from "@/lib/backend";
 
 // P-07 — Brinde rápido: enquete livre (texto/emoji) criada no painel e
@@ -12,7 +13,7 @@ export async function GET(request: Request) {
   try {
     const { db } = await authorize(request, false);
     const { data, error } = await db.from("whatsapp_quick_polls")
-      .select("id,group_id,title,options,scheduled_at,sent_at,poll_message_id,created_at")
+      .select("id,group_id,title,options,scheduled_at,sent_at,poll_message_id,created_at,game_kind,prize_name,winner_name,won_at")
       .order("created_at", { ascending: false })
       .limit(20);
     if (error) throw new Error("quick_polls_read_failed");
@@ -24,47 +25,24 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const { db, user } = await authorize(request, true);
-    if (!request.headers.get("content-type")?.includes("application/json")) throw new HttpError(415, "Envie JSON.");
-    const body = await request.json() as Record<string, unknown>;
-    const eventId = String(body.eventId ?? "").trim();
-    if (eventId.length < 1 || eventId.length > 200) throw new HttpError(400, "Evento inválido.");
-    const groupId = String(body.groupId ?? "");
-    if (!uuid.test(groupId)) throw new HttpError(400, "Selecione o grupo do WhatsApp.");
-    const title = String(body.title ?? "").trim();
-    if (title.length < 1 || title.length > 200) throw new HttpError(400, "O título precisa ter entre 1 e 200 caracteres.");
-    const rawOptions = Array.isArray(body.options) ? body.options : [];
-    const options = rawOptions.map(option => String(option ?? "").trim()).filter(Boolean);
-    if (options.length < 2 || options.length > 12) throw new HttpError(400, "A enquete precisa de 2 a 12 opções.");
-    if (options.some(option => option.length > 100)) throw new HttpError(400, "Cada opção precisa ter até 100 caracteres.");
-    const scheduledAtRaw = String(body.scheduledAt ?? "").trim();
-    const scheduledTime = scheduledAtRaw ? Date.parse(scheduledAtRaw) : Date.now();
-    if (!Number.isFinite(scheduledTime)) throw new HttpError(400, "Horário de publicação inválido.");
-    if (scheduledTime < Date.now() - 120_000) throw new HttpError(400, "O horário de publicação já passou.");
-    const externalEventId = `quick-poll:${eventId}`.slice(0, 200);
-
-    const { data: group } = await db.from("whatsapp_groups").select("id,active").eq("id", groupId).maybeSingle();
-    if (!group?.active) throw new HttpError(409, "O grupo escolhido não está mais disponível.");
-
-    // Idempotência leve pelo evento (unique external_event_id): reenviar o
-    // mesmo eventId devolve a mesma enquete em vez de criar duas.
-    const { data: existing } = await db.from("whatsapp_quick_polls").select("id,scheduled_at,sent_at,title,options").eq("external_event_id", externalEventId).maybeSingle();
-    if (existing) return Response.json({ data: existing }, { headers: { "Cache-Control": "no-store" } });
-
-    const { data: created, error } = await db.from("whatsapp_quick_polls")
-      .insert({
-        group_id: groupId,
-        title,
-        options,
-        scheduled_at: new Date(scheduledTime).toISOString(),
-        external_event_id: externalEventId,
-        created_by: user.id,
-      })
-      .select("id,group_id,title,options,scheduled_at,sent_at")
-      .single();
-    if (error || !created) throw new HttpError(409, "Não foi possível agendar o brinde.");
-    return Response.json({ data: created }, { status: 201, headers: { "Cache-Control": "no-store" } });
-  } catch (error) {
-    return failure(error);
-  }
+    const {db,user}=await authorize(request,true);
+    if (!request.headers.get('content-type')?.includes('application/json')) throw new HttpError(415,'Envie JSON.');
+    const body=await request.json();
+    let game;
+    try { game=parsePollGame({kind:body.kind,options:body.options,correctIndex:body.correctIndex,prizeName:body.prizeName,question:body.title}); }
+    catch(error) { throw new HttpError(400,error instanceof Error?error.message:'Enquete inválida.'); }
+    const title=String(body.title??'').trim(),eventId=String(body.eventId??'').trim(),groupId=String(body.groupId??'');
+    const scheduledAt=body.scheduledAt?String(body.scheduledAt):new Date().toISOString();
+    const imageUrl=String(body.imageUrl??'').trim();
+    if(!title || title.length>200 || !eventId || eventId.length>189 || !uuid.test(groupId) || !Number.isFinite(Date.parse(scheduledAt)) || (imageUrl && (!/^https:\/\//.test(imageUrl)||imageUrl.length>500))) throw new HttpError(400,'Confira título, grupo, imagem e horário da publicação.');
+    if(game.kind!=='legacy')try{await requireGameBot(db);}catch(error){throw new HttpError(409,(error as Error).message);}
+    const {data,error}=await db.rpc('create_quick_poll_game',{p_admin_user_id:user.id,p_payload:{eventId,groupId,title,options:game.options,kind:game.kind,correctIndex:game.correctIndex,prizeName:game.prizeName,scheduledAt,imageUrl}});
+    if(error){
+      if(/event_id_conflict/.test(error.message))throw new HttpError(409,'Esta operação já foi enviada com outros dados.');
+      if(/invalid_poll_game/.test(error.message))throw new HttpError(400,'Confira as opções, a resposta correta, a carta e o horário.');
+      if(/whatsapp_group_unavailable/.test(error.message))throw new HttpError(409,'O grupo não está disponível.');
+      throw new Error('quick_poll_create_failed');
+    }
+    return Response.json({data},{status:201,headers:{'Cache-Control':'private, no-store'}});
+  } catch(error){return failure(error);}
 }

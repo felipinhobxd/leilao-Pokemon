@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 
-const links = [{ href: '/', label: 'Painel' }, { href: '/auctions/new', label: 'Criar leilão' }, { href: '/auctions/brinde', label: 'Brindes' }, { href: '/whatsapp', label: 'WhatsApp' }];
+const links = [{ href: '/', label: 'Painel' }, { href: '/auctions/new', label: 'Criar leilão' }, { href: '/auctions/brinde', label: 'Brindes e Quiz' }, { href: '/whatsapp', label: 'WhatsApp' }];
 type Theme = 'system' | 'light' | 'dark';
 export default function SiteNavigation() {
   const pathname = usePathname();

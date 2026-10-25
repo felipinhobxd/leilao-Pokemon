@@ -333,3 +333,6 @@ dialog::backdrop{background:#030712b8;backdrop-filter:blur(4px)}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*::before,*::after{transition:none!important;animation:none!important}}
 @media(forced-colors:active){.health-tag,.site-links a[aria-current=page],button,.button-link{border:1px solid ButtonText}.site-links a[aria-current=page]{text-decoration:underline}}
 @media(max-width:560px){.stat-card strong{font-size:1.05rem}}
+
+.game-fields{display:grid;gap:14px;padding:18px;margin:10px 0;background:var(--surface-soft)}
+.game-fields .muted{font-size:.85rem;margin-top:0}

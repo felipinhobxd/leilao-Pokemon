@@ -1,6 +1,10 @@
 # SESSION HANDOFF
 
-## Checkpoint atual — UI e saúde da operação (0.2.8)
+## Checkpoint atual — Quiz e brindes (0.2.9)
+
+Operador pediu brinde com uma resposta correta e Quiz separado, avulso e no lote. Implementado com primeiro acerto confirmado, resultado imutável e anúncio durável de nome/carta. Migration 20261025080442 instalada/registrada; 67 locais/75 remotos. 105 testes raiz, 68 bot, 22 SQL PGlite; CI inclui disputa real em oito conexões isoladas. Nenhum prêmio/mensagem real. Reabrir bot 0.2.9. Ler documento 17.
+
+## Checkpoint anterior — UI e saúde da operação (0.2.8)
 
 Operador autorizou a proposta de diagnóstico/recuperação e melhorias gerais de UI/UX/acessibilidade. Implementação e limites em `16_OPERATION_HEALTH_AND_UI.md`. Migration `20261025073504_operation_health_and_notice_errors.sql` instalada no Supabase e registrada na mesma transação; 66 arquivos locais / 74 registros remotos. Nenhum leilão real reprocessado ou mensagem enviada. Reabrir supervisor/filho para carregar telemetria 0.2.8. As seções abaixo são histórico, não trabalho a executar automaticamente.
 

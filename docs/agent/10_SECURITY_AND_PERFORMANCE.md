@@ -65,3 +65,7 @@
 ## Diagnóstico sem polling adicional — 0.2.8
 
 A área /api/operations só consulta ao clique. Buscas do painel são locais. Telemetria pequena via heartbeat existente somente quando o conteúdo muda; sem timer/realtime/tabela de logs novos e sem ingestão de logs detalhados. Leituras limitadas por coluna/quantidade, respostas sem QR/URLs assinadas/credenciais; provider HTML e URLs em erros são omitidos. Retry exige admin/operator e compare-and-set sem tocar envio ativo/entregue. Não houve backup grande, publicação de mensagens ou inicialização de bot nesta mudança. Última medição de quota anterior era 0,88/1GB, arredondada/atrasada; não é consumo medido desta mudança nem garantia de não exceder a franquia.
+
+## Jogos 0.2.9
+
+Resposta e secret da enquete ficam server-side; authenticated perde SELECT direto da tabela, APIs autorizadas retornam só campos públicos da administração. RPCs invoker/service-only, participante/grupo elegíveis e lock de vencedor. Cache 200, reutiliza scheduler, votos errados sem RPC/auditoria, um evento por prêmio. Nenhuma carga de votos, backup grande ou mensagem de teste em produção. Não garante franquia futura de logs; medição anterior 0,88/1GB era arredondada/atrasada.

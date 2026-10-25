@@ -82,3 +82,7 @@ Navegador local com componente real e auth/dados simulados: campos de minutos oc
 ## Saúde da operação e UI — 2026-10-25
 
 100 testes raiz, 64 testes de bot, typecheck, build, check e smoke autenticado. 21 cenários SQL passaram no PGlite descartável, incluindo RLS/grants, persistência e limpeza do erro após sucesso. Testes HTTP com handler real e dependências injetadas cobrem autenticação, viewer, erro parcial e compare-and-set contra aviso entregue/travado/repetido. Consulta real limitada: GET respondeu 200/no-store, três backups, zero avisos pendentes e uma falha; segundo contrato com carta/lote respondeu 722 bytes após uma falha transitória parcial e recuperação. Nenhum retry de produção executado. Navegador usa componentes reais com fixtures; axe nas telas/estados documentados em 16, mais revisão de tela 390px e foco de etapa.
+
+## Quiz/brindes — 0.2.9
+
+105 testes raiz, 68 bot e 22 arquivos SQL no PGlite descartável. Novos testes de API/auth/versão/correta, rascunho, opção hash única, ausência de RPC para resposta errada, erro sem cache de vencedor, anúncio nome/prêmio/menção e SQL com vencedor/aviso únicos e fila mista. CI ganha disputa de oito conexões PostgreSQL reais; verificar resultado após push. Navegador com componentes reais/fixtures: avulso e lote com seleção correta e axe sem violações nos estados testados. Sem prêmio/mensagem real ou criação de dados de negócio em produção.

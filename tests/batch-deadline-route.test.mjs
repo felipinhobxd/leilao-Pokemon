@@ -9,6 +9,7 @@ export function failure(e){return Response.json({error:e.message},{status:e.stat
 `);
 const hooks=registerHooks({resolve(specifier,context,next){
   if(specifier==='@/lib/backend')return {url:backendUrl,shortCircuit:true};
+  if(specifier==='@/lib/poll-game')return {url:new URL('../lib/poll-game.ts',import.meta.url).href,shortCircuit:true};
   if(specifier==='@/lib/common-deadline')return {url:new URL('../lib/common-deadline.ts',import.meta.url).href,shortCircuit:true};
   if(specifier==='@/lib/auction-wizard')return {url:new URL('../lib/auction-wizard.ts',import.meta.url).href,shortCircuit:true};
   return next(specifier,context);
@@ -32,4 +33,11 @@ test('deadline before final publication and old bot are rejected before creating
 test('legacy duration mode remains available without common-deadline bot requirement',async()=>{
   state.calls=[];state.version='0.2.6';const legacy=payload();delete legacy.queue.ends_at;
   assert.equal((await POST(request(legacy))).status,201);assert.equal(state.calls[0].args.p_payload.items[0].auction.duration_seconds,120);
+});
+
+test('quiz inserted into an auction queue keeps the correct answer and question in the game wrapper',async()=>{
+ state.version='0.2.9';state.calls=[];const body=payload();
+ body.items[0]={card:{name:'Pikachu',image_url:'https://example.com/pikachu.jpg'},giveaway:{kind:'quiz',options:['Raichu','Pichu'],correctIndex:0,question:'Qual evolução?'}};
+ assert.equal((await POST(request(body))).status,201);assert.equal(state.calls[0].name,'create_auction_queue_with_games');assert.equal(state.calls[0].args.p_payload.items[0].giveaway.correctIndex,0);
+ state.calls=[];body.items[0].giveaway.correctIndex=null;assert.equal((await POST(request(body))).status,400);assert.equal(state.calls.length,0);
 });

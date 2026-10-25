@@ -53,3 +53,7 @@
 - A limpeza de 12h atualmente apaga também compras/pagamentos/entregas de leilões terminais sem filtrar pendências. O lembrete exige compra sobrevivente por sete dias. Esse conflito está documentado, sem alteração de regra nesta sessão.
 - O guard de backup aceita um arquivo do dia; não comprova que cubra todas as linhas removidas depois.
 - Registro do vencedor no banco não garante entrega do anúncio ao WhatsApp.
+
+## Prêmios de Quiz/Brinde — 0.2.9
+
+Uma única resposta correta escolhida pelo operador. Vence o primeiro acerto elegível confirmado no banco, como arremate; não há troca de vencedor após retirada ou mudança. Cada jogo ocupa uma posição da fila, sem leilão/número de lote/cobrança. Pode aparecer entre leilões ou avulso. Quiz pede pergunta separada do prêmio. Não usa prazo dos lances. Legacy publicado mantém comportamento anterior. Documento 17.

@@ -189,3 +189,7 @@ A abertura agora envia `mentionAll: true`, com validação de administrador para
 ## Diagnósticos no painel — 0.2.8
 
 Reabra o supervisor e seu filho após atualizar os arquivos. O heartbeat existente carrega `operational_health` apenas quando muda: backup automático (em preparo/concluído/falha), recuperação do acesso ao banco e último diagnóstico de @all da abertura. Falhas dos avisos duráveis também guardam mensagem curta; entrega confirmada limpa o erro. Sem um segundo processo, timer de telemetria ou envio de mensagens para testar. Migration `20261025073504_operation_health_and_notice_errors.sql` deve estar aplicada antes de iniciar 0.2.8.
+
+## Quiz/brindes — 0.2.9
+
+Requer migration 20261025080442. Mensagem original das novas enquetes é persistida para descriptografia após reinício. Resposta correta de participante elegível disputa um claim atômico; outbox anuncia nome e prêmio, com menção quando resolvida. Primeiro confirmado permanece vencedor após alteração/retirada. Enquetes legacy não são apuradas. Sem nova rotina de polling ou auditoria por voto errado. Reabrir supervisor e filho atualizados antes de criar jogos; não iniciar segunda instância.

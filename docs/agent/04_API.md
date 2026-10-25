@@ -97,3 +97,7 @@ GET /api/admin/backup agora retorna JSON pequeno {downloadUrl,filename,exported_
 ## GET/POST /api/operations — 0.2.8
 
 GET autenticado (viewer pode ler), privado/no-store, exclusivamente sob demanda: worker mais recente, até 50 avisos não entregues, 30 dispatches falhos com carta/lote e três nomes de backups automáticos no Storage. Leituras paralelas, falhas parciais identificadas; nenhum link assinado/QR/credencial retornado. Erros sanitizados. POST admin/operator aceita `{id,nextAttempt}` e faz compare-and-set em aviso com tentativas >0, sent_at/locked_at nulos e next_attempt_at igual ao lido. Só muda next_attempt_at; 409 se mudou/entregue/travado. Não zera tentativas, não libera locks, não envia WhatsApp pela API nem burla espaçamento de 15s. Bot desconectado executará quando voltar.
+
+## Jogos — 0.2.9
+
+POST quick-polls aceita kind giveaway/quiz (omissão legacy), prizeName, correctIndex zero-based, title (pergunta no quiz), options distintas, imageUrl opcional e agendamento. Valida e chama create_quick_poll_game com eventId estável; conflito 409. Novos jogos exigem worker 0.2.9+. GET retorna tipo/prêmio/vencedor, nunca correct_index ou poll_message_json. Batch aceita giveaway.{kind,question,correctIndex,options}; com jogos usa create_auction_queue_with_games, preservando o caminho antigo nos demais casos. GET queue mostra game_kind/prize_name/winner_name/won_at sem resposta/chave.

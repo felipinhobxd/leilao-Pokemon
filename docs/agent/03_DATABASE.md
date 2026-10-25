@@ -137,3 +137,7 @@ export_business_backup_text preserva tabelas/filtros do export original com agre
 ## Diagnósticos 0.2.8 — migration 20261025073504
 
 `whatsapp_bot_workers.operational_health jsonb` guarda estado limitado do supervisor (backup/database/mention), enviado pelo heartbeat existente apenas quando muda. `whatsapp_auction_notices.last_error text` guarda o motivo curto da última falha; `finish_auction_notice` mantém erro no retry e o limpa no sucesso. Função continua invoker/service-only; RLS/grants existentes preservados. Aplicada e registrada com a mesma versão na mesma transação, catálogo confirmou colunas/RLS/grants. Agora 66 arquivos locais / 74 registros remotos; não reparar timestamps antigos automaticamente.
+
+## Jogos 0.2.9
+
+Migration 20261025080442 instalada e registrada: game_kind/correct_index/prize_name, mensagem criptográfica e resultado em whatsapp_quick_polls; quick_poll_winner na outbox com FK e unicidade. RPCs invoker/service-only para criar/validar/disputar; SELECT direto authenticated revogado, painel lê via API sem resposta/chave. Exports incluem novos campos e mantêm limites. Total 67 locais / 75 remotos. Detalhes/testes em documento 17.

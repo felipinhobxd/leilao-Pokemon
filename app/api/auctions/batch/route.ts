@@ -1,4 +1,5 @@
 import { authorize, failure, HttpError } from "@/lib/backend";
+import {parsePollGame,requireGameBot} from "@/lib/poll-game";
 import { validateCommonDeadline } from "@/lib/common-deadline";
 import { buildCustomValuesPlan, buildPollPlan, cardConditions, cardLanguages, DEFAULT_POLL_OPTIONS, MAX_POLL_OPTIONS, parseCustomValues } from "@/lib/auction-wizard";
 
@@ -59,7 +60,7 @@ export async function POST(request: Request) {
         return {
           card: { name, image_url: imageUrl || null },
           auction: {},
-          giveaway: { options: pollOptions },
+          giveaway: (()=>{try {const game=parsePollGame({kind:source.giveaway.kind,options:pollOptions,correctIndex:source.giveaway.correctIndex,prizeName:card.name,question:source.giveaway.question});return {options:game.options,kind:game.kind,correctIndex:game.correctIndex,question:game.question};} catch(error){throw new HttpError(400,`${label}: ${(error as Error).message}`);}})(),
         };
       }
       const name = text(card.name, true);
@@ -160,7 +161,9 @@ export async function POST(request: Request) {
       items,
     };
 
-    const { data, error } = await db.rpc("create_auction_queue_with_deadline", { p_payload: payload, p_admin_user_id: user.id });
+    const hasGames=items.some(item=>"giveaway" in item && item.giveaway?.kind!=="legacy");
+    if(hasGames)try{await requireGameBot(db);}catch(error){throw new HttpError(409,(error as Error).message);}
+    const { data, error } = await db.rpc(hasGames ? "create_auction_queue_with_games" : "create_auction_queue_with_deadline", { p_payload: payload, p_admin_user_id: user.id });
     if (error) {
       if (/invalid_common_deadline/i.test(error.message)) throw new HttpError(400,"O horário de encerramento deve ser depois da última publicação e ainda não pode ter passado.");
       if (/lot_number_in_use/i.test(error.message)) throw new HttpError(409, "Um dos números de lote já está em uso.");

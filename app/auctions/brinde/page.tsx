@@ -1,114 +1,58 @@
 "use client";
+import Link from 'next/link';
+import type {Session} from '@supabase/supabase-js';
+import {useEffect,useRef,useState,type FormEvent} from 'react';
+import {createPublicSupabaseClient} from '@/lib/supabase';
+import {brasiliaInputToIso,formatBrasiliaDateTime} from '@/lib/brasilia-time';
+import {parsePollGame} from '@/lib/poll-game';
+import {GIVEAWAY_DEFAULT_OPTIONS} from '@/lib/auction-wizard';
+import GameAnswerFields from '@/app/game-answer-fields';
 
-import Link from "next/link";
-import type { Session } from "@supabase/supabase-js";
-import { useEffect, useRef, useState } from "react";
-import { createPublicSupabaseClient } from "@/lib/supabase";
-
-type Group = { id: string; name: string; is_default: boolean };
-type QuickPoll = { id: string; title: string; scheduled_at: string; sent_at: string | null };
-
-function when(value: string | null | undefined) {
-  if (!value) return "—";
-  const time = Date.parse(value);
-  return Number.isFinite(time) ? new Date(time).toLocaleString("pt-BR") : "—";
-}
-
-// Brinde (P-07): enquete livre de texto/emoji publicada pelo bot no horário
-// agendado — "quem clicar primeiro leva": os votos aparecem na própria
-// enquete do WhatsApp, o painel apenas publica (decisão 2026-09-24).
-// Movida da Central WhatsApp para a área de leilões (pedido do operador:
-// botão "Brinde" no fluxo de leilões).
-export default function BrindePage() {
-  const [db] = useState(createPublicSupabaseClient);
-  const [ready, setReady] = useState(false);
-  const [session, setSession] = useState<Session | null>(null);
-  const [groups, setGroups] = useState<Group[]>([]);
-  const [groupId, setGroupId] = useState("");
-  const [title, setTitle] = useState("");
-  const [options, setOptions] = useState("");
-  const [whenInput, setWhenInput] = useState("");
-  const [polls, setPolls] = useState<QuickPoll[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
-  const identity = useRef<string | null>(null);
-
-  async function authFetch(url: string, init?: RequestInit) {
-    const { data } = await db.auth.getSession();
-    if (!data.session) throw new Error("Entre primeiro no painel.");
-    return fetch(url, { ...init, cache: "no-store", headers: { ...init?.headers, Authorization: `Bearer ${data.session.access_token}` } });
-  }
-
-  async function loadPolls() {
-    try {
-      const r = await authFetch("/api/quick-polls");
-      const b = await r.json();
-      if (r.ok) setPolls(Array.isArray(b.data) ? b.data : []);
-    } catch { /* lista desatualizada não pode travar a página */ }
-  }
-
-  useEffect(() => {
-    const { data: listener } = db.auth.onAuthStateChange((_e, next) => {
-      identity.current = next?.user.id ?? null;
-      setSession(next);
-      if (!next) { setReady(true); setGroups([]); setPolls([]); }
-    });
-    return () => { identity.current = null; listener.subscription.unsubscribe(); };
-  }, [db]);
-
-  useEffect(() => {
-    if (!session) return;
-    let cancelled = false;
-    void (async () => {
-      const r = await authFetch("/api/whatsapp/groups");
-      const b = await r.json();
-      if (cancelled) return;
-      if (!r.ok) throw new Error(b.error ?? "Falha ao carregar grupos.");
-      setGroups(b.groups ?? []);
-      setGroupId(b.defaultGroupId ?? b.groups?.[0]?.id ?? "");
-      await loadPolls();
-      setReady(true);
-    })().catch(reason => { if (!cancelled) { setError(reason instanceof Error ? reason.message : "Falha ao carregar."); setReady(true); } });
-    return () => { cancelled = true; };
-  }, [session?.user.id]);
-
-  async function schedule() {
-    setError(""); setNotice("");
-    const list = options.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-    const scheduledAt = whenInput ? new Date(whenInput).toISOString() : new Date().toISOString();
-    if (!title.trim()) { setError("Informe o título do brinde."); return; }
-    if (list.length < 2 || list.length > 12) { setError("A enquete precisa de 2 a 12 opções (uma por linha)."); return; }
-    if (!groupId) { setError("Escolha o grupo do WhatsApp antes de agendar o brinde."); return; }
-    setBusy(true);
-    try {
-      const r = await authFetch("/api/quick-polls", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ eventId: crypto.randomUUID(), groupId, title: title.trim(), options: list, scheduledAt }) });
-      const b = await r.json();
-      if (!r.ok) throw new Error(b.error ?? "Não foi possível agendar o brinde.");
-      setNotice(`🎁 Brinde agendado para ${new Date(b.data?.scheduledAt ?? scheduledAt).toLocaleString("pt-BR")} — o bot publica a enquete automaticamente.`);
-      setTitle(""); setOptions(""); setWhenInput("");
-      await loadPolls();
-    } catch (e) { setError(e instanceof Error ? e.message : "Falha ao agendar o brinde."); }
-    finally { setBusy(false); }
-  }
-
-  if (!ready) return <main id="main-content" tabIndex={-1} className="shell"><p>Carregando…</p></main>;
-  if (!session) return <main id="main-content" tabIndex={-1} className="shell"><section className="panel"><h1>Brinde</h1><p className="muted">Entre primeiro no painel administrativo.</p><Link href="/">Voltar</Link></section></main>;
-
-  return <main id="main-content" tabIndex={-1} className="shell">
-    <header className="topbar"><div><p className="eyebrow">BRINDE</p><h1>Enquete rápida de brinde</h1><p className="muted">Título e opções livres (emojis ok). O bot publica a enquete no grupo no horário agendado — "quem clicar primeiro leva": os votos aparecem na própria enquete do WhatsApp.</p></div><div className="actions"><Link className="button-link" href="/auctions/new">＋ Novo leilão</Link><Link className="button-link" href="/">← Painel</Link></div></header>
-    {error && <p className="alert" role="alert">{error}</p>}
-    {notice && <p className="notice" role="status">{notice}</p>}
-    <section className="panel">
-      <div className="panel-title"><div><h2>Agendar brinde</h2><p className="muted">Publica no grupo escolhido abaixo. O bot precisa estar rodando no PC para publicar na hora — se estiver desligado, a enquete sai quando ele voltar.</p></div></div>
-      <div className="giveaway-form">
-        <label className="wide">Título<input value={title} onChange={e => setTitle(e.target.value)} placeholder="🎁 Brinde: quem quiser o cartão, clique primeiro!" /></label>
-        <label className="wide">Opções (uma por linha, 2 a 12)<textarea rows={4} value={options} onChange={e => setOptions(e.target.value)} placeholder={"Quero! 🙋\nTô dentro 🔥\nBora! 🎉"} /></label>
-        <label>Grupo do WhatsApp<select value={groupId} onChange={e => setGroupId(e.target.value)} disabled={busy || !groups.length}><option value="">Selecione…</option>{groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label>
-        <label>Publicar em (opcional)<input type="datetime-local" value={whenInput} onChange={e => setWhenInput(e.target.value)} /></label>
-        <button type="button" disabled={busy} onClick={() => void schedule()}>🎁 Agendar brinde</button>
-      </div>
-      {polls.length ? <div className="giveaway-list"><strong>Brindes recentes</strong>{polls.slice(0, 10).map(poll => <span key={poll.id} className={`giveaway-item ${poll.sent_at ? "sent" : "pending"}`}>{poll.sent_at ? "✅" : "⏳"} {poll.title} <small>{poll.sent_at ? `enviado ${when(poll.sent_at)}` : `agendado ${when(poll.scheduled_at)}`}</small></span>)}</div> : null}
-    </section>
-  </main>;
+type Group={id:string;name:string};
+type Poll={id:string;title:string;prize_name:string|null;game_kind:string;scheduled_at:string;sent_at:string|null;winner_name:string|null};
+export default function BrindePage(){
+ const [db]=useState(createPublicSupabaseClient);
+ const [session,setSession]=useState<Session|null>(null),[ready,setReady]=useState(false);
+ const [groups,setGroups]=useState<Group[]>([]),[groupId,setGroupId]=useState('');
+ const [kind,setKind]=useState<'quiz'|'giveaway'>('giveaway'),[prize,setPrize]=useState(''),[question,setQuestion]=useState(''),[options,setOptions]=useState(GIVEAWAY_DEFAULT_OPTIONS),[correct,setCorrect]=useState(''),[imageUrl,setImageUrl]=useState(''),[when,setWhen]=useState('');
+ const [polls,setPolls]=useState<Poll[]>([]),[busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
+ const pending=useRef<{fingerprint:string;payload:Record<string,unknown>}|null>(null);
+ const lock=useRef(false),identity=useRef<string|null>(null);
+ async function request(url:string,init?:RequestInit){const {data}=await db.auth.getSession();if(!data.session)throw new Error('Entre no painel para continuar.');return fetch(url,{...init,cache:'no-store',headers:{...init?.headers,Authorization:`Bearer ${data.session.access_token}`}});}
+ async function loadPolls(){const user=identity.current;const response=await request('/api/quick-polls');const body=await response.json();if(identity.current!==user)return;if(!response.ok)throw new Error(body.error??'Não foi possível consultar as enquetes.');setPolls(body.data??[]);}
+ useEffect(()=>{const {data}=db.auth.onAuthStateChange((_event,next)=>{if(identity.current!==(next?.user.id??null)){setGroups([]);setPolls([]);pending.current=null;}identity.current=next?.user.id??null;setSession(next);if(!next)setReady(true);});return()=>{identity.current=null;data.subscription.unsubscribe();};},[db]);
+ useEffect(()=>{if(!session)return;let active=true;void(async()=>{try{const response=await request('/api/whatsapp/groups');const body=await response.json();if(!active)return;if(!response.ok)throw new Error(body.error);setGroups(body.groups??[]);setGroupId(body.defaultGroupId??body.groups?.[0]?.id??'');await loadPolls();}catch(issue){if(active)setError(issue instanceof Error?issue.message:'Falha ao carregar.');}finally{if(active)setReady(true);}})();return()=>{active=false;};},[session?.user.id]);
+ async function schedule(event:FormEvent){
+  event.preventDefault();if(lock.current)return;setError('');setNotice('');
+  const form={kind,prizeName:prize.trim(),title:kind==='quiz'?question.trim():`🎁 Brinde: ${prize.trim()}`.slice(0,200),options:options.split(/\r?\n/).map(x=>x.trim()).filter(Boolean),correctIndex:correct===''?null:Number(correct),groupId,imageUrl:imageUrl.trim(),when};
+  try{
+   parsePollGame({...form,question:form.title});
+   if(!groupId)throw new Error('Escolha o grupo do WhatsApp.');
+   const scheduledAt=when?brasiliaInputToIso(when):new Date().toISOString();if(!scheduledAt)throw new Error('Confira o horário de Brasília.');
+   const fingerprint=JSON.stringify(form);
+   if(pending.current?.fingerprint!==fingerprint)pending.current={fingerprint,payload:{...form,eventId:crypto.randomUUID(),scheduledAt}};
+   lock.current=true;setBusy(true);
+   const response=await request('/api/quick-polls',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(pending.current.payload)});
+   const body=await response.json().catch(()=>null);if(!response.ok)throw new Error(body?.error??'A publicação não foi confirmada. Tente novamente para consultar a mesma operação.');
+   setNotice(`${kind==='quiz'?'Quiz':'Brinde'} agendado. O bot publicará a enquete e anunciará quem acertar primeiro.`);pending.current=null;setPrize('');setQuestion('');setCorrect('');setWhen('');setImageUrl('');await loadPolls();
+  }catch(issue){setError(issue instanceof Error?issue.message:'Falha ao agendar.');}finally{lock.current=false;setBusy(false);}
+ }
+ if(!ready)return <main id="main-content" tabIndex={-1} className="shell"><p role="status">Carregando…</p></main>;
+ if(!session)return <main id="main-content" tabIndex={-1} className="shell"><section className="panel"><h1>Brindes e Quiz</h1><p className="muted">Entre primeiro no painel administrativo.</p><Link href="/">Voltar ao painel</Link></section></main>;
+ return <main id="main-content" tabIndex={-1} className="shell">
+  <header className="topbar"><div><p className="eyebrow">PRÊMIOS E DESAFIOS</p><h1>Brindes e Quiz</h1><p className="muted">Escolha a resposta correta. O primeiro acerto confirmado ganha a carta, como no arremate.</p></div><Link className="button-link secondary" href="/auctions/new">Adicionar durante um leilão</Link></header>
+  {error&&<p className="alert" role="alert">{error}</p>}{notice&&<p className="notice" role="status">{notice}</p>}
+  <section className="panel"><h2>Preparar enquete com prêmio</h2><form onSubmit={schedule} className="giveaway-form" aria-busy={busy}>
+   <label>Tipo<select value={kind} disabled={busy} onChange={event=>setKind(event.target.value as typeof kind)}><option value="giveaway">🎁 Brinde</option><option value="quiz">🧩 Quiz</option></select></label>
+   <label>Carta ou prêmio<input value={prize} maxLength={200} onChange={event=>setPrize(event.target.value)} placeholder="Ex.: Pikachu ex" required disabled={busy}/></label>
+   <GameAnswerFields kind={kind} question={question} options={options} correctIndex={correct} disabled={busy} onQuestion={setQuestion} onCorrect={setCorrect} onOptions={value=>{setOptions(value);setCorrect('');}}/>
+   <label>Imagem da carta (URL HTTPS, opcional)<input type="url" value={imageUrl} onChange={event=>setImageUrl(event.target.value)} disabled={busy}/></label>
+   <label>Grupo do WhatsApp<select value={groupId} onChange={event=>setGroupId(event.target.value)} required disabled={busy||!groups.length}><option value="">Selecione…</option>{groups.map(group=><option key={group.id} value={group.id}>{group.name}</option>)}</select></label>
+   <label>Publicar em (Brasília, opcional)<input type="datetime-local" value={when} onChange={event=>setWhen(event.target.value)} disabled={busy}/><small>Sem data, publica quando o bot conectado processar a fila.</small></label>
+   <button disabled={busy}>{busy?'Confirmando…':kind==='quiz'?'Agendar quiz':'Agendar brinde'}</button>
+  </form></section>
+  <section className="panel"><div className="panel-title"><div><h2>Enquetes recentes</h2><p className="muted">O resultado fica registrado mesmo após reiniciar o bot.</p></div><button className="secondary" disabled={busy} onClick={()=>void loadPolls().catch(issue=>setError(issue.message))}>Atualizar lista</button></div>
+   {!polls.length?<p className="empty-state">Nenhuma enquete cadastrada.</p>:<ul className="health-list">{polls.map(poll=><li key={poll.id}><div><strong>{poll.game_kind==='quiz'?'🧩 Quiz':poll.game_kind==='legacy'?'Enquete antiga':'🎁 Brinde'} · {poll.prize_name||poll.title}</strong><p>{poll.title}</p><p>{poll.winner_name?`🏆 ${poll.winner_name} ganhou a carta!`:poll.sent_at?poll.game_kind==='legacy'?'Publicada · sem apuração automática':'Publicada · aguardando resposta correta':`Agendada: ${formatBrasiliaDateTime(poll.scheduled_at,false)}`}</p></div></li>)}</ul>}
+  </section>
+ </main>;
 }

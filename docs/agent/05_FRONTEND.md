@@ -89,3 +89,7 @@ Backup exibe preparo, recebe link privado e inicia download .json.gz diretamente
 ## UI/UX e acessibilidade — 0.2.8
 
 `site-navigation.tsx` no layout raiz: navegação com aria-current, tema claro/escuro/sistema salvo localmente, link de pular conteúdo. Main focável nas telas/estados, foco visível, alvos de toque, reduced-motion, forced-colors, textarea nos dois temas e layouts responsivos. Painel: buscas de cartas/participantes em memória (sem API), tabelas com cabeçalhos/captions e rolagem por teclado; exclusões ao fim, reset total dentro de details. Wizard: upload alcançável por teclado, etapas nomeadas, foco no título após avanço e edição de lote em modal nativo. Área de saúde disponível mesmo se o snapshot principal falhar; sem consultas automáticas. Bot 0.2.8 registra falha/recuperação/@all. Ver documento 16 para evidência e limites; não confundir auditoria automática com certificação de todas as situações.
+
+## Brinde e Quiz — 0.2.9
+
+Componente compartilhado game-answer-fields.tsx: pergunta (quiz), opções e única correta. Mudar opções exige selecionar correta de novo. Tela Brindes e Quiz tem prêmio/URL opcional/grupo/agendamento Brasília, eventId/payload preservados após falha incerta e lista de vencedores. Lote tem botões distintos; rascunho/cópia de configurações guardam tipo/pergunta/resposta. Jogos não usam prazo de lances e fila só de jogos oculta encerramento. Documento 17.

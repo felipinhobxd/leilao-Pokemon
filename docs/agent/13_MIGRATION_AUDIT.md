@@ -159,3 +159,7 @@ Encerramento desta implementação: as quatro versões novas foram conferidas no
 ## Atualização 0.2.8 — diagnósticos
 
 CLI gerou `20261025073504_operation_health_and_notice_errors.sql`. Instalada pelo SQL Editor autenticado, com registro de mesma versão na mesma transação, após verificação do esquema. Colunas `operational_health`/`last_error`, limpeza do erro no sucesso de outbox; sem alteração de permissões efetivas, RLS, leilões/lances ou limites. Catálogo confirmou worker_health/notice_errors/anon_blocked/rls_enabled=true. Total atual 66 arquivos locais / 74 registros remotos. Histórico divergente permanece mapeado acima; não fazer db push/repair geral.
+
+## Atualização 0.2.9 — 20261025080442
+
+Migration quick_poll_prizes_and_quiz criada pela CLI, validada em banco descartável e instalada pelo SQL Editor. Source/versão registrados na mesma transação. Catálogo game_ready/answers_private/award_private=true, registered=1. Campos de jogo/chave/resultado, RPCs service-only, SELECT direto authenticated revogado, outbox de prêmio única e export atualizado. Nenhum jogo/prêmio real criado. Total 67 arquivos locais / 75 registros remotos. Histórico divergente permanece; não executar repair/db push geral.

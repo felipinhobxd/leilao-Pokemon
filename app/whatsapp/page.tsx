@@ -60,14 +60,14 @@ export default function WhatsAppPage(){
   async function setDefault(groupId:string){setBusy(true);setError("");try{const r=await authFetch("/api/whatsapp/groups",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({groupId})});const b=await r.json();if(!r.ok)throw new Error(b.error??"Não foi possível alterar o grupo.");setDefaultGroupId(groupId);setNotice("Grupo padrão atualizado.");await load()}catch(e){setError(e instanceof Error?e.message:"Falha ao alterar o grupo.")}finally{setBusy(false)}}
   // Brinde (P-07) movido para /auctions/brinde (decisão do operador 2026-09-24:
   // o brinde pertence à área de leilões, com o botão "Brinde" no wizard).
-  if(!ready)return <main className="shell"><p>Carregando…</p></main>;
-  if(!session)return <main className="shell"><section className="panel"><h1>Central WhatsApp</h1><p className="muted">Entre primeiro no painel administrativo.</p><Link href="/">Voltar</Link></section></main>;
+  if(!ready)return <main id="main-content" tabIndex={-1} className="shell"><p>Carregando…</p></main>;
+  if(!session)return <main id="main-content" tabIndex={-1} className="shell"><section className="panel"><h1>Central WhatsApp</h1><p className="muted">Entre primeiro no painel administrativo.</p><Link href="/">Voltar</Link></section></main>;
   const worker=bot.worker && bot.worker.qrExpiresAt && Date.parse(bot.worker.qrExpiresAt)<=now?{...bot.worker,qrText:null}:bot.worker; const online=bot.online&&Boolean(worker?.heartbeatAt&&now-Date.parse(worker.heartbeatAt)<=35000); const connected=Boolean(online&&worker?.status==="connected");
   // Estados desconectados nunca exibem grupos, fila ou dados operacionais.
   // Em waiting_qr exibimos somente o QR necessário para vincular o WhatsApp.
   if(!connected) {
     const waitingQr = worker?.status === "waiting_qr";
-    return <main className="shell">
+    return <main id="main-content" tabIndex={-1} className="shell">
       <header className="topbar"><div><p className="eyebrow">CENTRAL DO BOT</p><h1>WhatsApp</h1><p className="muted">{waitingQr ? "O WhatsApp está aguardando autenticação." : "O WhatsApp não está conectado."}</p></div><div className="actions"><Link className="button-link" href="/auctions/new">＋ Novo leilão</Link><Link className="button-link" href="/">← Painel</Link></div></header>
       {error&&<p className="alert" role="alert">{error}</p>}
       <section className="panel">
@@ -84,7 +84,7 @@ export default function WhatsAppPage(){
     </main>;
   }
   const dot=connected?"🟢":online?"🟡":"🔴"; const selected=groups.find(g=>g.id===defaultGroupId);
-  return <main className="shell">
+  return <main id="main-content" tabIndex={-1} className="shell">
     <header className="topbar"><div><p className="eyebrow">CENTRAL DO BOT</p><h1>WhatsApp</h1><p className="muted">Status, conexão, grupo padrão e fila de publicações. Os leilões são criados pelo botão “Novo leilão”.</p></div><div className="actions"><Link className="button-link" href="/auctions/new">＋ Novo leilão</Link><Link className="button-link" href="/">← Painel</Link></div></header>
     {error&&<p className="alert" role="alert">{error}</p>}{notice&&<p className="notice" role="status">{notice}</p>}
     <section className="panel"><div className="panel-title"><div><p className="eyebrow">WHATSAPP BOT</p><h2>{dot} {worker?botStatusLabel(worker.status):"Worker não instalado"}</h2>{!online&&<p className="muted">O worker está offline. O painel não consegue iniciar um PC desligado.</p>}</div><span className="status-pill">{worker?.version?`v${worker.version}`:"sem versão"}</span></div>

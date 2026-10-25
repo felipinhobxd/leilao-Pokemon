@@ -11,6 +11,8 @@ import { createSupabaseFetch, createErrorReporter } from "./supabase-resilience.
 const reportServiceError=createErrorReporter();
 import { WebSocket } from "ws";
 import { BACKUP_BUCKET, runBusinessBackup } from "./backup.mjs";
+import { createOperationHealth } from "./operation-health.mjs";
+const operationHealth = createOperationHealth();
 
 const required = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"];
 for (const key of required) {
@@ -39,7 +41,7 @@ if (!globalThis.WebSocket) globalThis.WebSocket = WebSocket;
 
 const db = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
-  global:{fetch:createSupabaseFetch()},
+  global:{fetch:createSupabaseFetch({onHealth: ok => operationHealth.database(ok)})},
 });
 
 async function ensureBotAdminUserId() {
@@ -74,6 +76,7 @@ let cleanupBusy = false;
 let lastCleanupAttempt = 0;
 let commandBusy = false;
 let publishBusy = false;
+let lastPublishedHealth = '';
 let automaticSyncBusy = false;
 let lastAutomaticSyncAttempt = 0;
 
@@ -122,6 +125,7 @@ async function publishState(patch = {}) {
     runtime.sessionActive = session.sessionActive;
     if (session.accountJid) runtime.accountJid = session.accountJid;
     const now = new Date().toISOString();
+    const healthJson = JSON.stringify(operationHealth.state);
     // Cancel the actual HTTP request after 10s; do not leave timed-out writes in flight.
     const { error } = await db.from("whatsapp_bot_workers").upsert({
       worker_id: WORKER_ID,
@@ -130,6 +134,7 @@ async function publishState(patch = {}) {
       connected_at: runtime.connectedAt,
       account_jid: runtime.accountJid,
       last_error: runtime.lastError,
+      ...(healthJson !== lastPublishedHealth ? { operational_health: JSON.parse(healthJson) } : {}),
       qr_payload: runtime.qrPayload,
       qr_render: runtime.qrRender,
       qr_expires_at: runtime.qrExpiresAt,
@@ -139,6 +144,7 @@ async function publishState(patch = {}) {
       updated_at: now,
       }, { onConflict: "worker_id" }).abortSignal(AbortSignal.timeout(10_000));
     if (error) reportServiceError("Falha ao publicar status do bot", error);
+    else lastPublishedHealth = healthJson;
   } catch (error) {
     reportServiceError("Falha ao publicar status do bot", error);
   } finally {
@@ -148,11 +154,12 @@ async function publishState(patch = {}) {
 
 async function loadPreviousWorkerState() {
   const { data } = await db.from("whatsapp_bot_workers")
-    .select("groups_synced_at,account_jid")
+    .select("groups_synced_at,account_jid,operational_health")
     .eq("worker_id", WORKER_ID)
     .maybeSingle();
   if (data?.groups_synced_at) runtime.groupsSyncedAt = data.groups_synced_at;
   if (data?.account_jid) runtime.accountJid = data.account_jid;
+  operationHealth.restore(data?.operational_health);
 }
 
 function decodeQrMarker(line) {
@@ -185,6 +192,10 @@ function groupsSyncIsFresh() {
 function handleChildLine(line, isError = false) {
   if (!line) return;
   if (!isError && decodeQrMarker(line)) return;
+  if (!isError && line.startsWith('__LEILAO_MENTION__')) {
+    try { operationHealth.mention(JSON.parse(line.slice('__LEILAO_MENTION__'.length)).issue); } catch {}
+    return;
+  }
 
   if (line.includes("✅ WhatsApp conectado")) {
     runtime.status = "connected";
@@ -498,13 +509,16 @@ async function dailyBackup() {
   backupBusy = true;
   try {
     if (await hasTodaysCloudBackup(now)) {
+      operationHealth.backup('success', null, true);
       lastBackupDay = today;
       clearBackupFailure();
       console.log(`Backup diário já existe na nuvem: ${today}`);
       return;
     }
+    operationHealth.backup('running');
     const result = await runBusinessBackup(db, now);
     if (!result.cloudPath) throw new Error("backup_cloud_copy_missing");
+    operationHealth.backup('success', null, true);
     lastBackupDay = today;
     clearBackupFailure();
     console.log(`Backup dos dados gravado: ${result.path} (${(result.bytes / 1024).toFixed(1)} KB, mantendo ${result.kept}, nuvem ${result.cloudPath})`);
@@ -512,6 +526,7 @@ async function dailyBackup() {
     lastBackupDay = "";
     markBackupFailure();
     console.error("Backup diário falhou:", describeError(error));
+    operationHealth.backup('failed', error);
   } finally {
     backupBusy = false;
   }
@@ -527,13 +542,16 @@ async function ensureCloudBackupForCleanup(now = new Date()) {
   backupBusy = true;
   try {
     if (await hasTodaysCloudBackup(now)) {
+      operationHealth.backup('success', null, true);
       lastBackupDay = today;
       clearBackupFailure();
       console.log(`Backup de segurança já existe na nuvem: ${today}`);
       return true;
     }
+    operationHealth.backup('running');
     const result = await runBusinessBackup(db, now);
     if (!result.cloudPath) throw new Error("backup_cloud_copy_missing");
+    operationHealth.backup('success', null, true);
     lastBackupDay = today;
     clearBackupFailure();
     console.log(`Backup de segurança antes da limpeza: ${result.cloudPath}`);
@@ -541,6 +559,7 @@ async function ensureCloudBackupForCleanup(now = new Date()) {
   } catch (error) {
     markBackupFailure();
     console.error("Limpeza bloqueada: backup na nuvem indisponível.", describeError(error));
+    operationHealth.backup('failed', error);
     return false;
   } finally {
     backupBusy = false;

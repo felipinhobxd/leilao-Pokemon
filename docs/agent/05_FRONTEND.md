@@ -85,3 +85,7 @@ Escopo explicado antes da confirmação: vendidos, sem vencedor e cancelados, in
 Novo cadastro inicia em horário comum, próxima 1h de Brasília, com data explícita. Etapa Publicação permite alternar para duração individual. No modo comum, os campos de minutos são ocultos; revisão mostra a data/hora final e edições pendentes preservam o prazo da fila. Rascunhos antigos restauram duração individual. API exige bot atualizado; não criar fila comum usando worker antigo.
 
 Backup exibe preparo, recebe link privado e inicia download .json.gz diretamente do Storage; sem blob de dezenas de MB passando pela resposta da Vercel. Erros não JSON e indisponibilidade geram aviso curto, sem baixar arquivo falso.
+
+## UI/UX e acessibilidade — 0.2.8
+
+`site-navigation.tsx` no layout raiz: navegação com aria-current, tema claro/escuro/sistema salvo localmente, link de pular conteúdo. Main focável nas telas/estados, foco visível, alvos de toque, reduced-motion, forced-colors, textarea nos dois temas e layouts responsivos. Painel: buscas de cartas/participantes em memória (sem API), tabelas com cabeçalhos/captions e rolagem por teclado; exclusões ao fim, reset total dentro de details. Wizard: upload alcançável por teclado, etapas nomeadas, foco no título após avanço e edição de lote em modal nativo. Área de saúde disponível mesmo se o snapshot principal falhar; sem consultas automáticas. Bot 0.2.8 registra falha/recuperação/@all. Ver documento 16 para evidência e limites; não confundir auditoria automática com certificação de todas as situações.

@@ -1,6 +1,10 @@
 # SESSION HANDOFF
 
-## Última atualização
+## Checkpoint atual — UI e saúde da operação (0.2.8)
+
+Operador autorizou a proposta de diagnóstico/recuperação e melhorias gerais de UI/UX/acessibilidade. Implementação e limites em `16_OPERATION_HEALTH_AND_UI.md`. Migration `20261025073504_operation_health_and_notice_errors.sql` instalada no Supabase e registrada na mesma transação; 66 arquivos locais / 74 registros remotos. Nenhum leilão real reprocessado ou mensagem enviada. Reabrir supervisor/filho para carregar telemetria 0.2.8. As seções abaixo são histórico, não trabalho a executar automaticamente.
+
+## Última atualização histórica
 
 2026-10-25 — corrigida divergência de limite 100/200 da RPC em produção; fotos em lote/@all implementados.
 

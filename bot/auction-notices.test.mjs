@@ -28,3 +28,11 @@ test('failed delivery is not marked sent; retry uses the same message ID',async(
   assert.equal(await drain.tick(),0);assert.deepEqual(acks,[false]);
   fail=false;now=30_000;assert.equal(await drain.tick(),1);assert.deepEqual(acks,[false,true]);assert.equal(ids[0],ids[1]);
 });
+
+test('mention permission failure records a diagnostic and releases the claim even if diagnostic storage fails',async()=>{
+  const recorded=[],finished=[];
+  const db={async rpc(name,args){if(name==='claim_auction_notice')return {data:{id:'notice',kind:'queue_finished',group_jid:'g@g.us',payload:{}}};finished.push(args.p_success);return {};},from(){return {update(value){recorded.push(value);return this},eq(){return this},async is(){throw Error('storage unavailable')}}}};
+  const socket={async groupMetadata(){throw Error('metadata unavailable')},async sendMessage(){assert.fail('must not send without permission')}};
+  const drain=createAuctionNoticeDrain({db,getSocket:()=>socket,workerId:'w',resolveJid:async()=>null,report:()=>{}});
+  assert.equal(await drain.tick(),0);assert.match(recorded[0].last_error,/@all/);assert.deepEqual(finished,[false]);
+});

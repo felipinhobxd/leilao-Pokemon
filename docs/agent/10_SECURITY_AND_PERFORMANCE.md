@@ -61,3 +61,7 @@
 - Evitar polling adicional, diagnósticos repetidos e testes no projeto vivo. Fazer testes de SQL/concorrência no Postgres do CI. Não desligar auditoria ou proteções para economizar.
 - Polling observado no código: bot/comandos 5s; heartbeat 10–15s; painel fallback 30s e debounce Realtime 5s. Essa configuração não garante ficar abaixo de 1 GB, pois o volume depende da operação e dos serviços. As estimativas antigas de MB/dia não são medições atuais.
 - [Documentação oficial de Logs Ingest](https://supabase.com/docs/guides/platform/manage-your-usage/logs-ingest).
+
+## Diagnóstico sem polling adicional — 0.2.8
+
+A área /api/operations só consulta ao clique. Buscas do painel são locais. Telemetria pequena via heartbeat existente somente quando o conteúdo muda; sem timer/realtime/tabela de logs novos e sem ingestão de logs detalhados. Leituras limitadas por coluna/quantidade, respostas sem QR/URLs assinadas/credenciais; provider HTML e URLs em erros são omitidos. Retry exige admin/operator e compare-and-set sem tocar envio ativo/entregue. Não houve backup grande, publicação de mensagens ou inicialização de bot nesta mudança. Última medição de quota anterior era 0,88/1GB, arredondada/atrasada; não é consumo medido desta mudança nem garantia de não exceder a franquia.

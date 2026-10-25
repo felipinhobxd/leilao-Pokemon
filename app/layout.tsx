@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import SiteNavigation from './site-navigation';
 
 export const metadata: Metadata = {
   title: "Leilão Pokémon",
@@ -9,7 +10,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="pt-BR">
-      <body>{children}</body>
+      <body><SiteNavigation />{children}</body>
     </html>
   );
 }

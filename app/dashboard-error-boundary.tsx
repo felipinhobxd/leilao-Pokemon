@@ -19,7 +19,7 @@ export default class DashboardErrorBoundary extends Component<Props, State> {
   render() {
     if (!this.state.error) return this.props.children;
     return (
-      <main className="shell">
+      <main id="main-content" tabIndex={-1} className="shell">
         <section className="panel">
           <p className="eyebrow">ERRO NO PAINEL</p>
           <h1>Leilão Pokémon</h1>

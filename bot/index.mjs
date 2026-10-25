@@ -1012,6 +1012,7 @@ async function sendOpeningSequence() {
         }
         // 3. Native @all; large groups require the connected account to be admin.
         const opening = await sendOpeningMention({ socket: sock, groupJid: group.group_jid });
+        console.log('__LEILAO_MENTION__'+JSON.stringify({issue:opening.collective?'':opening.reason}));
         // 4. Marca APÓS a sequência inteira — UMA chave, uma fila, sem duplicar.
         markQueueAnnounced(queue.id, announced);
         console.log(`📣 Abertura completa (fila ${queue.id}, ${opening.collective ? "@all nativo enviado" : "aviso simples, sem @all"}).`);

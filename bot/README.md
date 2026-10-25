@@ -185,3 +185,7 @@ A abertura agora envia `mentionAll: true`, com validação de administrador para
 - Supabase: fetch com timeout real e circuito de recuperação para fundo; erros HTML resumidos e repetidos no máximo uma vez por minuto/escopo. RPCs de lance e resolução do participante não são bloqueados apenas porque um heartbeat falhou. Sem replay automático de escritas.
 - Backup: snapshot consistente, leitura em blocos de 262144 caracteres, compressão Gzip nas cópias da nuvem. O JSON no disco local continua normal. Guard da limpeza reconhece .json e .json.gz. A política diária/retentiva e a questão de cobertura temporal P-19 permanecem.
 - É preciso carregar a nova versão do supervisor e do processo filho; a API bloqueia novo horário comum enquanto o worker mais recente ainda informa versão anterior a 0.2.7. Não iniciar um segundo bot sobre a mesma sessão. Nenhum envio WhatsApp de teste foi feito nesta implementação.
+
+## Diagnósticos no painel — 0.2.8
+
+Reabra o supervisor e seu filho após atualizar os arquivos. O heartbeat existente carrega `operational_health` apenas quando muda: backup automático (em preparo/concluído/falha), recuperação do acesso ao banco e último diagnóstico de @all da abertura. Falhas dos avisos duráveis também guardam mensagem curta; entrega confirmada limpa o erro. Sem um segundo processo, timer de telemetria ou envio de mensagens para testar. Migration `20261025073504_operation_health_and_notice_errors.sql` deve estar aplicada antes de iniciar 0.2.8.

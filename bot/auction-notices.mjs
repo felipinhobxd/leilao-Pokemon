@@ -2,6 +2,7 @@ import { dispatchMessageId } from './dispatch-id.mjs';
 import { openingMentionPermission } from './announce-sticker.mjs';
 import { mentionMessage } from './participant-contact.mjs';
 import { createErrorReporter } from './supabase-resilience.mjs';
+import { describeError } from './error-log.mjs';
 
 export function finishedQueueText(endsAt, collective=true, now=null) {
   const parts=new Intl.DateTimeFormat('pt-BR',{timeZone:'America/Sao_Paulo',hour:'numeric',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(endsAt));
@@ -54,7 +55,13 @@ export function createAuctionNoticeDrain({db,getSocket,workerId,resolveJid,now=D
         return 1;
       }catch(error){
         nextRead=now()+30_000;
-        if(notice){try{await db.rpc('finish_auction_notice',{p_id:notice.id,p_worker_id:workerId,p_success:false});}catch{}}
+        if(notice){
+          try {
+            // Error recording is secondary; always release the claim even if it fails.
+            if(db.from) await db.from('whatsapp_auction_notices').update({last_error:describeError(error).slice(0,400)}).eq('id',notice.id).eq('locked_by',workerId).is('sent_at',null);
+          } catch {}
+          try{await db.rpc('finish_auction_notice',{p_id:notice.id,p_worker_id:workerId,p_success:false});}catch{}
+        }
         report('Falha ao entregar aviso de leilão',error);
         return 0;
       }finally{busy=false;}

@@ -72,3 +72,7 @@ Solicitação explícita do operador substituiu a proposta de preservar pós-ven
 P-29: horário absoluto comum, mensagem com @all após a última publicação e resultados espaçados. P-30: backup em snapshot/blocos com link privado/Gzip, sem limite de resposta grande da Vercel. P-31: timeout real do heartbeat, recuo de consultas durante indisponibilidade e saneamento de HTML/repetição no terminal. Não garante uptime do Supabase nem entrega exatamente uma vez no WhatsApp (messageIds estáveis mitigam repetição).
 
 P-18/P-19/P-21/P-22/P-23/P-24 continuam conforme decisões anteriores; não ampliar escopo automaticamente. Histórico com mais de 41k eventos em 7d foi contado nesta tarefa para diagnosticar o backup, não durante a antiga revisão documental.
+
+## P-32 — Saúde da operação e revisão UI/UX (concluído)
+
+Autorizado pelo operador: diagnóstico no painel, recuperação segura de avisos, visual/acessibilidade. Implementado em 0.2.8, migration instalada, testes e evidência em documento 16. Sem polling novo, retry automático de cartas, mudança na retenção ou execução de exclusões/mensagens reais. Teste automático de acessibilidade não certifica todos os estados dinâmicos ou uso por leitor de tela real.

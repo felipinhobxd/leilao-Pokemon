@@ -95,3 +95,7 @@
 - A abertura é sequenciada dentro de uma chamada; `openingBusy` retorna imediatamente a ciclos seguintes. Atrasos maiores que 5s podem deixar outro tick iniciar o scheduler antes de a abertura anterior terminar. Não afirmar atomicidade entre ticks.
 - O fechamento é salvo antes do anúncio; falha do WhatsApp após a transação pode deixar resultado sem anúncio. Não há outbox persistente nesse caminho.
 - Retenção de vendas em 12h conflita com lembrete padrão em 7d; backup do dia não prova cobertura de registros posteriores à cópia. Pendências em `11_PENDING_WORK.md`; não corrigidas nesta revisão.
+
+## Telemetria 0.2.8
+
+`operation-health.mjs` mantém estado limitado e restaurado do worker. `createSupabaseFetch.onHealth` informa falha/recuperação ao supervisor. Backup diário e antes da limpeza publicam estado; nenhuma mudança de retenção. Abertura transmite motivo de @all ao supervisor por marcador stdout, sem chamada extra ao banco; o heartbeat existente o publica apenas quando mudou. Outbox persiste last_error sob o lock e libera claim mesmo se gravar diagnóstico falhar. Nenhuma nova mensagem de teste foi enviada; reinício operacional do bot continua necessário.

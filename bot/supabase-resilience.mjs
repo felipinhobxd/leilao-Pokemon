@@ -2,7 +2,7 @@ import { describeError } from './error-log.mjs';
 
 // No automatic replay of writes: pause briefly after network/5xx failures,
 // then permit one recovery probe. All callers share this client's circuit.
-export function createSupabaseFetch({ fetchImpl = globalThis.fetch, now = Date.now, timeoutMs = 15_000 } = {}) {
+export function createSupabaseFetch({ fetchImpl = globalThis.fetch, now = Date.now, timeoutMs = 15_000, onHealth = () => {} } = {}) {
   let nextAttempt = 0, failures = 0, probing = false;
   return async (input, init = {}) => {
     const url = String(typeof input === 'string' || input instanceof URL ? input : input.url);
@@ -18,11 +18,13 @@ export function createSupabaseFetch({ fetchImpl = globalThis.fetch, now = Date.n
     try {
       const response = await fetchImpl(input, { ...init, signal });
       if ([408,429,500,502,503,504,520,521,522,523,524,525,526].includes(response.status)) {
+        onHealth(false);
         failures = Math.min(4, failures+1);
         nextAttempt = now()+Math.min(60_000,10_000*2**(failures-1));
-      } else { failures=0; nextAttempt=0; }
+      } else { failures=0; nextAttempt=0; if (response.ok) onHealth(true); }
       return response;
     } catch (error) {
+      onHealth(false);
       failures = Math.min(4, failures+1);
       nextAttempt = now()+Math.min(60_000,10_000*2**(failures-1));
       throw error;

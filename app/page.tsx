@@ -4,7 +4,7 @@ import DashboardErrorBoundary from "./dashboard-error-boundary";
 export default function Home() {
   if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY) {
     return (
-      <main className="shell">
+      <main id="main-content" tabIndex={-1} className="shell">
         <section className="panel">
           <p className="eyebrow">CONFIGURAÇÃO</p>
           <h1>Leilão Pokémon</h1>

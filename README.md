@@ -206,3 +206,7 @@ Após a última carta/brinde ser publicada com sucesso, o bot envia @all nativo 
 **Baixar backup** gera uma cópia consistente, transfere blocos menores e entrega um link privado com validade de dois minutos. O arquivo é JSON compactado (.json.gz); extraia-o para ler o JSON. Mantém-se uma cópia manual por administrador. O bot também envia cópias compactadas para a nuvem e mantém JSON normal no PC. Há limites históricos de rascunhos/quick polls e retenção de sete dias da auditoria/cache; imagens/sessão não estão incluídas. Detalhes em docs/agent/15_DEADLINE_BACKUP_AND_RECOVERY.md.
 
 Os erros 521/522 indicam indisponibilidade do endereço Supabase. O código usa timeout real, pausa progressiva em consultas de fundo e logs resumidos; isso não garante disponibilidade do provedor. Comandos reais de lance/participante mantêm sua própria tentativa, sem replay automático de escritas.
+
+## Painel e recuperação — 0.2.8
+
+Navegação compartilhada, temas claro/escuro/sistema, buscas locais, tabelas acessíveis e layout para celular. A área **Saúde da operação** consulta o bot, backups automáticos, avisos pendentes e falhas de publicação somente ao clicar. **Tentar novamente** libera apenas avisos ainda pendentes e sem remetente ativo; nunca republica cartas automaticamente. Reabra o bot atualizado para registrar falhas de backup, recuperação do Supabase e problemas de @all. [Detalhes e validação](docs/agent/16_OPERATION_HEALTH_AND_UI.md).

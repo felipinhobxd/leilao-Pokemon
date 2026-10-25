@@ -92,10 +92,10 @@ export default function BrindePage() {
     finally { setBusy(false); }
   }
 
-  if (!ready) return <main className="shell"><p>Carregando…</p></main>;
-  if (!session) return <main className="shell"><section className="panel"><h1>Brinde</h1><p className="muted">Entre primeiro no painel administrativo.</p><Link href="/">Voltar</Link></section></main>;
+  if (!ready) return <main id="main-content" tabIndex={-1} className="shell"><p>Carregando…</p></main>;
+  if (!session) return <main id="main-content" tabIndex={-1} className="shell"><section className="panel"><h1>Brinde</h1><p className="muted">Entre primeiro no painel administrativo.</p><Link href="/">Voltar</Link></section></main>;
 
-  return <main className="shell">
+  return <main id="main-content" tabIndex={-1} className="shell">
     <header className="topbar"><div><p className="eyebrow">BRINDE</p><h1>Enquete rápida de brinde</h1><p className="muted">Título e opções livres (emojis ok). O bot publica a enquete no grupo no horário agendado — "quem clicar primeiro leva": os votos aparecem na própria enquete do WhatsApp.</p></div><div className="actions"><Link className="button-link" href="/auctions/new">＋ Novo leilão</Link><Link className="button-link" href="/">← Painel</Link></div></header>
     {error && <p className="alert" role="alert">{error}</p>}
     {notice && <p className="notice" role="status">{notice}</p>}

@@ -1,6 +1,6 @@
 # 17 — Quiz e brindes com vencedor (0.2.9)
 
-> Estado atual consolidado: [18_RELIABILITY_AND_UI_REVIEW.md](18_RELIABILITY_AND_UI_REVIEW.md), bot 0.2.10, Next.js 16.4.3. Seções de versões anteriores abaixo são histórico; não reaplicar migrations ou instruções antigas automaticamente.
+> Estado atual consolidado: [19_SETTLEMENT_PROTECTION_AND_RECOVERY.md](19_SETTLEMENT_PROTECTION_AND_RECOVERY.md) e [18_RELIABILITY_AND_UI_REVIEW.md](18_RELIABILITY_AND_UI_REVIEW.md), bot 0.2.10, Next.js 16.4.3. Seções de versões anteriores abaixo são histórico; não reaplicar migrations ou instruções antigas automaticamente.
 
 
 Pedido autorizado em 2026-10-25: uma única opção correta, escolhida pelo operador, nos brindes; modo Quiz separado, na mesma área e dentro da fila de leilões. Primeiro acerto confirmado ganha a carta, como arremate.

@@ -87,11 +87,11 @@ begin
   declare result jsonb;
   begin
     result:=public.cleanup_old_auctions();
-    perform pg_temp.check_that((result->'deleted'->>'auctions')::int=2,'cleanup removed both old auctions');
+    perform pg_temp.check_that((result->'deleted'->>'auctions')::int=0,'cleanup preserves both financial auctions');
   end;
-  perform pg_temp.check_that((select count(*)=0 from public.auctions where id in ((a1->>'id')::uuid,(a2->>'id')::uuid)),'old auctions gone');
+  perform pg_temp.check_that((select count(*)=2 from public.auctions where id in ((a1->>'id')::uuid,(a2->>'id')::uuid)),'financial auctions preserved');
   perform pg_temp.check_that((select count(*)=4 from public.participant_warnings where participant_id=(p1->>'id')::uuid),'global warnings survive the cleanup');
-  perform pg_temp.check_that((select count(*)=4 and bool_and(auction_id is null) from public.participant_warnings where participant_id=(p1->>'id')::uuid),'surviving warnings keep denormalized context with null auction');
+  perform pg_temp.check_that((select count(*)=4 and bool_and(auction_id is not null) from public.participant_warnings where participant_id=(p1->>'id')::uuid),'surviving warnings keep their financial auction link');
   perform pg_temp.check_that((select bool_and(card_name is not null) from public.participant_warnings where participant_id=(p1->>'id')::uuid),'card_name context preserved');
 end $$;
 reset role;

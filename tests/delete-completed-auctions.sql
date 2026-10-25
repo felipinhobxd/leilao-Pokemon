@@ -86,16 +86,16 @@ begin
   perform pg_temp.check_that((select count(*)=expected_count from public.auctions where status in('sold','closed','cancelled')),'failure rolls back entire batch');
 
   result:=public.delete_completed_auctions(event_id,'excluir leilões encerrados','quero excluir os encerrados',admin_id);
-  perform pg_temp.check_that((result->>'deleted_auctions')::bigint=expected_count,'all terminal auctions deleted');
-  perform pg_temp.check_that(not exists(select 1 from public.auctions where status in('sold','closed','cancelled')),'no terminal auction remains');
-  perform pg_temp.check_that((select count(*)=4 from public.auctions),'open, review, draft and scheduled draft survive');
+  perform pg_temp.check_that((result->>'deleted_auctions')::bigint=expected_count-1 and (result->>'preserved_financial_auctions')::int=1,'financial sale skipped while other terminal auctions deleted');
+  perform pg_temp.check_that((select count(*)=1 from public.auctions where status in('sold','closed','cancelled')),'financial terminal auction remains');
+  perform pg_temp.check_that((select count(*)=5 from public.auctions),'open, review, draft and scheduled draft survive');
   perform pg_temp.check_that(exists(select 1 from public.cards where id=shared_card),'shared active card survives');
-  perform pg_temp.check_that(not exists(select 1 from public.cards where name like 'Bulk closed %' or name='Bulk sale'),'orphan cards deleted');
+  perform pg_temp.check_that(not exists(select 1 from public.cards where name like 'Bulk closed %' ),'orphan cards deleted');
   perform pg_temp.check_that((select total_items=1 from public.auction_publish_queues where id=target_queue_id),'mixed queue reconciled');
   perform pg_temp.check_that((select count(*)=1 from public.whatsapp_dispatches where queue_id=target_queue_id),'pending dispatch kept');
-  perform pg_temp.check_that(not exists(select 1 from public.purchases where auction_id=(a->>'id')::uuid),'unpaid purchase deleted');
-  perform pg_temp.check_that(not exists(select 1 from public.bids where auction_id=(a->>'id')::uuid),'bids deleted');
-  perform pg_temp.check_that((select count(*)=1 and bool_and(auction_id is null) from public.participant_warnings where participant_id=(p->>'id')::uuid),'global warnings preserved');
+  perform pg_temp.check_that(exists(select 1 from public.purchases where auction_id=(a->>'id')::uuid),'unpaid purchase preserved');
+  perform pg_temp.check_that(exists(select 1 from public.bids where auction_id=(a->>'id')::uuid),'financial bids preserved');
+  perform pg_temp.check_that((select count(*)=1 and bool_and(auction_id is not null) from public.participant_warnings where participant_id=(p->>'id')::uuid),'global warnings preserved');
   perform pg_temp.check_that(exists(select 1 from public.participants where id=(p->>'id')::uuid),'participant preserved');
   perform pg_temp.check_that((select count(*)=1 from public.auction_events where event_type='COMPLETED_AUCTIONS_DELETED'),'one summary audit event');
   select count(*) into before_events from public.auction_events where event_type='COMPLETED_AUCTIONS_DELETED';

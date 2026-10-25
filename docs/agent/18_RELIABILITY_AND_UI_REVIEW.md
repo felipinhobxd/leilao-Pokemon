@@ -1,5 +1,7 @@
 # 18 — Confiabilidade, segurança e UI/UX — 0.2.10
 
+> Complemento vigente de retenção e backup: [19_SETTLEMENT_PROTECTION_AND_RECOVERY.md](19_SETTLEMENT_PROTECTION_AND_RECOVERY.md). A proteção financeira foi autorizada posteriormente.
+
 Atualização autorizada em 2026-10-25 após revisão completa. Este é o resumo vigente; documentos anteriores conservam o histórico e as decisões do operador.
 
 ## Estado atual

@@ -20,8 +20,8 @@ export default function CompletedAuctionsDeleteDialog({ busy, error, onClose, on
   }, []);
   return <dialog ref={dialog} className="panel modal" aria-labelledby="delete-completed-title" aria-describedby="delete-completed-description" onCancel={event => { if (busy) event.preventDefault(); else onClose(); }}>
     <h2 id="delete-completed-title">Excluir todos os leilões encerrados</h2>
-    <p id="delete-completed-description">Exclui definitivamente TODOS os leilões vendidos, encerrados sem vencedor e cancelados, inclusive os que não aparecem na lista do painel. Leilões abertos, rascunhos, agendados e em revisão são mantidos.</p>
-    <p className="muted">Lances, votos, publicações, eventos, compras, pagamentos e entregas vinculados também serão apagados, mesmo com pendências. Cartas sem outro leilão serão excluídas. Não há como desfazer.</p>
+    <p id="delete-completed-description">Exclui definitivamente leilões encerrados ou cancelados sem compras vinculadas, inclusive os que não aparecem na lista do painel. Vendas com compras, mesmo já pagas, são preservadas, assim como leilões abertos, rascunhos, agendados e em revisão.</p>
+    <p className="muted">Dos leilões elegíveis, lances, votos, publicações e eventos também serão apagados. Compras, pagamentos e entregas são preservados junto com seu leilão. Cartas sem outro leilão serão excluídas. Não há como desfazer.</p>
     {error && <p role="alert" className="alert">{error}</p>}
     <form className="form-grid" onSubmit={event => {
       event.preventDefault();

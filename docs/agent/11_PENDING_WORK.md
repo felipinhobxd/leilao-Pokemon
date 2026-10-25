@@ -1,6 +1,6 @@
 # 11_PENDING_WORK — Trabalho pendente
 
-> Estado atual consolidado: [18_RELIABILITY_AND_UI_REVIEW.md](18_RELIABILITY_AND_UI_REVIEW.md), bot 0.2.10, Next.js 16.4.3. Seções de versões anteriores abaixo são histórico; não reaplicar migrations ou instruções antigas automaticamente.
+> Estado atual consolidado: [19_SETTLEMENT_PROTECTION_AND_RECOVERY.md](19_SETTLEMENT_PROTECTION_AND_RECOVERY.md) e [18_RELIABILITY_AND_UI_REVIEW.md](18_RELIABILITY_AND_UI_REVIEW.md), bot 0.2.10, Next.js 16.4.3. Seções de versões anteriores abaixo são histórico; não reaplicar migrations ou instruções antigas automaticamente.
 
 
 > Última atualização: 2026-10-25
@@ -87,3 +87,8 @@ Uma correta configurável, Quiz separado na área e no lote, primeiro acerto con
 ## Revisão 0.2.10
 
 P-21 resolvido por ciclo assíncrono compartilhado; P-22 resolvido no doctor. P-23 recebe limites visíveis e ensaio de restauração operacional descartável, sem ampliar cobertura do backup. Problemas novos de retry/leader/fotos/autosave/UI/dependências resolvidos conforme documento 18. P-18/P-19 e decisões de exclusão/retencão permanecem explícitos, sem alteração automática.
+
+
+## Atualização autorizada — proteção financeira e recuperação (documento 19)
+
+P-18: resolvido conservadoramente na limpeza automática e no botão de encerrados, que agora preservam todo leilão com compra vinculada, mesmo pago. Exclusão individual e Excluir TUDO continuam explícitas/destrutivas. Essa nova autorização substitui as decisões históricas de não mudar a limpeza. P-23: removidos limites de drafts/quick polls, preservadas todas as colunas dos lembretes/jogos, pacote de imagens opcional e ensaio das 22 tabelas em schema isolado; promoção operacional em produção/Auth/sessão seguem fora do pacote. P-19 continua aberto. Detalhes e limites no documento 19.

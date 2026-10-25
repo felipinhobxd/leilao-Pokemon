@@ -1,6 +1,6 @@
 # 13_MIGRATION_AUDIT — Conferência de produção
 
-> Estado atual consolidado: [18_RELIABILITY_AND_UI_REVIEW.md](18_RELIABILITY_AND_UI_REVIEW.md), bot 0.2.10, Next.js 16.4.3. Seções de versões anteriores abaixo são histórico; não reaplicar migrations ou instruções antigas automaticamente.
+> Estado atual consolidado: [19_SETTLEMENT_PROTECTION_AND_RECOVERY.md](19_SETTLEMENT_PROTECTION_AND_RECOVERY.md) e [18_RELIABILITY_AND_UI_REVIEW.md](18_RELIABILITY_AND_UI_REVIEW.md), bot 0.2.10, Next.js 16.4.3. Seções de versões anteriores abaixo são histórico; não reaplicar migrations ou instruções antigas automaticamente.
 
 
 > Última atualização: 2026-10-25
@@ -170,3 +170,8 @@ Migration quick_poll_prizes_and_quiz criada pela CLI, validada em banco descart�
 ## Estado 0.2.10 — migration de disputa e recuperação
 
 20261025181640_dashboard_auction_detail instalada pelo conector; versão local alinhada ao registro retornado pelo catálogo. Duas funções invoker, search_path vazio e serviço somente; nenhuma alteração de tabelas/RLS ou registros de negócio. Catálogo live_ready/recovery_ready/private/invoker=true. Total **68 arquivos locais / 76 registros remotos**. Histórico antigo não foi reparado.
+
+
+## Proteção financeira e backup v2 — 2026-10-25
+
+Migration 20261025220841_protect_settlements_and_complete_backups: CLI criou arquivo inicialmente com versão 20261025215743; conector registrou 20261025220841 e o arquivo local foi renomeado para corresponder. Total 69 locais / 77 registros remotos. Instalação transacional validada antes em banco descartável; consulta de catálogo confirmou cleanup_ready/bulk_ready/backup_v2_ready/private=true. Sem executar limpeza, download de backup ou restauração em produção. Assinaturas usadas pelo supervisor preservadas. Conector Supabase está funcional nesta sessão; falhas Unknown tool anteriores são históricas. Documento 19 contém a nova regra e limitações.

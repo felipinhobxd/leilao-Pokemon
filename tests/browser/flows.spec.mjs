@@ -19,3 +19,20 @@ test('dashboard prioritizes operation, filters purchases and passes automated ac
 });
 
 test('online worker exposes reconnect while WhatsApp is disconnected',async({page,request})=>{await request.post('/__fixture/config',{data:{workerStatus:'disconnected'}});await page.goto('/whatsapp');await expect(page.getByRole('button',{name:'Reconectar WhatsApp',exact:true})).toBeVisible();await page.getByRole('button',{name:'Reconectar WhatsApp',exact:true}).click();await expect(page.getByText('Comando enviado ao bot.',{exact:true})).toBeVisible();});
+
+test('completed cleanup explains financial protection and reports preserved sales after two confirmations',async({page})=>{
+ let submitted;
+ await page.route('**/api/auctions/delete-completed',async route=>{submitted=route.request().postDataJSON();await route.fulfill({json:{data:{deleted_auctions:3,preserved_financial_auctions:2}}});});
+ await page.goto('/');
+ await page.getByRole('button',{name:'Excluir leilões encerrados',exact:true}).press('Enter');
+ const dialog=page.getByRole('dialog',{name:'Excluir todos os leilões encerrados'});
+ await expect(dialog.getByText(/Vendas com compras, mesmo já pagas, são preservadas/)).toBeVisible();
+ const confirm=dialog.getByRole('button',{name:'Excluir encerrados definitivamente',exact:true});
+ await expect(confirm).toBeDisabled();
+ await dialog.getByLabel(/1ª confirmação/).fill('excluir leilões encerrados');
+ await expect(confirm).toBeDisabled();
+ await dialog.getByLabel(/2ª confirmação/).fill('quero excluir os encerrados');
+ await confirm.press('Enter');
+ await expect(page.getByText('3 leilão(ões) encerrado(s) excluído(s) definitivamente. 2 preservado(s) por terem compras vinculadas.',{exact:true})).toBeVisible();
+ expect(submitted.confirm1).toBe('excluir leilões encerrados');expect(submitted.confirm2).toBe('quero excluir os encerrados');expect(submitted.eventId).toMatch(/^[a-f0-9-]{36}$/);
+});

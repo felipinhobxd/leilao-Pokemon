@@ -203,7 +203,7 @@ Na etapa Publicação do cadastro em lote, escolha **Mesmo horário para todas a
 
 Após a última carta/brinde ser publicada com sucesso, o bot envia @all nativo e “LEILÃO FINALIZADO! LANCES VÁLIDOS ATÉ [horário escolhido]!”. Os lances encerram juntos; os resultados são entregues com intervalo mínimo de 15s por grupo. Avisos pendentes ficam no banco para nova tentativa após falhas/reinício. @all exige permissão de administrador em grupos com mais de 32 membros.
 
-**Baixar backup** gera uma cópia consistente, transfere blocos menores e entrega um link privado com validade de dois minutos. O arquivo é JSON compactado (.json.gz); extraia-o para ler o JSON. Mantém-se uma cópia manual por administrador. O bot também envia cópias compactadas para a nuvem e mantém JSON normal no PC. Há limites históricos de rascunhos/quick polls e retenção de sete dias da auditoria/cache; imagens/sessão não estão incluídas. Detalhes em docs/agent/15_DEADLINE_BACKUP_AND_RECOVERY.md.
+**Baixar backup** gera uma cópia consistente, transfere blocos menores e entrega um link privado com validade de dois minutos. O arquivo é JSON compactado (.json.gz); extraia-o para ler o JSON. Mantém-se uma cópia manual por administrador. O bot também envia cópias compactadas para a nuvem e mantém JSON normal no PC. Backups v2 incluem todos os rascunhos/quick polls e todas as colunas de jogos/lembretes. Auditoria sem leilão sobrevivente e cache têm janela de sete dias; imagens/sessão não estão no JSON. Detalhes em docs/agent/15_DEADLINE_BACKUP_AND_RECOVERY.md.
 
 Os erros 521/522 indicam indisponibilidade do endereço Supabase. O código usa timeout real, pausa progressiva em consultas de fundo e logs resumidos; isso não garante disponibilidade do provedor. Comandos reais de lance/participante mantêm sua própria tentativa, sem replay automático de escritas.
 
@@ -222,3 +222,12 @@ Criações com confirmação incerta preservam ID/payload e podem ser recuperada
 Cadastro com busca, filtros, páginas de 12 cartas (limite de 200 preservado), escolha explícita do tipo e foco no erro. Painel prioriza operação, diagnóstico recolhível, compras com busca/pagamento/totais e leitura adaptada ao celular. A fila não consulta em segundo plano ou depois de concluída/cancelada; o bot impede sobreposição de ciclos de abertura.
 
 Dependências atualizadas, Next.js 16.4.3 e auditorias npm sem alertas nesta rodada. Testes de navegador com dados isolados na CI: `npm run test:browser` (instalar Chromium com `npx playwright install chromium`). Não usam credenciais Supabase ou WhatsApp. Reabra o supervisor e o filho do bot para carregar **0.2.10**; a atualização do site não reinicia o bot local. [Estado e limites](docs/agent/18_RELIABILITY_AND_UI_REVIEW.md).
+
+
+## Proteção financeira e pacote de recuperação — 2026-10-25
+
+A limpeza automática de 12h e o botão **Excluir leilões encerrados** preservam todo leilão com compra vinculada, mesmo já paga, mantendo pagamentos, entregas e lembretes. O botão informa quantos foram preservados. Exclusão individual e Excluir TUDO continuam ações destrutivas explícitas.
+
+`npm run backup:pack -- --file D:\Backups\backup.json.gz --output D:\Backups\pacote-novo` cria um pacote local de um backup v2 já baixado, com manifesto SHA-256 e SQL para ensaio em schema privado descartável. Imagens são opcionais com `--images --source-origin https://gsyuoggymjdzxibfujyv.supabase.co`, baixadas sequencialmente; falhas e URLs não suportadas são sinalizadas. Não executa SQL nem inicia o bot. Use `--verify --output D:\Backups\pacote-novo` para conferir a integridade. Não é restauração automática de produção/Auth/sessão.
+
+Migration 20261025220841 instalada; nenhum arquivo do bot foi alterado nesta rodada. [Procedimento, testes e limites](docs/agent/19_SETTLEMENT_PROTECTION_AND_RECOVERY.md).

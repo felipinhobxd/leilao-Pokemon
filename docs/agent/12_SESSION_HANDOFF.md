@@ -2,7 +2,17 @@
 
 ## Última atualização
 
-2026-10-25 — conferência das migrations em produção e reconciliação dos MDs.
+2026-10-25 — migrations conferidas; correções de fotos em lote/@all implementadas.
+
+## P-25/P-26 — implementação autorizada e concluída
+
+- Operador autorizou corrigir os dois problemas documentados e fazer push no mesmo GitHub, autor **F <felipinhovecoski@gmail.com>**.
+- Fotos: `lib/card-preview.ts` e wizard usam fila compartilhada de duas tarefas, placeholders, entrega progressiva, cancelamento/limpeza e limite 200; salvar/auto-save/publicar aguardam o preparo. Originais preservados para upload.
+- @all: builder + `sendOpeningMention` encaminham flag nativa; verifica admin em grupos >32 e aliases PN/LID. Metadata/falta de permissão geram aviso simples e diagnóstico. Sem teste de envio real; não alterar permissões automaticamente.
+- Bot atualizado para **0.2.6**. O processo já rodando não foi reiniciado para não interromper leilões; carregar a nova versão no próximo início/reinício operacional.
+- Typecheck, 83 testes raiz, 56 bot, check 41 e build aprovados. Navegador isolado: 200 fotos JPEG sintéticas de 12 MP, duas seleções de 100, 15,5s total, concorrência máxima 2, primeira prévia 190ms e digitação durante o preparo. Não é benchmark dos arquivos reais no Brave ou do wizard autenticado completo.
+- Nenhuma chamada ao Supabase/migration, mensagem para grupos ou início/reinício do bot. Documento 14 reúne evidência e limites. P-18 a P-24 seguem pendentes.
+- Smoke HTTP após o build aprovado: servidor local iniciou e rotas administrativas rejeitaram chamadas sem login com 401. Publicação deste conjunto autorizada em `main`, no mesmo repositório; hash final consta no fechamento da conversa.
 
 ## O que foi solicitado e concluído
 

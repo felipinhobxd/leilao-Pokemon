@@ -19,7 +19,7 @@
 
 ## Fluxo: wizard em lote (`bulk-wizard.tsx`) — 4 etapas
 
-1. **Cartas**: upload múltiplo (drag & drop ou seletor), preview reduzido a 560px (`PREVIEW_MAX_SIDE`; upload usa o original), preenchimento 100% MANUAL dos dados por carta (o reconhecimento automático foi REMOVIDO em 2026-10-05), reorder por drag, "Coleção/Edição" REMOVIDA da UI (campo `collection` permanece no payload por compatibilidade), aplicar-para-todas de idioma/condição.
+1. **Cartas**: upload múltiplo (drag & drop ou seletor), preview reduzido a 560px (`lib/card-preview.ts`; duas tarefas simultâneas, upload usa o original), preenchimento 100% MANUAL dos dados por carta (o reconhecimento automático foi REMOVIDO em 2026-10-05), reorder por drag, "Coleção/Edição" REMOVIDA da UI (campo `collection` permanece no payload por compatibilidade), aplicar-para-todas de idioma/condição.
 2. **Valores**: por carta `Automático` (inicial/incremento/ARREMATE/opções) **ou** `Personalizado` (valores vírgula, decimal pt-BR ok, primeiro = lance inicial, checkbox "Maior valor = ARREMATE"); barra "Valores personalizados p/ todas"; duração individual por carta; preview mini da enquete (`poll-mini`).
 3. **Publicação**: grupo, intervalo entre publicações (1s–24h), agora vs agendar (horário de Brasília).
 4. **Revisar**: resumo + lista com imagem/valores/horários → `POST /api/auctions/batch` → tela da **fila** com Pausar/Continuar/Cancelar e progresso (`queueId`, `QueueView`).
@@ -69,5 +69,6 @@ Mesmo contrato de valores (`pricingMode` custom/increment) para 1 carta; cria le
 
 ## Riscos
 
+- **P-25 corrigido**: prévias locais em fila compartilhada de duas tarefas, com placeholders/progresso; originais fora do DOM até haver miniatura reduzida, preservados para upload. Limite total 200; cancelamento na remoção/unmount; auto-save/publicação aguardam preparo. Testes de fila e navegador isolado documentados em [14_FRONTEND_AND_MENTIONS_PLAN.md](14_FRONTEND_AND_MENTIONS_PLAN.md).
 - `bulk-wizard.tsx` é um componente grande com várias responsabilidades — mexer em estado de `Draft` exige cuidado (mutações via `mutateCard` + `submission.current` fingerprint anti-duplo-envio).
 - Contrato de valores (`lib/auction-wizard.ts::buildCustomValuesPlan/parseCustomValues`) é compartilhado por wizard+API: mudança exige testes (`tests/auction-format.test.mjs`).

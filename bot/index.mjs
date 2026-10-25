@@ -19,7 +19,7 @@ import { decryptIncomingPollVote, unwrapMessageContent } from "./poll-votes.mjs"
 import { createAdminNotificationDrain, parseAdminJids } from "./warning-notify.mjs";
 import { resolveParticipantJid, mentionMessage } from "./participant-contact.mjs";
 import { createPaymentReminderDrain } from "./payment-reminder.mjs";
-import { ANNOUNCE_GRACE_MINUTES, ANNOUNCE_MINUTES_BEFORE, ANNOUNCE_RULES_MINUTES_BEFORE, buildOpeningMessage, loadAnnouncedQueueIds, loadAnnouncementSticker, loadRulesAnnouncedQueueIds, loadRulesMessage, markQueueAnnounced, markQueueRulesAnnounced, saveAnnouncementSticker } from "./announce-sticker.mjs";
+import { ANNOUNCE_GRACE_MINUTES, ANNOUNCE_MINUTES_BEFORE, ANNOUNCE_RULES_MINUTES_BEFORE, sendOpeningMention, loadAnnouncedQueueIds, loadAnnouncementSticker, loadRulesAnnouncedQueueIds, loadRulesMessage, markQueueAnnounced, markQueueRulesAnnounced, saveAnnouncementSticker } from "./announce-sticker.mjs";
 import { queueEnabled, startQueueWorker } from "./queue-worker.mjs";
 
 const required = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"];
@@ -1002,17 +1002,11 @@ async function sendOpeningSequence() {
           await new Promise(resolve => setTimeout(resolve, 3_000));
           await sock.sendMessage(group.group_jid, { forward: sticker });
         }
-        // 3. @all com menções REAIS (@+número de cada participante)
-        let mentions = [];
-        try {
-          const metadata = await sock.groupMetadata(group.group_jid);
-          mentions = (metadata?.participants ?? []).map(participant => participant.id).filter(Boolean);
-        } catch { /* sem metadata: mensagem sai sem menções */ }
-        const opening = buildOpeningMessage(mentions);
-        await sock.sendMessage(group.group_jid, { text: opening.text, mentions: opening.mentions });
+        // 3. Native @all; large groups require the connected account to be admin.
+        const opening = await sendOpeningMention({ socket: sock, groupJid: group.group_jid });
         // 4. Marca APÓS a sequência inteira — UMA chave, uma fila, sem duplicar.
         markQueueAnnounced(queue.id, announced);
-        console.log(`📣 Abertura completa (fila ${queue.id}, ${mentions.length} menção(ões)).`);
+        console.log(`📣 Abertura completa (fila ${queue.id}, ${opening.collective ? "@all nativo enviado" : "aviso simples, sem @all"}).`);
       } catch (error) {
         console.error(`Falha na abertura (fila ${queue.id}):`, error?.message || error);
       }

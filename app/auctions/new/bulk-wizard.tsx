@@ -1,12 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { buildCustomValuesPlan, buildPollPlan, cardConditions, cardLanguages, DEFAULT_POLL_OPTIONS, GIVEAWAY_DEFAULT_OPTIONS, MAX_POLL_OPTIONS, parseCustomValues } from "@/lib/auction-wizard";
 import { brasiliaInputToIso, formatBrasiliaDateTime, formatBrasiliaTime, toBrasiliaInput } from "@/lib/brasilia-time";
 import { uploadCardImageBatch, type CardImageStage, type CardImageUploadFailure } from "@/lib/card-image";
-import { AUCTION_DRAFT_MAX_BYTES, auctionDraftJson, buildDraftState, buildDraftTitle, restoreDraftState } from "@/lib/auction-draft";
+import { AUCTION_DRAFT_MAX_BYTES, AUCTION_DRAFT_MAX_CARDS, auctionDraftJson, buildDraftState, buildDraftTitle, restoreDraftState } from "@/lib/auction-draft";
+import { createCardPreviewQueue, type CardPreviewQueue, type PreviewProgress } from "@/lib/card-preview";
 import { createPublicSupabaseClient } from "@/lib/supabase";
 
 type Group = { id: string; name: string; is_default: boolean };
@@ -36,35 +37,6 @@ const variants = ["Normal", "Holo", "Reverse Holo", "Full Art", "Illustration Ra
 const money = (value: number | null) => value == null || !Number.isFinite(value) ? "—" : new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
 const defaultSchedule = () => toBrasiliaInput(new Date(Date.now() + 5 * 60_000));
 
-// Wizard previews are DOWNSCALED to this size before entering the DOM. Phone
-// photos are 12 MP+; rendering 20-50 of them at full size forces the main
-// thread to decode hundreds of millions of pixels. A ~560 px JPEG is visually
-// identical in the thumbnail/large-preview slots and decodes ~50x cheaper.
-// Uploads still use the ORIGINAL card.file.
-const PREVIEW_MAX_SIDE = 560;
-
-async function makePreviewUrl(file: File): Promise<string> {
-  try {
-    const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
-    const scale = Math.min(1, PREVIEW_MAX_SIDE / Math.max(bitmap.width, bitmap.height));
-    if (scale >= 1) { bitmap.close(); return URL.createObjectURL(file); }
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-    const ctx = canvas.getContext("2d");
-    if (!ctx) { bitmap.close(); return URL.createObjectURL(file); }
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "medium";
-    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    bitmap.close();
-    const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, "image/jpeg", 0.8));
-    canvas.width = canvas.height = 0;
-    return blob ? URL.createObjectURL(blob) : URL.createObjectURL(file);
-  } catch {
-    return URL.createObjectURL(file);
-  }
-}
-
 function draftFor(file: File | null, preview: string, lot: number, expanded: boolean): Draft {
   return {
     id: crypto.randomUUID(), file, preview, imageUrl: "", imageStage: "idle", imageMessage: file ? "Aguardando otimização" : "",
@@ -84,7 +56,19 @@ export default function BulkAuctionWizard() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [suggestedLot, setSuggestedLot] = useState(1);
   const [firstLot, setFirstLot] = useState("1");
-  const [cards, setCards] = useState<Draft[]>([]);
+  const [cards, commitCards] = useState<Draft[]>([]);
+  const cardsRef = useRef<Draft[]>([]);
+  // Keep event/async callbacks in sync even when two selections precede the
+  // next render. Updaters run once, outside React's replayable updater queue.
+  function setCards(update: SetStateAction<Draft[]>) {
+    const next = typeof update === "function" ? update(cardsRef.current) : update;
+    cardsRef.current = next;
+    commitCards(next);
+  }
+  const previewQueue = useRef<CardPreviewQueue | null>(null);
+  const uploadWork = useRef(false);
+  const [previewProgress, setPreviewProgress] = useState<PreviewProgress>({ completed: 0, total: 0, remaining: 0 });
+  const preparingPreviews = previewProgress.remaining > 0;
   const [step, setStep] = useState(1);
   const [groupId, setGroupId] = useState("");
   const [intervalValue, setIntervalValue] = useState("30");
@@ -184,6 +168,8 @@ export default function BulkAuctionWizard() {
   }, [db]);
 
   useEffect(() => () => {
+    previewQueue.current?.dispose();
+    previewQueue.current = null;
     for (const url of previewUrls.current) URL.revokeObjectURL(url);
     previewUrls.current.clear();
   }, []);
@@ -218,36 +204,38 @@ export default function BulkAuctionWizard() {
     setCards(current => current.map(card => ({ ...card, [key]: value })));
   }
 
-  async function addFiles(filesLike: FileList | File[]) {
+  function addFiles(filesLike: FileList | File[]) {
+    if (busy || draftBusy || uploadWork.current) { setError("Aguarde o salvamento ou envio antes de adicionar mais fotos."); return; }
     const files = Array.from(filesLike).filter(file => ["image/jpeg", "image/png", "image/webp"].includes(file.type));
     if (!files.length) { setError("Selecione imagens JPG, PNG ou WebP."); return; }
-    setCards(current => {
-      const lot = Number(firstLot) || suggestedLot;
-      const added = files.map((file, index) => {
-        const preview = URL.createObjectURL(file); previewUrls.current.add(preview);
-        return draftFor(file, preview, lot + current.length + index, current.length + index === 0);
-      });
-      return [...current, ...added];
-    });
+    if (cardsRef.current.length + files.length > AUCTION_DRAFT_MAX_CARDS) { setError(`A fila aceita até ${AUCTION_DRAFT_MAX_CARDS} cartas. Há ${cardsRef.current.length} adicionadas; selecione no máximo ${AUCTION_DRAFT_MAX_CARDS - cardsRef.current.length} fotos.`); return; }
+    const current = cardsRef.current;
+    const lot = Number(firstLot) || suggestedLot;
+    const added = files.map((file, index) => ({ ...draftFor(file, "", lot + current.length + index, current.length + index === 0), imageMessage: "Preparando prévia…" }));
+    setCards([...current, ...added]);
     submission.current = null; setError("");
-    // Replace the full-size object URLs with downscaled previews (async, off
-    // the critical path): the wizard renders dozens of photos at once and
-    // 12 MP decodes were freezing the whole page.
-    const downscaled = await Promise.all(files.map(async file => ({ file, preview: await makePreviewUrl(file) })));
-    setCards(current => current.map(card => {
-      const match = downscaled.find(entry => entry.file === card.file);
-      if (!match || match.preview === card.preview) return card;
-      if (previewUrls.current.has(card.preview)) {
-        URL.revokeObjectURL(card.preview);
-        previewUrls.current.delete(card.preview);
-      }
-      previewUrls.current.add(match.preview);
-      return { ...card, preview: match.preview };
-    }));
+    previewQueue.current ??= createCardPreviewQueue({
+      onProgress: setPreviewProgress,
+      onPreview: (id, url) => {
+        if (!cardsRef.current.some(card => card.id === id)) return false;
+        previewUrls.current.add(url);
+        setCards(items => items.map(card => card.id === id ? { ...card, preview: url, imageMessage: "" } : card));
+        return true;
+      },
+      onError: id => setCards(items => items.map(card => card.id === id ? { ...card, imageMessage: "Prévia indisponível; foto original preservada para o envio." } : card)),
+    });
+    previewQueue.current.enqueue(added.map(card => ({ id: card.id, file: card.file! })));
   }
 
-  function addEmpty() { const lot = (Number(firstLot) || suggestedLot) + cards.length; setCards(current => [...current, draftFor(null, "", lot, current.length === 0)]); submission.current = null; }
+  function addEmpty() {
+    if (busy || draftBusy || uploadWork.current) return;
+    if (cardsRef.current.length >= AUCTION_DRAFT_MAX_CARDS) { setError(`A fila aceita até ${AUCTION_DRAFT_MAX_CARDS} cartas.`); return; }
+    const lot = (Number(firstLot) || suggestedLot) + cardsRef.current.length;
+    setCards(current => [...current, draftFor(null, "", lot, current.length === 0)]); submission.current = null;
+  }
   function removeCard(index: number) {
+    const targetId = cardsRef.current[index]?.id;
+    if (targetId) previewQueue.current?.cancel(targetId);
     setCards(current => {
       const target = current[index];
       if (target) {
@@ -428,13 +416,15 @@ export default function BulkAuctionWizard() {
   }
 
   async function saveDraft(auto = false) {
-    if (draftBusy || busy) return;
+    if (draftBusy || busy || uploadWork.current) return;
+    if (previewQueue.current?.busy) { if (!auto) setError("Aguarde a preparação das fotos antes de salvar."); return; }
     if (auto) {
       // Nada mudou desde o ultimo save (ou sem cartas): o intervalo e inerte.
       const fingerprint = currentDraftFingerprint();
       if (!fingerprint || fingerprint === lastSavedDraftFingerprint.current) return;
     }
     if (!cards.length) { if (!auto) setError("Adicione pelo menos uma carta antes de salvar o rascunho."); return; }
+    uploadWork.current = true;
     setDraftBusy(true); if (!auto) { setError(""); setDraftNotice(""); }
     try {
       // As fotos SOBEM no salvar — é isso que torna o rascunho restaurável em
@@ -479,11 +469,11 @@ export default function BulkAuctionWizard() {
         console.warn("Auto-save do rascunho desativado nesta sessão:", reason instanceof Error ? reason.message : reason);
       } else setError(reason instanceof Error ? reason.message : "Falha ao salvar o rascunho.");
     }
-    finally { setDraftBusy(false); }
+    finally { uploadWork.current = false; setDraftBusy(false); }
   }
 
   async function openDraft(id: string) {
-    if (draftBusy || busy) return;
+    if (draftBusy || busy || uploadWork.current || previewQueue.current?.busy) return;
     if (cards.length && !window.confirm("Abrir o rascunho substitui as cartas que você está editando agora (alterações não salvas serão perdidas). Continuar?")) return;
     setDraftBusy(true); setError("");
     try {
@@ -538,8 +528,11 @@ export default function BulkAuctionWizard() {
   }
 
   async function startQueue() {
+    if (busy || draftBusy || uploadWork.current) return;
+    if (previewQueue.current?.busy) { setError("Aguarde a preparação das fotos antes de publicar."); return; }
     const message = validateCards() || validateValues() || validatePublication();
     if (message) { setError(message); return; }
+    uploadWork.current = true;
     setBusy(true); setError("");
     try {
       const { urls: imageUrls, extraUrls, failures } = await uploadImages();
@@ -599,7 +592,7 @@ export default function BulkAuctionWizard() {
           .catch(() => undefined);
       }
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Falha ao iniciar a fila."); }
-    finally { setBusy(false); }
+    finally { uploadWork.current = false; setBusy(false); }
   }
 
   // Edição de lote pendente: valores default do diálogo a partir do item atual.
@@ -685,15 +678,16 @@ export default function BulkAuctionWizard() {
   }
 
   return <main className="shell batch-shell">
-    <header className="topbar"><div><p className="eyebrow">NOVOS LEILÕES</p><h1>Cadastro em lote</h1><p className="muted">Adicione várias cartas, defina a ordem e deixe o bot publicar sozinho.</p></div><div className="topbar-actions"><Link className="button-link" href="/auctions/brinde">🎁 Brinde</Link><button className="secondary" disabled={draftBusy || busy || !cards.length} onClick={() => void saveDraft()}>{draftBusy ? "Salvando…" : "💾 Salvar rascunho"}</button><Link href="/">← Cancelar</Link></div></header>
+    <header className="topbar"><div><p className="eyebrow">NOVOS LEILÕES</p><h1>Cadastro em lote</h1><p className="muted">Adicione várias cartas, defina a ordem e deixe o bot publicar sozinho.</p></div><div className="topbar-actions"><Link className="button-link" href="/auctions/brinde">🎁 Brinde</Link><button className="secondary" disabled={draftBusy || busy || preparingPreviews || !cards.length} onClick={() => void saveDraft()}>{draftBusy ? "Salvando…" : "💾 Salvar rascunho"}</button><Link href="/">← Cancelar</Link></div></header>
     <nav className="batch-steps">{["Cartas", "Valores", "Publicação", "Revisar"].map((label, index) => <button key={label} className={step === index + 1 ? "active" : step > index + 1 ? "done" : ""} onClick={() => index + 1 < step && setStep(index + 1)}>{index + 1}. {label}</button>)}</nav>
     {error && <p className="alert" role="alert">{error}</p>}
     {draftNotice && <p className="notice">{draftNotice}</p>}
+    {preparingPreviews && <p className="notice" role="status">Preparando fotos: {previewProgress.completed} de {previewProgress.total}. Você pode continuar preenchendo as cartas.</p>}
 
-    {step === 1 && <><section className="panel drop-panel" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); void addFiles(event.dataTransfer.files); }}><p className="eyebrow">ETAPA 1</p><h2>Adicionar cartas</h2><p className="muted">Arraste 1, 20, 50 ou mais imagens e preencha os dados de cada carta manualmente; você pode editar enquanto o upload continua.</p><div className="actions"><label className="button-like">＋ Selecionar imagens<input hidden type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={event => { if (event.target.files) void addFiles(event.target.files); event.currentTarget.value = ""; }} /></label><button className="secondary" type="button" onClick={addEmpty}>Adicionar sem imagem</button></div></section>
+    {step === 1 && <><section className="panel drop-panel" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); void addFiles(event.dataTransfer.files); }}><p className="eyebrow">ETAPA 1</p><h2>Adicionar cartas</h2><p className="muted">Selecione até 200 fotos e preencha os dados enquanto as prévias são preparadas. As fotos originais são preservadas para a publicação.</p><div className="actions"><label className="button-like">＋ Selecionar imagens<input hidden type="file" multiple disabled={busy || draftBusy} accept="image/jpeg,image/png,image/webp" onChange={event => { if (event.target.files) void addFiles(event.target.files); event.currentTarget.value = ""; }} /></label><button className="secondary" type="button" disabled={busy || draftBusy} onClick={addEmpty}>Adicionar sem imagem</button></div></section>
       {!cards.length && drafts.length > 0 && <section className="panel drafts-panel"><div className="panel-title"><div><h2>Rascunhos salvos</h2><p className="muted">Continue de onde parou — as fotos já estão no servidor. Publicar a fila apaga o rascunho automaticamente.</p></div></div><div className="draft-list">{drafts.map(draft => <article className="draft-row" key={draft.id}><div className="draft-row-info"><strong>{draft.title}</strong><span>Salvo em {formatBrasiliaDateTime(draft.updated_at, false)}</span></div><div className="actions"><button disabled={draftBusy} onClick={() => void openDraft(draft.id)}>Abrir</button><button className="danger-link" disabled={draftBusy} onClick={() => { if (window.confirm("Excluir este rascunho?")) void discardDraft(draft.id); }}>Excluir</button></div></article>)}</div></section>}
       {!!cards.length && <section className="panel"><div className="panel-title"><div><h2>{cards.length} carta(s)</h2><p className="muted">A ordem é a ordem de publicação. Preencha os dados de cada carta; nada é preenchido automaticamente.</p></div></div><div className="bulk-bar"><label>Idioma para todas<select value={bulkLanguage} onChange={e => setBulkLanguage(e.target.value)}>{cardLanguages.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label><button onClick={() => applyAll("language", bulkLanguage)}>Aplicar</button><label>Condição para todas<select value={bulkCondition} onChange={e => setBulkCondition(e.target.value)}>{cardConditions.map(item => <option key={item}>{item}</option>)}</select></label><button onClick={() => applyAll("condition", bulkCondition)}>Aplicar</button></div>
-        <div className="draft-list">{cards.map((card, index) => <article key={card.id} className="draft-card" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); if (dragging != null) moveCard(dragging, index); setDragging(null); }}><div className="draft-head"><span className="drag-handle" title="Arraste para mudar a ordem" draggable onDragStart={() => setDragging(index)} onDragEnd={() => setDragging(null)}>☰</span><div className="draft-thumb">{card.preview || card.imageUrl ? <img src={card.preview || card.imageUrl} alt="" loading="lazy" decoding="async" /> : <span>🃏</span>}</div><div className="draft-title"><strong>{index + 1}. {card.giveaway ? "🎁 " : ""}{card.name || "Carta sem nome"}</strong><span>{card.cardNumber || "Sem número"}</span>{card.giveaway && <span className="brinde-inline">🎁 Brinde — vira enquete, não leilão</span>}{card.imageMessage && card.imageStage !== "idle" && <span className={card.imageStage === "error" ? "alert" : "muted"}>Imagem: {card.imageMessage}</span>}</div><div className="draft-actions"><button className="secondary" onClick={() => moveCard(index, index - 1)} disabled={index === 0}>↑</button><button className="secondary" onClick={() => moveCard(index, index + 1)} disabled={index === cards.length - 1}>↓</button><button className="secondary" onClick={() => mutateCard(card.id, { giveaway: !card.giveaway })}>{card.giveaway ? "✓ Brinde" : "🎁 Brinde"}</button><button className="secondary" onClick={() => mutateCard(card.id, { expanded: !card.expanded })}>{card.expanded ? "Fechar" : "Editar"}</button><button className="danger-link" onClick={() => removeCard(index)}>Remover</button></div></div>{card.expanded && <div className="draft-fields"><label>Nome<input value={card.name} onChange={e => mutateCard(card.id, { name: e.target.value })} /></label><label>Número da carta<input placeholder="35/64" value={card.cardNumber} onChange={e => mutateCard(card.id, { cardNumber: e.target.value })} /></label>{card.giveaway && <label className="wide giveaway-options">🎁 Opções da enquete de brinde (uma por linha, 2 a 12)<textarea rows={3} value={card.giveawayOptions} onChange={e => mutateCard(card.id, { giveawayOptions: e.target.value })} placeholder={"Quero! 🙋\nTô dentro 🔥\nBora! 🎉"} /><small>"Quem clicar primeiro leva" — o bot publica a foto desta carta + a enquete no lugar do leilão.</small></label>}{!card.giveaway && <div className="draft-fields-extra wide"><span className="extra-label">Fotos de detalhe ({card.extraFiles.length + card.extraImages.length}/4){card.extraFiles.length ? <span className="extra-thumbs">{card.extraPreviews.map((url, index) => <span className="extra-thumb" key={url}><img src={url} alt="" loading="lazy" decoding="async" /><button type="button" title="Remover" onClick={() => { const url = card.extraPreviews[index]; const shared = cards.some((other) => other.id !== card.id && other.extraPreviews.includes(url)); if (!shared) URL.revokeObjectURL(url); mutateCard(card.id, { extraFiles: card.extraFiles.filter((_, i) => i !== index), extraPreviews: card.extraPreviews.filter((_, i) => i !== index) }); }}>×</button></span>)}</span> : null}</span><label className="button-like">＋ Detalhes{card.extraFiles.length + card.extraImages.length < 4 ? <input hidden type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={event => { const room = 4 - card.extraFiles.length - card.extraImages.length; const files = Array.from(event.target.files ?? []).slice(0, room); if (files.length) { const urls = files.map(file => URL.createObjectURL(file)); for (const url of urls) previewUrls.current.add(url); mutateCard(card.id, { extraFiles: [...card.extraFiles, ...files], extraPreviews: [...card.extraPreviews, ...urls] }); } event.currentTarget.value = ""; }} /> : null}</label></div>}<label>Variante<input list={`variants-${card.id}`} value={card.variant} onChange={e => mutateCard(card.id, { variant: e.target.value })} /><datalist id={`variants-${card.id}`}>{variants.map(item => <option key={item} value={item} />)}</datalist></label><label>Condição<select value={card.condition} onChange={e => mutateCard(card.id, { condition: e.target.value })}>{cardConditions.map(item => <option key={item}>{item}</option>)}</select></label><label>Idioma<select value={card.language} onChange={e => mutateCard(card.id, { language: e.target.value })}>{cardLanguages.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>{!card.file && <label className="wide">URL HTTPS da imagem<input value={card.imageUrl} onChange={e => mutateCard(card.id, { imageUrl: e.target.value })} /></label>}{index > 0 && <button className="secondary wide" onClick={() => copyPrevious(index)}>Copiar configurações da carta anterior</button>}</div>}</article>)}</div></section>}
+        <div className="draft-list">{cards.map((card, index) => <article key={card.id} className="draft-card" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); if (dragging != null) moveCard(dragging, index); setDragging(null); }}><div className="draft-head"><span className="drag-handle" title="Arraste para mudar a ordem" draggable onDragStart={() => setDragging(index)} onDragEnd={() => setDragging(null)}>☰</span><div className="draft-thumb">{card.preview || card.imageUrl ? <img src={card.preview || card.imageUrl} alt="" loading="lazy" decoding="async" /> : <span>🃏</span>}</div><div className="draft-title"><strong>{index + 1}. {card.giveaway ? "🎁 " : ""}{card.name || "Carta sem nome"}</strong><span>{card.cardNumber || "Sem número"}</span>{card.giveaway && <span className="brinde-inline">🎁 Brinde — vira enquete, não leilão</span>}{card.imageMessage && <span className={card.imageStage === "error" ? "alert" : "muted"}>Imagem: {card.imageMessage}</span>}</div><div className="draft-actions"><button className="secondary" onClick={() => moveCard(index, index - 1)} disabled={index === 0}>↑</button><button className="secondary" onClick={() => moveCard(index, index + 1)} disabled={index === cards.length - 1}>↓</button><button className="secondary" onClick={() => mutateCard(card.id, { giveaway: !card.giveaway })}>{card.giveaway ? "✓ Brinde" : "🎁 Brinde"}</button><button className="secondary" onClick={() => mutateCard(card.id, { expanded: !card.expanded })}>{card.expanded ? "Fechar" : "Editar"}</button><button className="danger-link" onClick={() => removeCard(index)}>Remover</button></div></div>{card.expanded && <div className="draft-fields"><label>Nome<input value={card.name} onChange={e => mutateCard(card.id, { name: e.target.value })} /></label><label>Número da carta<input placeholder="35/64" value={card.cardNumber} onChange={e => mutateCard(card.id, { cardNumber: e.target.value })} /></label>{card.giveaway && <label className="wide giveaway-options">🎁 Opções da enquete de brinde (uma por linha, 2 a 12)<textarea rows={3} value={card.giveawayOptions} onChange={e => mutateCard(card.id, { giveawayOptions: e.target.value })} placeholder={"Quero! 🙋\nTô dentro 🔥\nBora! 🎉"} /><small>"Quem clicar primeiro leva" — o bot publica a foto desta carta + a enquete no lugar do leilão.</small></label>}{!card.giveaway && <div className="draft-fields-extra wide"><span className="extra-label">Fotos de detalhe ({card.extraFiles.length + card.extraImages.length}/4){card.extraFiles.length ? <span className="extra-thumbs">{card.extraPreviews.map((url, index) => <span className="extra-thumb" key={url}><img src={url} alt="" loading="lazy" decoding="async" /><button type="button" title="Remover" onClick={() => { const url = card.extraPreviews[index]; const shared = cards.some((other) => other.id !== card.id && other.extraPreviews.includes(url)); if (!shared) URL.revokeObjectURL(url); mutateCard(card.id, { extraFiles: card.extraFiles.filter((_, i) => i !== index), extraPreviews: card.extraPreviews.filter((_, i) => i !== index) }); }}>×</button></span>)}</span> : null}</span><label className="button-like">＋ Detalhes{card.extraFiles.length + card.extraImages.length < 4 ? <input hidden type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={event => { const room = 4 - card.extraFiles.length - card.extraImages.length; const files = Array.from(event.target.files ?? []).slice(0, room); if (files.length) { const urls = files.map(file => URL.createObjectURL(file)); for (const url of urls) previewUrls.current.add(url); mutateCard(card.id, { extraFiles: [...card.extraFiles, ...files], extraPreviews: [...card.extraPreviews, ...urls] }); } event.currentTarget.value = ""; }} /> : null}</label></div>}<label>Variante<input list={`variants-${card.id}`} value={card.variant} onChange={e => mutateCard(card.id, { variant: e.target.value })} /><datalist id={`variants-${card.id}`}>{variants.map(item => <option key={item} value={item} />)}</datalist></label><label>Condição<select value={card.condition} onChange={e => mutateCard(card.id, { condition: e.target.value })}>{cardConditions.map(item => <option key={item}>{item}</option>)}</select></label><label>Idioma<select value={card.language} onChange={e => mutateCard(card.id, { language: e.target.value })}>{cardLanguages.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>{!card.file && <label className="wide">URL HTTPS da imagem<input value={card.imageUrl} onChange={e => mutateCard(card.id, { imageUrl: e.target.value })} /></label>}{index > 0 && <button className="secondary wide" onClick={() => copyPrevious(index)}>Copiar configurações da carta anterior</button>}</div>}</article>)}</div></section>}
       <div className="wizard-footer"><Link href="/">Cancelar</Link><button onClick={() => go(2)}>Continuar para valores →</button></div></>}
 
     {step === 2 && <><section className="panel"><p className="eyebrow">ETAPA 2</p><h2>Valores</h2><p className="muted">Gere a enquete por incremento ou escolha Personalizado e digite os valores exatos (ex.: 1, 2, 5, 10 — o maior pode ser ARREMATE).</p><div className="bulk-bar values"><label>Primeiro lote<input type="number" min="1" value={firstLot} onChange={e => setFirstLot(e.target.value)} /></label><button onClick={sequentialLots}>Numerar lotes</button><label>Lance inicial para todas<input type="number" min="0" step="0.01" value={bulkStart} onChange={e => setBulkStart(e.target.value)} /></label><button onClick={() => applyAll("startingPrice", bulkStart)}>Aplicar</button><label>Incremento para todas<input type="number" min="0.01" step="0.01" value={bulkIncrement} onChange={e => setBulkIncrement(e.target.value)} /></label><button onClick={() => applyAll("increment", bulkIncrement)}>Aplicar</button><label>Valores personalizados p/ todas<input inputMode="decimal" placeholder="Ex.: 1, 2, 5, 10" value={bulkCustomValues} onChange={e => setBulkCustomValues(e.target.value)} /></label><button onClick={() => { setCards(current => current.map(card => ({ ...card, pricingMode: "custom" as const, customValues: bulkCustomValues }))); submission.current = null; }}>Aplicar personalizados</button><label>Duração para todas (min)<input type="number" min="0.1" step="0.1" value={bulkDuration} onChange={e => setBulkDuration(e.target.value)} /></label><button onClick={() => applyAll("durationMinutes", bulkDuration)}>Aplicar</button></div>
@@ -701,6 +695,6 @@ export default function BulkAuctionWizard() {
 
     {step === 3 && <><section className="panel publication-panel"><p className="eyebrow">ETAPA 3</p><h2>Publicação</h2><div className="publication-grid"><label>Grupo do WhatsApp<select value={groupId} onChange={e => { setGroupId(e.target.value); submission.current = null; }}><option value="">Selecione…</option>{groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label><label>Publicar nova enquete a cada<div className="inline-fields"><input type="number" min="1" value={intervalValue} onChange={e => { setIntervalValue(e.target.value); submission.current = null; }} /><select value={intervalUnit} onChange={e => { setIntervalUnit(e.target.value as "seconds" | "minutes"); submission.current = null; }}><option value="seconds">segundos</option><option value="minutes">minutos</option></select></div></label><fieldset><legend>Começar</legend><label className="radio-row"><input type="radio" checked={publication === "now"} onChange={() => setPublication("now")} /> ▶ Agora</label><label className="radio-row"><input type="radio" checked={publication === "scheduled"} onChange={() => setPublication("scheduled")} /> 🕒 Agendar</label></fieldset>{publication === "scheduled" && <label>Data e horário de Brasília<input type="datetime-local" value={scheduledInput} onChange={e => setScheduledInput(e.target.value)} /><small>America/Sao_Paulo</small></label>}</div><details className="more-options"><summary>Mais opções</summary><p className="muted">A duração de cada leilão é independente do intervalo entre publicações.</p></details></section><div className="wizard-footer"><button className="secondary" onClick={() => setStep(2)}>← Valores</button><button onClick={() => go(4)}>Revisar fila →</button></div></>}
 
-    {step === 4 && <><section className="panel review-panel"><p className="eyebrow">ETAPA 4</p><h2>Revisar e iniciar</h2><div className="review-summary"><div><span>Cartas</span><strong>{cards.length}</strong></div><div><span>Lotes</span><strong>{cards[0]?.lotNumber ?? "—"} → {cards[cards.length - 1]?.lotNumber ?? "—"}</strong></div><div><span>Primeira publicação</span><strong>{publication === "now" ? "Agora" : startInstant ? formatBrasiliaDateTime(startInstant, false) : "—"}</strong></div><div><span>Intervalo</span><strong>{intervalSeconds}s</strong></div><div><span>Grupo</span><strong>{groups.find(group => group.id === groupId)?.name ?? "—"}</strong></div></div><div className="review-list">{cards.map((card, index) => { const start = startInstant ? new Date(startInstant.getTime() + index * intervalSeconds * 1000) : null, end = start ? new Date(start.getTime() + Math.round(Number(card.durationMinutes) * 60_000)) : null; return <article key={card.id}><div className="draft-thumb">{card.preview || card.imageUrl ? <img src={card.preview || card.imageUrl} alt="" loading="lazy" decoding="async" /> : <span>🃏</span>}</div><div><strong>Lote {card.lotNumber} — {card.name}</strong><p>{card.giveaway ? "🎁 Brinde — vira enquete de brinde (não é leilão)" : card.pricingMode === "custom" ? (() => { const pricing = pricingOf(card); return `Valores personalizados (${pricing.options.length}) · ${pricing.buyoutPrice != null ? `ARREMATE ${money(pricing.buyoutPrice)}` : "Sem ARREMATE"}`; })() : `${money(Number(card.startingPrice))} + ${money(Number(card.increment))} · ${card.buyout ? `ARREMATE ${money(Number(card.buyout))}` : "Sem ARREMATE"}`}</p><p>Publica: {start ? formatBrasiliaTime(start) : "Agora"} · Encerra: {end ? formatBrasiliaTime(end) : "—"}</p>{card.imageMessage && <p className="muted">Imagem: {card.imageMessage}</p>}</div></article>; })}</div>{uploadProgress && <p className="notice">{uploadProgress}</p>}</section><div className="wizard-footer"><button className="secondary" disabled={busy} onClick={() => setStep(3)}>← Publicação</button><button disabled={busy} onClick={() => void startQueue()}>{busy ? "Preparando fila…" : publication === "now" ? "▶ Iniciar fila agora" : "🕒 Agendar fila"}</button></div></>}
+    {step === 4 && <><section className="panel review-panel"><p className="eyebrow">ETAPA 4</p><h2>Revisar e iniciar</h2><div className="review-summary"><div><span>Cartas</span><strong>{cards.length}</strong></div><div><span>Lotes</span><strong>{cards[0]?.lotNumber ?? "—"} → {cards[cards.length - 1]?.lotNumber ?? "—"}</strong></div><div><span>Primeira publicação</span><strong>{publication === "now" ? "Agora" : startInstant ? formatBrasiliaDateTime(startInstant, false) : "—"}</strong></div><div><span>Intervalo</span><strong>{intervalSeconds}s</strong></div><div><span>Grupo</span><strong>{groups.find(group => group.id === groupId)?.name ?? "—"}</strong></div></div><div className="review-list">{cards.map((card, index) => { const start = startInstant ? new Date(startInstant.getTime() + index * intervalSeconds * 1000) : null, end = start ? new Date(start.getTime() + Math.round(Number(card.durationMinutes) * 60_000)) : null; return <article key={card.id}><div className="draft-thumb">{card.preview || card.imageUrl ? <img src={card.preview || card.imageUrl} alt="" loading="lazy" decoding="async" /> : <span>🃏</span>}</div><div><strong>Lote {card.lotNumber} — {card.name}</strong><p>{card.giveaway ? "🎁 Brinde — vira enquete de brinde (não é leilão)" : card.pricingMode === "custom" ? (() => { const pricing = pricingOf(card); return `Valores personalizados (${pricing.options.length}) · ${pricing.buyoutPrice != null ? `ARREMATE ${money(pricing.buyoutPrice)}` : "Sem ARREMATE"}`; })() : `${money(Number(card.startingPrice))} + ${money(Number(card.increment))} · ${card.buyout ? `ARREMATE ${money(Number(card.buyout))}` : "Sem ARREMATE"}`}</p><p>Publica: {start ? formatBrasiliaTime(start) : "Agora"} · Encerra: {end ? formatBrasiliaTime(end) : "—"}</p>{card.imageMessage && <p className="muted">Imagem: {card.imageMessage}</p>}</div></article>; })}</div>{uploadProgress && <p className="notice">{uploadProgress}</p>}</section><div className="wizard-footer"><button className="secondary" disabled={busy} onClick={() => setStep(3)}>← Publicação</button><button disabled={busy || draftBusy || preparingPreviews} onClick={() => void startQueue()}>{busy ? "Preparando fila…" : publication === "now" ? "▶ Iniciar fila agora" : "🕒 Agendar fila"}</button></div></>}
   </main>;
 }

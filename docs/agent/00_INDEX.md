@@ -18,7 +18,7 @@
 - **Banco conferido**: 67 registros remotos; os 59 arquivos locais têm correspondentes por nome. 23 versões diferem; oito registros remotos adicionais. As antigas pendências P-13/P-17 estão registradas. Não reaplicar por diferença de timestamp. Assinaturas/trechos principais do estado efetivo foram confirmados com uma consulta de catálogo.
 - Backup mais recente: local 20261010100000 / remoto 20261010192429; sete dias de auditoria/cache, timeout 55s e work_mem 32MB.
 - **Log Ingestion observado: 0,86/1 GB** em 2026-10-25, arredondado no Dashboard. Não é previsão nem consumo medido desta sessão. Evitar chamadas repetidas; não desligar proteções.
-- Validação anterior: typecheck, 78 testes da raiz, 52 do bot, check do bot (27), build e smoke sem login passaram. CI aprovado no commit d79feb9b; testes SQL do CI são em Postgres isolado.
+- Validação anterior à correção P-25/P-26: typecheck, 78 testes da raiz, 52 do bot, check do bot (27), build e smoke sem login passaram. CI aprovado no commit d79feb9b; testes SQL do CI são em Postgres isolado.
 
 ## Mapa das áreas
 
@@ -36,12 +36,15 @@
 | [11_PENDING_WORK.md](11_PENDING_WORK.md) | Pendências reais; aplicação antiga de migrations encerrada |
 | [12_SESSION_HANDOFF.md](12_SESSION_HANDOFF.md) | Checkpoint atual e próxima ação |
 | [13_MIGRATION_AUDIT.md](13_MIGRATION_AUDIT.md) | Mapeamento completo local/remoto e verificação de produção |
+| [14_FRONTEND_AND_MENTIONS_PLAN.md](14_FRONTEND_AND_MENTIONS_PLAN.md) | P-25/P-26 implementados: fila de prévias + @all nativo; validação e limites |
 
 O número 07 foi retirado com o reconhecimento de cartas; não é documento faltante a recriar.
 
 ## Atenções para o próximo trabalho
 
 Riscos identificados, ainda sem correção autorizada nesta sessão: retenção 12h remove pós-venda pendente; backup do dia não prova cobertura de todas as exclusões; anúncio final sem nova tentativa persistente; janela de concorrência da abertura; limites de snapshots e diagnóstico doctor incompleto. Ver backlog.
+
+P-25/P-26 implementados: seleção de até 200 fotos com duas prévias simultâneas e progresso; bot 0.2.6 envia @all nativo com verificação de permissão e fallback explícito. Validação atual: typecheck, 83 testes raiz, 56 bot, check 41 e build aprovados; navegador isolado com 200 fotos sintéticas. Documento 14 contém limites e evidência.
 
 ## Comandos de referência
 

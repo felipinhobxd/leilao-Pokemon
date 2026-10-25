@@ -11,14 +11,14 @@
 # Site (raiz)
 npm ci
 npm run typecheck      # tsc --noEmit
-npm test               # node --test tests/*.test.mjs  (78 testes)
+npm test               # node --test tests/*.test.mjs  (83 testes)
 node --test bot/*.test.mjs    # testes do bot (payment-reminder, announce-sticker, warning-notify, poll-votes, queue-worker...)
 npm run doctor         # check-up pré-leilão: migrations, RPCs, bot, backup, figurinha
 npm run build          # next build
 
 # Bot
 npm --prefix bot ci
-npm --prefix bot run check   # node --check em todos os .mjs + patch-baileys --check + node --test poll-votes/queue-worker/vote-log/error-log (27 testes)
+npm --prefix bot run check   # node --check em todos os .mjs + patch-baileys --check + node --test announce-sticker/poll-votes/queue-worker/vote-log/error-log (41 testes)
 
 # Smoke de rejeição sem autenticação (inicia servidor local na porta 3199)
 node tests/smoke.mjs
@@ -26,7 +26,7 @@ node tests/smoke.mjs
 
 ## Suítes por grupo
 
-### 1. Site/lib — `node --test tests/*.test.mjs` (78)
+### 1. Site/lib — `node --test tests/*.test.mjs` (83)
 - O que valida: formatos de leilão (`auction-format.test.mjs` — inclui valores personalizados), rascunhos do wizard (`auction-draft.test.mjs` — serialize/restore, guards de tamanho/contagem, clamp de etapa, compatibilidade com rascunhos da era do reconhecimento), rate limit, purge, comandos, dispatch-id, identidades de enquete, store de votos, grupos, contraste de UI (WCAG), tempo de Brasília, status WhatsApp, lifecycle do start-all (`start-all.test.mjs`), card-image e **export Excel** (`export-rows.test.mjs` — linhas de Vendas/TOTAL exato, Alterações com "Como"/marca de redução, Resumo, cleanPhone/winTypeLabel; lógica pura extraída para `lib/export-rows.ts`).
 - Riscos cobertos: anti-congelamento de UI, idempotência de formatos, round-trip estável do rascunho (restore∘build = identidade), planilha batendo com os dados.
 - Lacunas: sem testes de rotas HTTP reais (só `smoke.mjs` pós-build); a montagem do workbook ExcelJS em si segue validada por build + revisão (a LÓGICA das linhas é testada em `lib/export-rows.ts`).
@@ -37,7 +37,7 @@ node tests/smoke.mjs
 - `tests/concurrency.py` (Python): buyouts concorrentes e eventos duplicados.
 - ⚠️ Localmente exige Postgres + psql; a validação local usual é confiar no CI.
 
-### 3. Bot — `node --test bot/*.test.mjs` (52)
+### 3. Bot — `node --test bot/*.test.mjs` (56)
 - poll-votes (decriptografia com pares LID/telefone), queue-worker (claim/lock/heartbeat/retry), poll-identities, poll-store, group-participants, bot-reconnect, warning-notify (formatador BRL/nbsp, entrega, retry parcial sem duplicar, sem socket) e **vote-log** (2026-10-08: log de re-oferta pós-retirada com marca de redução, normalizando o nbsp do BRL).
 - Lacunas: sem teste de sessão real Baileys (impossível offline), sem teste do restart noturno (lógica fina, revisada). A limpeza 12h é coberta por `tests/cleanup-retention.sql` (janela padrão dos dois lados + granularidade em horas).
 
@@ -57,3 +57,7 @@ node tests/smoke.mjs
 ## Evidência da revisão
 
 Na análise anterior desta conversa passaram: typecheck, 78 testes da raiz, 52 do bot, check do bot com 27 testes, build e smoke HTTP sem login. Não foram repetidos para a revisão apenas documental de 2026-10-25. A conferência de produção usou histórico e uma consulta de catálogo, sem executar a suíte SQL no banco vivo. `npm run doctor` é diagnóstico parcial: não certifica histórico/versão de todas as funções e não foi executado nesta sessão para evitar chamadas extras.
+
+## Validação P-25/P-26 — 2026-10-25
+
+Typecheck, 83 testes raiz, 56 bot, check 41 e build aprovados. Novos testes: card-preview (200 itens, concorrência global, cancelamento/unmount, falhas/limpeza) e abertura nativa (flag preservada no envio e protocolo Baileys, permissões e fallbacks). Harness de navegador isolado com 200 JPEGs sintéticos de 12 MP concluiu em 15,5s, concorrência máxima 2, com digitação e progresso durante o preparo, sem erros no console. Não mede a memória do Brave nem substitui teste real de recebimento de @all. Detalhes no documento 14.

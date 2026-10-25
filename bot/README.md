@@ -172,3 +172,7 @@ Migrations de participantes, avisos, limpeza 12h/prune 7d e backup já registrad
 A limpeza atual pode remover pós-venda pendente antes dos lembretes de sete dias. O backup existente no dia não prova cobertura de toda exclusão posterior. Falhas de anúncio final e concorrência entre ticks da abertura também estão documentadas em [11_PENDING_WORK.md](../docs/agent/11_PENDING_WORK.md). Nada disso foi alterado nesta revisão documental.
 
 Log Ingestion mostrado no painel em 2026-10-25: 0,86/1 GB. Não iniciar/reiniciar o bot nem disparar backups/testes apenas para conferir migrations; usar metadados pontuais. Logs locais do terminal e linhas da tabela auction_events não são a mesma métrica de ingestão dos serviços Supabase.
+
+## Correções do bot 0.2.6 — @all nativo
+
+A abertura agora envia `mentionAll: true`, com validação de administrador para grupos acima de 32 participantes. Sem permissão ou metadata confiável, o bot envia aviso simples sem @all e explica no log. Não concede admin automaticamente. Atualize/reinicie o processo na janela operacional adequada para carregar a versão nova; arquivos atualizados não mudam um processo Node já aberto. Não se garante alerta sonoro a quem silenciou @all.

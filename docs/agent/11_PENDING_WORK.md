@@ -34,6 +34,15 @@ Limite da conclusão: correspondência de histórico por nome + metadados/trecho
 
 Os itens P-18 a P-24 são registros de revisão, não autorização para alterar produção automaticamente.
 
+## P-25 e P-26 — Implementados em 2026-10-25
+
+| ID | Prioridade | Estado / plano |
+|---|---|---|
+| P-25 | Concluído no código | Fila compartilhada de duas prévias, placeholders, entrega progressiva, liberação/cancelamento, limite 200 e coordenação com salvamento/publicação. Testes unitários + navegador isolado com 200 fotos sintéticas de 12 MP; sem reprodução com os arquivos reais no Brave. |
+| P-26 | Concluído no código | @all nativo com mentionAll preservado até o envio e serializador; permissão admin para grupos >32 e fallback explícito. Bot 0.2.6. Recebimento real/conta admin dependem do ambiente do operador. |
+
+Implementação, evidência e limites da validação em [14_FRONTEND_AND_MENTIONS_PLAN.md](14_FRONTEND_AND_MENTIONS_PLAN.md). Após o diagnóstico, o operador autorizou implementar os dois itens e publicar no GitHub. Código e docs atualizados; nenhum envio WhatsApp ou consulta ao Supabase.
+
 ## Log Ingestion — restrição atual
 
 Dashboard observado em 2026-10-25: **0,86/1 GB**, valor arredondado do ciclo. Evitar polling extra, consultas repetidas, backups manuais ou testes de carga na produção. Nesta revisão houve leitura do histórico e uma consulta SQL de catálogo; nenhuma medição exata do delta de ingestão. Não há garantia sobre tráfego dos processos já ativos.

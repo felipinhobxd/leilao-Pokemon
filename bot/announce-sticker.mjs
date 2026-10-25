@@ -9,8 +9,8 @@
 //      + key) em bot/data/announcement-sticker.json — persiste entre restarts.
 //   3. No agendamento: quando o PRIMEIRO lote de uma fila está a caminho
 //      (default: 5 minutos, BOT_ANNOUNCE_MINUTES_BEFORE; 0 = na hora), o bot
-//      retransmite a figurinha no grupo + mensagem com @todos (menção real
-//      de todos os participantes via groupMetadata).
+//      retransmite a figurinha no grupo + @all nativo (mentionAll), após
+//      validar a permissão da conta com groupMetadata.
 //
 // Estado "já anunciado" por fila em bot/data/announce-state.json (idempotência
 // entre restarts; arquivo local como sessão/logs/backups — não é dado do
@@ -22,6 +22,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { normalizeUserJid } from "./poll-identities.mjs";
 
 const here = join(fileURLToPath(new URL(".", import.meta.url)));
 export const DATA_DIR = process.env.BOT_DATA_DIR ? join(process.env.BOT_DATA_DIR) : join(here, "data");
@@ -148,11 +149,38 @@ export function markQueueRulesAnnounced(queueId, announced = loadRulesAnnouncedQ
   return announced;
 }
 
-/** Mensagem de abertura com @all: o WhatsApp notifica cada participante quando
- * TODOS os JIDs do grupo estão no array `mentions`, mesmo o texto dizendo só
- * "@all" (é assim que o app nativo implementa a menção coletiva). */
-export function buildOpeningMessage(participantJids = []) {
-  const jids = participantJids.filter(jid => typeof jid === "string" && jid.includes("@"));
-  const text = `📣 ${jids.length >= 2 ? "@all " : ""}O leilão vai começar!\nPreparem os lances — o primeiro lote chega em instantes. 🃏🔥`;
-  return { text, mentions: jids };
+/** Native collective mention, not a hidden list of individual JIDs. */
+export function buildOpeningMessage(mentionAll = true) {
+  const text = `📣 ${mentionAll ? "@all " : ""}O leilão vai começar!\nPreparem os lances — o primeiro lote chega em instantes. 🃏🔥`;
+  return { text, mentionAll };
+}
+
+export function openingMentionPermission(metadata, user) {
+  if (!Array.isArray(metadata?.participants) || !metadata.participants.length) {
+    return { allowed: false, reason: "Não foi possível confirmar os participantes do grupo." };
+  }
+  const count = Math.max(Number(metadata.size) || 0, metadata.participants.length);
+  if (count <= 32) return { allowed: true, reason: null };
+  const own = new Set([user?.id, user?.lid].map(normalizeUserJid).filter(Boolean));
+  const self = metadata.participants.find(member =>
+    [member.id, member.lid, member.phoneNumber].some(jid => own.has(normalizeUserJid(jid))));
+  const isAdmin = self?.admin === "admin" || self?.admin === "superadmin" || own.has(normalizeUserJid(metadata.owner));
+  return isAdmin
+    ? { allowed: true, reason: null }
+    : { allowed: false, reason: "O bot precisa ser administrador para usar @all em grupos com mais de 32 participantes." };
+}
+
+/** Used by the real opening sequence and tested without a WhatsApp socket. */
+export async function sendOpeningMention({ socket, groupJid, warn = console.warn }) {
+  let permission;
+  try {
+    const metadata = await socket.groupMetadata(groupJid);
+    permission = openingMentionPermission(metadata, socket.user);
+  } catch {
+    permission = { allowed: false, reason: "Falha ao consultar o grupo; não foi possível validar a permissão de @all." };
+  }
+  if (!permission.allowed) warn(`⚠️ Abertura sem @all: ${permission.reason} Enviando aviso simples.`);
+  // Forward the entire payload: rebuilding only text/mentions drops mentionAll.
+  await socket.sendMessage(groupJid, buildOpeningMessage(permission.allowed));
+  return { collective: permission.allowed, reason: permission.reason };
 }

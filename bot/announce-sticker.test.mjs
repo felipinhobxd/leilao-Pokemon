@@ -9,7 +9,8 @@ import { join } from "node:path";
 const dataDir = mkdtempSync(join(tmpdir(), "announce-sticker-test-"));
 process.env.BOT_DATA_DIR = dataDir;
 
-const { loadAnnouncedQueueIds, loadAnnouncementSticker, saveAnnouncementSticker, markQueueAnnounced, markQueueRulesAnnounced, loadRulesAnnouncedQueueIds, loadRulesMessage, buildOpeningMessage, STICKER_FILE, ANNOUNCE_GRACE_MINUTES, ANNOUNCE_MINUTES_BEFORE } = await import("./announce-sticker.mjs");
+const { loadAnnouncedQueueIds, loadAnnouncementSticker, saveAnnouncementSticker, markQueueAnnounced, markQueueRulesAnnounced, loadRulesAnnouncedQueueIds, loadRulesMessage, buildOpeningMessage, openingMentionPermission, sendOpeningMention, STICKER_FILE, ANNOUNCE_GRACE_MINUTES, ANNOUNCE_MINUTES_BEFORE } = await import("./announce-sticker.mjs");
+const { generateWAMessageContent } = await import('@whiskeysockets/baileys');
 
 test.after(() => {
   rmSync(dataDir, { recursive: true, force: true });
@@ -43,14 +44,65 @@ test("filas anunciadas persistem entre leituras", () => {
   assert.ok(loadAnnouncedQueueIds().has("q2"));
 });
 
-test("mensagem de abertura usa @all com TODOS os JIDs no mentions (menção coletiva nativa do WhatsApp)", () => {
-  const message = buildOpeningMessage(["5541@s.whatsapp.net", "5519@s.whatsapp.net", "lixo", 42]);
-  // @all é o texto visual; os JIDs no mentions é o que NOTIFICA cada pessoa.
+test("mensagem de abertura usa a flag nativa de @all, sem lista oculta de menções", () => {
+  const message = buildOpeningMessage();
   assert.ok(message.text.includes("@all"));
-  assert.deepEqual(message.mentions, ["5541@s.whatsapp.net", "5519@s.whatsapp.net"]);
-  const solo = buildOpeningMessage(["5541@s.whatsapp.net"]);
-  assert.ok(!solo.text.includes("@all"), "uma pessoa só não promete @all");
-  assert.deepEqual(solo.mentions, ["5541@s.whatsapp.net"]);
+  assert.equal(message.mentionAll, true);
+  assert.equal(message.mentions, undefined);
+  const fallback = buildOpeningMessage(false);
+  assert.ok(!fallback.text.includes("@all"));
+  assert.equal(fallback.mentionAll, false);
+});
+
+test('envio real da abertura preserva a flag até o serializador Baileys', async () => {
+  const sent = [];
+  const socket = { user: { id: '5511:4@s.whatsapp.net', lid: '111:2@lid' },
+    groupMetadata: async () => ({ size: 150, participants: [{ id: '111@lid', admin: 'admin' }] }),
+    sendMessage: async (jid, payload) => sent.push({ jid, payload }),
+  };
+  const result = await sendOpeningMention({ socket, groupJid: '123@g.us', warn: () => assert.fail('unexpected warning') });
+  assert.equal(result.collective, true);
+  assert.equal(sent[0].jid, '123@g.us');
+  const generated = await generateWAMessageContent(sent[0].payload, {});
+  assert.equal(generated.extendedTextMessage.contextInfo.nonJidMentions, 1);
+  assert.equal(generated.extendedTextMessage.contextInfo.mentionedJid?.length ?? 0, 0);
+});
+
+test('grupos pequenos permitem @all; grupos grandes precisam de admin, incluindo aliases PN/LID', () => {
+  assert.equal(openingMentionPermission({ participants: [{ id: 'other@lid' }] }, {}).allowed, true);
+  for (const admin of ['admin', 'superadmin']) {
+    assert.equal(openingMentionPermission({ size: 33, participants: [{ id: 'other@lid', phoneNumber: '5511@s.whatsapp.net', admin }] }, { id: '5511:7@s.whatsapp.net' }).allowed, true);
+  }
+  assert.equal(openingMentionPermission({ size: 150, owner: '111@lid', participants: [{ id: '111@lid' }] }, { lid: '111:4@lid' }).allowed, true);
+  assert.equal(openingMentionPermission({ size: 150, participants: [{ id: '111@lid' }] }, { lid: '111@lid' }).allowed, false);
+  assert.equal(openingMentionPermission({}, {}).allowed, false);
+});
+
+test('sem admin envia aviso simples com diagnóstico e sem marcador coletivo', async () => {
+  const warnings = [], sent = [];
+  const socket = { user: { id: '5511@s.whatsapp.net' },
+    groupMetadata: async () => ({ size: 150, participants: [{ id: '5511@s.whatsapp.net' }] }),
+    sendMessage: async (_, message) => sent.push(message),
+  };
+  const result = await sendOpeningMention({ socket, groupJid: '123@g.us', warn: message => warnings.push(message) });
+  assert.equal(result.collective, false);
+  assert.match(warnings[0], /administrador/);
+  assert.equal(sent[0].mentionAll, false);
+  assert.ok(!sent[0].text.includes('@all'));
+  const generated = await generateWAMessageContent(sent[0], {});
+  assert.notEqual(generated.extendedTextMessage.contextInfo?.nonJidMentions, 1);
+});
+
+test('metadata indisponível não promete @all e falha de envio continua sendo erro', async () => {
+  const warnings = [], sent = [];
+  const socket = { groupMetadata: async () => { throw new Error('offline'); },
+    sendMessage: async (_, message) => sent.push(message) };
+  const result = await sendOpeningMention({ socket, groupJid: '123@g.us', warn: message => warnings.push(message) });
+  assert.equal(result.collective, false);
+  assert.match(warnings[0], /Falha ao consultar/);
+  assert.equal(sent[0].mentionAll, false);
+  socket.sendMessage = async () => { throw new Error('send failed'); };
+  await assert.rejects(sendOpeningMention({ socket, groupJid: '123@g.us', warn() {} }), /send failed/);
 });
 
 test("estado de produção NÃO é tocado (BOT_DATA_DIR redirecionado)", () => {

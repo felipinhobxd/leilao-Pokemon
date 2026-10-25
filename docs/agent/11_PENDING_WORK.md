@@ -49,7 +49,7 @@ Migration 20261025054810 corrigiu o guard da RPC instalada de 100 para 200, sem 
 
 ## Log Ingestion — restrição atual
 
-Dashboard observado em 2026-10-25: **0,86/1 GB**, valor arredondado do ciclo. Evitar polling extra, consultas repetidas, backups manuais ou testes de carga na produção. Nesta revisão houve leitura do histórico e uma consulta SQL de catálogo; nenhuma medição exata do delta de ingestão. Não há garantia sobre tráfego dos processos já ativos.
+Última leitura do Dashboard em 2026-10-25, após P-27: **0,88/1 GB**, valor arredondado do ciclo. Evitar polling extra, consultas repetidas, backups manuais ou testes de carga na produção. Nesta revisão houve leitura do histórico e uma consulta SQL de catálogo; nenhuma medição exata do delta de ingestão. Não há garantia sobre tráfego dos processos já ativos.
 
 O antigo 0,96/1 GB e estimativas de MB/dia são históricos e não devem ser tratados como medição atual. Limpar auction_events não estorna Log Ingestion. Ver [10_SECURITY_AND_PERFORMANCE.md](10_SECURITY_AND_PERFORMANCE.md).
 

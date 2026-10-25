@@ -17,7 +17,7 @@
 - Avisos globais por redução direta ou retirada/re-oferta: histórico total preservado, ciclo de três com reset e DM apenas aos administradores. Suspensão com prazo/indefinida, banimento e reativação.
 - **Banco**: 68 registros remotos / 60 arquivos locais após a migration 20261025054810. Corrigida RPC instalada com guard 100 para aceitar 200; a constraint e o corpo local já aceitavam 200. Histórico por nome não comprova corpo integral. Mapeamento anterior: 23 versões diferentes e oito extras; não reaplicar por timestamp. Ver documento 13.
 - Backup mais recente: local 20261010100000 / remoto 20261010192429; sete dias de auditoria/cache, timeout 55s e work_mem 32MB.
-- **Log Ingestion observado: 0,86/1 GB** em 2026-10-25, arredondado no Dashboard. Não é previsão nem consumo medido desta sessão. Evitar chamadas repetidas; não desligar proteções.
+- **Log Ingestion observado: 0,88/1 GB** em 2026-10-25, arredondado no Dashboard. Não é previsão nem consumo medido desta sessão. Evitar chamadas repetidas; não desligar proteções.
 - Validação anterior à correção P-25/P-26: typecheck, 78 testes da raiz, 52 do bot, check do bot (27), build e smoke sem login passaram. CI aprovado no commit d79feb9b; testes SQL do CI são em Postgres isolado.
 
 ## Mapa das áreas

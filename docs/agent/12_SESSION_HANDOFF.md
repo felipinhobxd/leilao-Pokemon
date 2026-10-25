@@ -69,3 +69,5 @@ Antes de nova mudança de banco, usar evidência local e o mapeamento já salvo;
 ## Histórico técnico resumido
 
 As sessões anteriores corrigiram votos encapsulados (ephemeralMessage), identidade LID/telefone, repetição de anúncio final, travas de sessão, estágios de publicação, rascunhos/brindes, avisos e redução pós-retirada. Em 08/10 houve queda do Supabase e endurecimento do tratamento de erros do filho; prune e backup limitado foram registrados depois. Os detalhes técnicos e limitações atuais estão nos documentos de área. Instruções antigas para aplicar migrations foram superadas pela conferência de 25/10.
+
+Última leitura de Log Ingestion após P-27: **0,88/1 GB**, agregada/arredondada; valores 0,86 acima descrevem observações anteriores. Não há medição do consumo exclusivo desta tarefa.

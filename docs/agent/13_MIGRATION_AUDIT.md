@@ -138,3 +138,5 @@ O painel da organização mostrou **0,86 / 1 GB** no início e novamente no ence
 A única consulta SQL manual foi a conferência de catálogo acima. Alterações dos MDs e verificações locais não fazem chamadas ao Supabase. Não desabilitar auditoria/segurança para economizar logs. Excluir auction_events é retenção de dados de negócio e **não desfaz** Log Ingestion já contabilizado.
 
 Referência oficial consultada: [Manage Logs Ingest usage](https://supabase.com/docs/guides/platform/manage-your-usage/logs-ingest). A ingestão reúne logs dos serviços, não deve ser confundida com egress, tamanho do banco ou a tabela auction_events.
+
+Na leitura posterior à correção P-27, o Dashboard passou a mostrar **0,88/1 GB**. Continua abaixo de 1 GB; não é possível atribuir o delta à tarefa, pois o valor é agregado/arredondado e os processos ativos também geram logs. Não houve carga de teste na produção.

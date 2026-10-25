@@ -68,3 +68,52 @@ test('offline dashboard is visibly distinct from bot state and reconnects with o
  await context.setOffline(false);
  await expect(status.getByText('Painel atualizado',{exact:true})).toBeVisible();
 });
+
+test('unsaved bulk navigation can be cancelled without losing typed card data',async({page})=>{
+ await page.goto('/auctions/new');await page.getByRole('button',{name:'Adicionar sem imagem',exact:true}).click();
+ await page.getByLabel('Nome',{exact:true}).fill('Rascunho protegido');
+ await page.getByRole('navigation',{name:'Navegação principal'}).getByRole('link',{name:'Painel',exact:true}).click();
+ const dialog=page.getByRole('dialog',{name:'Sair da criação do leilão?',exact:true});
+ await expect(dialog).toBeVisible();await expect(dialog.getByRole('button',{name:'Continuar editando',exact:true})).toBeFocused();
+ await dialog.getByRole('button',{name:'Continuar editando',exact:true}).click();
+ await expect(page.getByLabel('Nome',{exact:true})).toHaveValue('Rascunho protegido');await expect(page).toHaveURL(/\/auctions\/new$/);
+});
+
+test('save-and-leave keeps a draft that can be reopened from a new wizard visit',async({page})=>{
+ await page.goto('/auctions/new');await page.getByRole('button',{name:'Adicionar sem imagem',exact:true}).click();
+ await page.getByLabel('Nome',{exact:true}).fill('Salvar antes de sair');
+ await page.getByRole('link',{name:'← Cancelar',exact:true}).click();
+ await page.getByRole('dialog').getByRole('button',{name:'Salvar rascunho e sair',exact:true}).click();
+ await expect(page).toHaveURL('http://127.0.0.1:3214/');
+ await page.getByRole('navigation',{name:'Navegação principal'}).getByRole('link',{name:'Criar leilão',exact:true}).click();
+ await page.getByRole('button',{name:'Abrir',exact:true}).click();
+ await expect(page.getByLabel('Nome',{exact:true})).toHaveValue('Salvar antes de sair');
+});
+
+test('failed save-and-leave keeps the wizard and edits available for another try',async({page,request})=>{
+ await request.post('/__fixture/config',{data:{draftFailures:1}});
+ await page.goto('/auctions/new');await page.getByRole('button',{name:'Adicionar sem imagem',exact:true}).click();
+ await page.getByLabel('Nome',{exact:true}).fill('Não perder na falha');
+ await page.getByRole('link',{name:'← Cancelar',exact:true}).click();
+ const dialog=page.getByRole('dialog');await dialog.getByRole('button',{name:'Salvar rascunho e sair',exact:true}).click();
+ await expect(dialog.getByRole('alert')).toContainText('O rascunho não foi salvo por completo');
+ await expect(page).toHaveURL(/\/auctions\/new$/);await dialog.getByRole('button',{name:'Continuar editando',exact:true}).click();
+ await expect(page.getByLabel('Nome',{exact:true})).toHaveValue('Não perder na falha');
+});
+
+test('a fully saved draft leaves without another confirmation',async({page})=>{
+ await page.goto('/auctions/new');await page.getByRole('button',{name:'Adicionar sem imagem',exact:true}).click();
+ await page.getByLabel('Nome',{exact:true}).fill('Já salvo');await page.getByRole('button',{name:'💾 Salvar rascunho',exact:true}).click();
+ await expect(page.getByText('Salvo',{exact:true})).toBeVisible();
+ await page.getByRole('navigation',{name:'Navegação principal'}).getByRole('link',{name:'Painel',exact:true}).click();
+ await expect(page).toHaveURL('http://127.0.0.1:3214/');await expect(page.getByRole('dialog')).toHaveCount(0);
+});
+
+test('single wizard confirms intentional discard and never publishes while navigating away',async({page,request})=>{
+ await page.goto('/single');await page.getByLabel('Nome',{exact:true}).fill('Cadastro único');
+ await page.getByRole('link',{name:'← Cancelar',exact:true}).click();
+ const dialog=page.getByRole('dialog');await expect(dialog.getByRole('button',{name:'Salvar rascunho e sair',exact:true})).toHaveCount(0);
+ await dialog.getByRole('button',{name:'Sair sem salvar alterações',exact:true}).click();
+ await expect(page).toHaveURL('http://127.0.0.1:3214/');
+ const calls=await(await request.get('/__fixture/calls')).json();expect(calls.filter(c=>c.url==='/api/auctions/new'&&c.method==='POST')).toHaveLength(0);
+});

@@ -16,3 +16,6 @@ Log Ingestion alvo 1GB: somente consultas pontuais de catálogo/advisors e uma i
 
 
 Etapa posterior: documento 20, aviso de atualização do painel implementado, 125 testes raiz/typecheck locais aprovados e CI de navegador ampliada. Não iniciou proteção de navegação ainda; operador pediu aviso de transição. Nenhum arquivo de bot ou migration alterado nesta etapa.
+
+
+Etapa de navegação iniciada após aviso ao operador e CI verde de 55e6a40e. Provider/GuardedLink cobre menus e links de cancelar nos dois wizards; lote pode salvar e sair somente com rascunho completo. Fotos locais pendentes continuam protegidas, falhas não navegam; single tem descarte explícito sem publicar. beforeunload centralizado; não bloqueia toda navegação de histórico do navegador. 127 testes raiz/typecheck/build locais aprovados e teste visual salvou/reabriu corretamente. Consultar CI/deploy finais. Documento 20.

@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import {GuardedLink as Link,useNavigationGuard} from "@/app/navigation-guard";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {pendingCreationKey,readPendingCreation,storePendingCreation} from "@/lib/wizard-state";
 import {brasiliaInputToIso,toBrasiliaInput} from "@/lib/brasilia-time";
@@ -32,6 +32,7 @@ const wait=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
 export default function NewAuctionWizard(){
   const router=useRouter(); const [db]=useState(createPublicSupabaseClient); const [ready,setReady]=useState(false); const [session,setSession]=useState<any>(null);
   const [groups,setGroups]=useState<Group[]>([]); const [step,setStep]=useState(1); const [form,setForm]=useState<FormState>(initial); const [imageFile,setImageFile]=useState<File|null>(null); const [previewUrl,setPreviewUrl]=useState(""); const [imageProgress,setImageProgress]=useState(""); const [busy,setBusy]=useState(false); const [error,setError]=useState(""); const [created,setCreated]=useState<Created|null>(null); const [progress,setProgress]=useState<PublishProgress|null>(null); const [watching,setWatching]=useState(false); const [showAdvanced,setShowAdvanced]=useState(false);
+  const edited=useRef(false);
   const creationId=useRef(crypto.randomUUID());
   const pending=useRef<Record<string,unknown>|null>(null);
   const [pendingConfirmation,setPendingConfirmation]=useState(false);
@@ -46,7 +47,8 @@ export default function NewAuctionWizard(){
   const options=activePlan?.options??[]; const group=groups.find(g=>g.id===form.groupId); const image=previewUrl||form.imageUrl;
   const caption=buildAuctionCaption({lotNumber:form.lotNumber||"?",name:form.name||"Carta",cardNumber:form.cardNumber,condition:form.condition,language:form.language}); const pollTitle=buildPollTitle(form.lotNumber||"?");
   const overflowMessage=form.pricingMode==="custom"?"":plan.overflow&&buyout!=null&&plan.minimumIncrement!=null?`Esses valores gerariam ${plan.optionCount} opções, mas o limite é ${MAX_POLL_OPTIONS}. Use incremento de pelo menos ${money(plan.minimumIncrement)}.`:plan.overflow?`A enquete aceita no máximo ${MAX_POLL_OPTIONS} opções.`:"";
-  const patch=<K extends keyof FormState>(key:K,value:FormState[K])=>setForm(f=>({...f,[key]:value}));
+  useNavigationGuard({isDirty:()=>!created&&Boolean(edited.current||imageFile||pending.current),isBusy:()=>!created&&busy,message:()=>pending.current?"Há uma publicação aguardando confirmação. O envio pode já ter ocorrido. Recomendamos continuar nesta página e confirmar o envio anterior antes de sair.":"Há alterações ou fotos que ainda não foram publicadas. Se você sair agora, esse trabalho será perdido. Continue editando para concluir o leilão."});
+  const patch=<K extends keyof FormState>(key:K,value:FormState[K])=>{edited.current=true;setForm(f=>({...f,[key]:value}));};
   function validate(target:number){setError("");if(target>=2&&!form.name.trim()){setError("Informe o nome da carta.");return false}if(target>=2&&form.imageUrl&&!/^https:\/\//i.test(form.imageUrl)){setError("A URL da imagem precisa começar com HTTPS.");return false}if(target>=3){if(form.pricingMode==="custom"){if(!customValues||!customPlan||customPlan.error){setError(customPlan?.error??"Informe os valores da enquete separados por vírgula (ex.: 1, 2, 5, 10).");return false}}else{if(!Number.isFinite(start)||start<0){setError("Lance inicial inválido.");return false}if(!Number.isFinite(increment)||increment<=0){setError("Incremento inválido.");return false}if(buyout!=null&&(!Number.isFinite(buyout)||buyout<=start)){setError("O ARREMATE deve ser maior que o lance inicial.");return false}if(buyout==null&&(!Number.isSafeInteger(optionCount)||optionCount<2||optionCount>MAX_POLL_OPTIONS)){setError(`Escolha entre 2 e ${MAX_POLL_OPTIONS} opções.`);return false}if(overflowMessage){setError(overflowMessage);return false}}if(!form.groupId){setError("Selecione o grupo do WhatsApp.");return false}if(!options.length||options.length>MAX_POLL_OPTIONS){setError("Não foi possível montar a enquete.");return false}const pub=form.publication==="now"?Date.now():Date.parse(brasiliaInputToIso(form.scheduledAt)??"");if(form.publication==="scheduled"&&!Number.isFinite(pub)){setError("Horário de publicação inválido.");return false}if(form.endAt&&(!brasiliaInputToIso(form.endAt)||Date.parse(brasiliaInputToIso(form.endAt)??"")<=pub)){setError("O encerramento deve ser depois da publicação.");return false}}return true}
   function next(){if(validate(step+1))setStep(s=>Math.min(4,s+1))}
   async function upload(){

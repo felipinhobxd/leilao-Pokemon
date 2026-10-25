@@ -12,7 +12,7 @@ Proteção conservadora de compras na limpeza automática/manual dos encerrados;
 
 ## Painel — implementação em etapas
 
-Documento [20_PANEL_FRESHNESS_AND_NAVIGATION.md](20_PANEL_FRESHNESS_AND_NAVIGATION.md): aviso de dados desatualizados, última leitura completa e tentativa manual, sem ampliar polling ou alterar o bot. Navegação de rascunhos é a próxima etapa, a ser anunciada ao operador antes de começar.
+Documento [20_PANEL_FRESHNESS_AND_NAVIGATION.md](20_PANEL_FRESHNESS_AND_NAVIGATION.md): aviso de dados desatualizados, última leitura completa e tentativa manual, sem ampliar polling ou alterar o bot. Etapa 1 com CI aprovada. Após aviso explícito, implementada confirmação nos menus/links de cancelar e Salvar rascunho e sair; limites de beforeunload/histórico no documento 20.
 
 ## Protocolo de início
 

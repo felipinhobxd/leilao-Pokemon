@@ -1,6 +1,7 @@
 "use client";
 
-import Link from "next/link";
+import {GuardedLink as Link,useNavigationGuard} from "@/app/navigation-guard";
+import {hasPendingDraftImages} from "@/lib/navigation-guard";
 import GameAnswerFields from "@/app/game-answer-fields";
 import DraftToolbar from "./draft-toolbar";
 import {mergeImageUrls,removeUploadedFile,queuePollingDelay,pendingCreationKey,readPendingCreation,storePendingCreation} from "@/lib/wizard-state";
@@ -119,7 +120,6 @@ export default function BulkAuctionWizard() {
   const visibleCards=filteredCards.slice((activePage-1)*pageSize,activePage*pageSize);
   function jumpToCard(position:number){const card=cards[position-1];if(!card)return;setSearch("");setTypeFilter("all");setPage(Math.floor((position-1)/pageSize)+1);setCards(current=>current.map(item=>item.id===card.id?{...item,expanded:true}:item));setInvalidCard({id:card.id,word:"Nome",error:false});}
   useEffect(()=>{if(!invalidCard)return;const frame=requestAnimationFrame(()=>{const article=document.querySelector<HTMLElement>(`[data-card-id="${invalidCard.id}"]`);if(!article)return;article.querySelectorAll("details").forEach(detail=>detail.open=true);const labels=[...article.querySelectorAll("label")];const field=(labels.find(label=>label.textContent?.toLocaleLowerCase("pt-BR").includes(invalidCard.word.toLocaleLowerCase("pt-BR")))??labels[0])?.querySelector<HTMLElement>("input,select,textarea");article.scrollIntoView({block:"center",behavior:"auto"});field?.focus();if(invalidCard.error){field?.setAttribute("aria-invalid","true");field?.setAttribute("aria-describedby","wizard-error");}});return()=>cancelAnimationFrame(frame);},[invalidCard,step]);
-  useEffect(()=>{const guard=(event:BeforeUnloadEvent)=>{if(!queueId&&cardsRef.current.length&&(pendingConfirmation||latestDraftFingerprint.current()!==lastSavedDraftFingerprint.current)){event.preventDefault();event.returnValue="";}};window.addEventListener("beforeunload",guard);return()=>window.removeEventListener("beforeunload",guard);},[pendingConfirmation,queueId]);
   const lastSavedDraftFingerprint = useRef<string | null>(null);
   const autoSaveDisabled = useRef(false);
   const saveDraftRef = useRef<(auto?: boolean) => Promise<void>>(async () => {});
@@ -140,6 +140,13 @@ export default function BulkAuctionWizard() {
   saveDraftRef.current = saveDraft;
   const latestDraftFingerprint=useRef(currentDraftFingerprint);
   latestDraftFingerprint.current=currentDraftFingerprint;
+  const hasUnsavedDraft=()=>!queueId&&Boolean(pendingConfirmation||cardsRef.current.length&&(hasPendingDraftImages(cardsRef.current)||latestDraftFingerprint.current()!==lastSavedDraftFingerprint.current));
+  useNavigationGuard({
+    isDirty:hasUnsavedDraft,
+    isBusy:()=>!queueId&&(busy||draftBusy||preparingPreviews||uploadWork.current),
+    message:()=>pendingConfirmation?"Há uma publicação aguardando confirmação. O envio pode já ter ocorrido. Recomendamos continuar nesta página e confirmar o envio anterior antes de sair.":"Há alterações ou fotos que ainda não foram salvas. Se você sair sem salvar, esse trabalho será perdido. Você pode salvar o rascunho e continuar depois.",
+    save:pendingConfirmation?undefined:async()=>{await saveDraftRef.current(false);return !hasUnsavedDraft();},
+  });
 
 
   // Auto-save ESTAVEL: o timer nasce UMA vez por sessao/fila (nao a cada

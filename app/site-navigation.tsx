@@ -1,5 +1,5 @@
 'use client';
-import Link from 'next/link';
+import {GuardedLink as Link} from './navigation-guard';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 

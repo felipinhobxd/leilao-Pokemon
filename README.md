@@ -234,3 +234,6 @@ Migration 20261025220841 instalada; nenhum arquivo do bot foi alterado nesta rod
 
 
 O painel mostra a última leitura completa e avisa sobre falha de atualização, perda de internet/canal ou dados desatualizados. **Tentar novamente** consulta os dados sem reenviar comandos ao bot. O contador de idade é local, sem consultas adicionais. [Detalhes](docs/agent/20_PANEL_FRESHNESS_AND_NAVIGATION.md).
+
+
+Ao sair pelos menus ou links de cancelar durante a criação, o painel confirma alterações/fotos pendentes. No cadastro em lote, **Salvar rascunho e sair** só continua após salvar tudo; falhas mantêm a edição. O cadastro único permite continuar ou descartar sem publicar. [Escopo e limites da proteção](docs/agent/20_PANEL_FRESHNESS_AND_NAVIGATION.md).

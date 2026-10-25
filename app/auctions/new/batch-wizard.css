@@ -24,6 +24,7 @@
 .draft-title strong,.draft-title span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .draft-title span{font-size:.85rem;color:var(--muted)}
 .draft-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.draft-actions button[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent-border);color:var(--accent-soft-text);box-shadow:inset 0 -3px 0 var(--accent-border)}
 .danger-link{background:transparent!important;color:var(--danger-text)!important;border-color:var(--danger-border)!important}
 .danger-link:hover:not(:disabled){background:var(--danger-bg)!important}
 .draft-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;padding:0 12px 12px}

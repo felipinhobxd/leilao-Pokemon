@@ -5,7 +5,7 @@ Pedido autorizado em 2026-10-25: uma única opção correta, escolhida pelo oper
 ## Uso
 
 - `/auctions/brinde`: selecionar Brinde ou Quiz, nome da carta/prêmio, opções e única resposta correta. Quiz também exige pergunta. Foto por URL HTTPS opcional, grupo e agendamento em Brasília. Bot 0.2.9+ exigido pela API.
-- Cadastro em lote: botões Brinde e Quiz em cada carta; ambos ocupam uma posição de publicação e não geram leilão, cobrança ou número de lote. Em Valores, o operador configura pergunta/opções/resposta. Rascunhos v1 preservam os novos campos. Alterar opções limpa a seleção correta, exigindo revisão. Copiar configurações inclui tipo/pergunta/resposta.
+- Cadastro em lote: botões Brinde e Quiz em cada carta; ambos ocupam uma posição de publicação e não geram leilão, cobrança ou número de lote. Na etapa Cartas, ao selecionar Brinde ou Quiz, a própria carta abre as opções e a seleção da única resposta correta; Quiz também mostra a pergunta. O cabeçalho e o botão selecionado distinguem os dois modos visualmente e com aria-pressed. A etapa Valores permite revisar os mesmos campos, sincronizados. Correção de 2026-10-25: removido o editor antigo de brinde da primeira etapa, que ocultava a resposta correta e rotulava Quiz como Brinde. Rascunhos v1 preservam os novos campos. Alterar opções limpa a seleção correta, exigindo revisão. Copiar configurações inclui tipo/pergunta/resposta.
 - Leilões mantêm seu encerramento comum ou individual. Jogos terminam no primeiro acerto; fila só de jogos não pede horário de encerramento de lances.
 - Mensagem: `🎉 Parabéns, Maria, você acertou e ganhou Pikachu ex!`. Se o JID for resolvido, adiciona a menção real ao vencedor. Nome e carta vêm do resultado persistido, não do último voto recebido.
 - Enquetes antigas continuam `legacy`, sem apuração retroativa. Rascunhos antigos de brinde precisam de seleção explícita da resposta para publicação pelo novo fluxo.
@@ -31,6 +31,8 @@ Cache limitado a 200 enquetes; carregamento após reinício usa o banco. Depois 
 Outbox existente ganha tipo quick_poll_winner/quick_poll_id com índice único por enquete. O anúncio só é marcado entregue após ACK; falha/reinício mantém pendência e ID de mensagem estável. Isso mitiga duplicatas, não oferece exactly-once no WhatsApp.
 
 ## Validação e limites
+
+Correção da etapa Cartas (2026-10-25): typecheck e build aprovados; verificação local dos dois modos, abertura da carta ao trocar de modo, limpeza da resposta após editar opções e preservação da pergunta/resposta ao avançar para Valores. Axe sem violações na etapa Cartas verificada. Sem alterações de banco, consultas ao Supabase ou envio ao WhatsApp nesta correção.
 
 - 105 testes raiz, 68 do bot; typecheck/build/check/smoke incluindo GET/POST quick-polls.
 - 22 cenários SQL no PGlite descartável: respostas erradas, bloqueio de participante, vencedor fixo, retry, aviso único, permissões e fila mista. CI também executa disputa em oito conexões PostgreSQL reais (`concurrency-quiz.py`) e mantém as disputas de arremate existentes; consultar resultado da CI após push.

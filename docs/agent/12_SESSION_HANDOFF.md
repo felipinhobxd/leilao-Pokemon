@@ -2,7 +2,14 @@
 
 ## Última atualização
 
-2026-10-25 — migrations conferidas; correções de fotos em lote/@all implementadas.
+2026-10-25 — corrigida divergência de limite 100/200 da RPC em produção; fotos em lote/@all implementados.
+
+## Publicação de 100 a 200 cartas
+
+- Produção tinha guard de 100 em `create_auction_publish_queue`, mesmo com constraint 200 e corpo local de `20260924220000` já em 200. A auditoria anterior não conferiu esse trecho; histórico por nome não garante corpo idêntico.
+- Nova migration `20261025054810_raise_auction_queue_rpc_limit_to_200.sql`: substituição pontual, idempotente, preserva demais regras/permissões. Aplicada no SQL Editor e registrada com a mesma versão na mesma transação, sem reaplicar histórico antigo. Catálogo confirmou 200, hash previsto e grants/config preservados.
+- `tests/auction-queue-scale.sql` agora cobre 35/100/101/200, rejeição 201, posições, espaçamento e retries. PGlite descartável reproduziu o guard antigo e passou após correção, inclusive brindes. Sem RPC de negócio em produção ou reinício do bot. Detalhes e limites no documento 13.
+- Agora são 60 arquivos locais e 68 registros remotos. As contagens 59/67 abaixo descrevem a conferência inicial, antes desta mudança.
 
 ## P-25/P-26 — implementação autorizada e concluída
 

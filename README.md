@@ -44,7 +44,7 @@ SUPABASE_SECRET_KEY=CHAVE_PRIVADA_APENAS_NO_SERVIDOR
 
 Na Vercel, a integração do Supabase fornece `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` e `SUPABASE_SECRET_KEY`. Para instalações locais/self-hosted, `SUPABASE_SERVICE_ROLE_KEY` continua aceito como fallback. Nunca use uma chave secreta em variável `NEXT_PUBLIC_*`, no navegador, no GitHub ou em mensagens.
 
-O banco de produção atual é `PokemonLeilao`. A conferência de 2026-10-25 encontrou 67 registros de migrations, com correspondência por nome para os 59 arquivos locais; há versões remotas diferentes. Consulte [a auditoria de migrations](docs/agent/13_MIGRATION_AUDIT.md) antes de aplicar SQL; a antiga lista de pendências já foi atendida. Alterações de schema devem ser feitas por migrations versionadas em `supabase/migrations/`; o Supabase continua sendo a fonte oficial dos leilões, lances, vencedores e histórico.
+O banco de produção atual é `PokemonLeilao`. A conferência de 2026-10-25 contou inicialmente 67 registros para 59 arquivos locais; após corrigir a RPC de fila para aceitar 100 a 200 cartas com a migration 20261025054810, são 68 registros para 60 arquivos locais; há versões remotas diferentes. Consulte [a auditoria de migrations](docs/agent/13_MIGRATION_AUDIT.md) antes de aplicar SQL; a antiga lista de pendências já foi atendida. Alterações de schema devem ser feitas por migrations versionadas em `supabase/migrations/`; o Supabase continua sendo a fonte oficial dos leilões, lances, vencedores e histórico.
 
 ## Instalação do bot no Windows
 

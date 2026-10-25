@@ -43,6 +43,10 @@ Os itens P-18 a P-24 são registros de revisão, não autorização para alterar
 
 Implementação, evidência e limites da validação em [14_FRONTEND_AND_MENTIONS_PLAN.md](14_FRONTEND_AND_MENTIONS_PLAN.md). Após o diagnóstico, o operador autorizou implementar os dois itens e publicar no GitHub. Código e docs atualizados; nenhum envio WhatsApp ou consulta ao Supabase.
 
+## P-27 — Concluído: publicação acima de 100 cartas
+
+Migration 20261025054810 corrigiu o guard da RPC instalada de 100 para 200, sem mudar dados ou grants. Constraint/código local já aceitavam 200. Teste SQL ampliado para limites e idempotência; validação isolada e confirmação de catálogo em produção. Detalhes em 13_MIGRATION_AUDIT.md. Limite continua 200 itens por fila, incluindo brindes.
+
 ## Log Ingestion — restrição atual
 
 Dashboard observado em 2026-10-25: **0,86/1 GB**, valor arredondado do ciclo. Evitar polling extra, consultas repetidas, backups manuais ou testes de carga na produção. Nesta revisão houve leitura do histórico e uma consulta SQL de catálogo; nenhuma medição exata do delta de ingestão. Não há garantia sobre tráfego dos processos já ativos.

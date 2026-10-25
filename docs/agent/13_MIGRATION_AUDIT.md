@@ -2,9 +2,19 @@
 
 > Última atualização: 2026-10-25
 > Projeto: PokemonLeilao — `gsyuoggymjdzxibfujyv` (mesma referência do ambiente local)
-> Fonte: Dashboard Supabase autenticado pelo operador; histórico de migrations + uma consulta de catálogo, sem dados de negócio.
+> Fonte: Dashboard Supabase autenticado pelo operador; histórico e consultas pontuais de catálogo, sem dados de negócio.
 
-## Resultado e limites
+## Correção posterior: filas acima de 100 cartas
+
+Em 2026-10-25, a inspeção de `pg_proc.prosrc` confirmou que a função **instalada em produção** ainda rejeitava `jsonb_array_length(items)>100`, apesar da tabela aceitar 200. O corpo local de `20260924220000_auction_lot_sequence_no_drift.sql` já usa 200; portanto, a correspondência do histórico não comprovou o corpo efetivamente instalado. A conferência inicial abaixo validou a constraint, não esse guard da RPC.
+
+Nova migration **20261025054810_raise_auction_queue_rpc_limit_to_200.sql**, criada pela CLI e aplicada pontualmente no SQL Editor porque o conector retornou `Unknown tool`. A aplicação e a inserção de **um novo registro** com a mesma versão/nome/SQL em `supabase_migrations.schema_migrations` foram feitas na mesma transação. Nenhum registro histórico anterior foi reparado ou reaplicado. Totais após esta inclusão: **60 arquivos locais / 68 registros remotos**; o mapeamento histórico abaixo permanece válido.
+
+A migration altera apenas a expressão conhecida de 100 para 200, preservando o restante da definição via `pg_get_functiondef` + `CREATE OR REPLACE`. É idempotente quando já há 200 e recusa guard desconhecido. Catálogo após aplicação confirmou guard 200, MD5 do corpo igual à substituição prevista (`64029848172f8ab70730622f591444c2`), grants somente postgres/service_role e `search_path` vazio preservados. Não foram criadas filas de teste na produção.
+
+Validação em banco descartável PGlite: schema/bridge e migrations locais carregados; simulação do guard antigo reproduziu `invalid_queue_items` em 101; após correção, 35/100/101/200 passaram e 201 foi rejeitado. Também passaram espaçamento, posições completas, idempotência e teste existente de brindes. PGlite usa `gen_random_uuid` nativo, sem carregar pgcrypto; o CI mantém PostgreSQL 17 com a extensão real.
+
+## Conferência inicial: resultado e limites
 
 Há **67 registros remotos** e **59 arquivos locais** em `supabase/migrations/`. Todos os 59 arquivos têm correspondência pelo nome lógico no histórico; **23 usam versões diferentes**. Em três registros, o nome remoto inclui também a versão local como prefixo; eles coexistem com registros mais antigos sem esse prefixo. Há oito registros além de um correspondente por arquivo, discriminados abaixo. Não foi encontrada migration local sem correspondente por nome lógico; isso não equivale a comparação integral, byte a byte, de todos os corpos SQL.
 

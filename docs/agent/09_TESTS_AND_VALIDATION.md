@@ -61,3 +61,7 @@ Na análise anterior desta conversa passaram: typecheck, 78 testes da raiz, 52 d
 ## Validação P-25/P-26 — 2026-10-25
 
 Typecheck, 83 testes raiz, 56 bot, check 41 e build aprovados. Novos testes: card-preview (200 itens, concorrência global, cancelamento/unmount, falhas/limpeza) e abertura nativa (flag preservada no envio e protocolo Baileys, permissões e fallbacks). Harness de navegador isolado com 200 JPEGs sintéticos de 12 MP concluiu em 15,5s, concorrência máxima 2, com digitação e progresso durante o preparo, sem erros no console. Não mede a memória do Brave nem substitui teste real de recebimento de @all. Detalhes no documento 14.
+
+## Filas de 100 a 200 — 2026-10-25
+
+`auction-queue-scale.sql` ampliado: 35/100/101/200 aceitos, 201 rejeitado sem fila residual, posições completas/únicas, espaçamento de 30s, retry sem duplicação e grants service_role. Em PGlite descartável, schema/bridge + migrations carregados; o guard 100 observado em produção foi simulado e o teste falhou em 101 antes da correção. Nova migration aplicada duas vezes, teste ampliado e `giveaway-queue.sql` aprovados. PGlite usa UUID nativo sem extensão pgcrypto; a suíte do CI continua em Postgres 17. Produção validada apenas por catálogo/hash, sem criar leilões de teste.

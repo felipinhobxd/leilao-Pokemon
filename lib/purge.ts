@@ -73,3 +73,12 @@ export const AUCTION_DELETE_CONFIRM_PHRASE = "sim quero";
 export function isAuctionDeleteConfirm(value: unknown): boolean {
   return normalizePurgePhrase(value) === AUCTION_DELETE_CONFIRM_PHRASE;
 }
+
+export const COMPLETED_AUCTIONS_STEP1 = "excluir leilões encerrados";
+export const COMPLETED_AUCTIONS_STEP2 = "quero excluir os encerrados";
+export function isCompletedAuctionsStep1(value: unknown): boolean {
+  return normalizePurgePhrase(value) === COMPLETED_AUCTIONS_STEP1;
+}
+export function isCompletedAuctionsConfirmed(step1: unknown, step2: unknown): boolean {
+  return isCompletedAuctionsStep1(step1) && normalizePurgePhrase(step2) === COMPLETED_AUCTIONS_STEP2;
+}

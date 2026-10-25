@@ -188,4 +188,10 @@ O smoke local verifica rejeição de chamadas sem autenticação; não testa uma
 
 O estado atual está em [docs/agent/00_INDEX.md](docs/agent/00_INDEX.md). Os riscos de retenção/pós-venda e recuperação de anúncios estão registrados em [11_PENDING_WORK.md](docs/agent/11_PENDING_WORK.md), sem alteração de comportamento nesta revisão.
 
-Em 2026-10-25 o painel Supabase mostrou Log Ingestion 0,86/1 GB. Priorize consultas pontuais de catálogo; não execute backup, limpeza ou testes de carga para conferir migrations. Essa leitura não garante o consumo futuro dos processos em operação.
+Em 2026-10-25 o painel Supabase mostrou Log Ingestion 0,88/1 GB. Priorize consultas pontuais de catálogo; não execute backup, limpeza ou testes de carga para conferir migrations. Essa leitura não garante o consumo futuro dos processos em operação.
+
+## Excluir os leilões encerrados
+
+Administradores têm o botão **Excluir leilões encerrados** no painel. É preciso digitar duas confirmações: **excluir leilões encerrados** e **quero excluir os encerrados**. Apaga todos os vendidos, encerrados sem vencedor e cancelados, com lances, compras, pagamentos e entregas vinculados (inclusive pendentes). Leilões abertos, rascunhos/agendados e em revisão permanecem. A ação é definitiva; participantes, sessão WhatsApp e numeração de lotes são mantidos.
+
+Migration 20261025055529 instalada em produção e versionada; agora são 61 arquivos locais e 69 registros no histórico remoto. A implementação não executou exclusões reais. Testes SQL são feitos em banco descartável.

@@ -71,3 +71,9 @@ Antes de nova mudança de banco, usar evidência local e o mapeamento já salvo;
 As sessões anteriores corrigiram votos encapsulados (ephemeralMessage), identidade LID/telefone, repetição de anúncio final, travas de sessão, estágios de publicação, rascunhos/brindes, avisos e redução pós-retirada. Em 08/10 houve queda do Supabase e endurecimento do tratamento de erros do filho; prune e backup limitado foram registrados depois. Os detalhes técnicos e limitações atuais estão nos documentos de área. Instruções antigas para aplicar migrations foram superadas pela conferência de 25/10.
 
 Última leitura de Log Ingestion após P-27: **0,88/1 GB**, agregada/arredondada; valores 0,86 acima descrevem observações anteriores. Não há medição do consumo exclusivo desta tarefa.
+
+## Checkpoint mais recente — exclusão manual dos encerrados
+
+2026-10-25: botão admin no painel + modal com duas frases escritas, rota POST /api/auctions/delete-completed e RPC delete_completed_auctions. Filtra sold/closed/cancelled no banco, sem LIMIT/cutoff; reutiliza delete_auction para dependências/filas/cartas. Mantém participantes, avisos globais, sessão WhatsApp, Storage e sequência. Remove compras/pagamentos/entregas vinculados mesmo pendentes; UI explica isso. Operador recusou a proposta de proteção do pós-venda nesta etapa; não implementar P-18 automaticamente.
+
+Migration 20261025055529 instalada pelo SQL Editor e registrada na mesma transação; hash/grants/invoker confirmados. 61 arquivos locais / 69 registros remotos. Nenhuma exclusão real, reinício de bot, mensagem ou backup. 87 testes raiz, typecheck, build e smoke aprovados; SQL isolado com mais de 500 terminais e rollback/retry; navegador com auth/respostas simuladas. Log Ingestion observado ao fim continua 0,88/1 GB, arredondado. Advisor do plugin indisponível (Unknown tool); revisão de acesso manual registrada no documento 13. Código/docs devem ser publicados no mesmo GitHub com F <felipinhovecoski@gmail.com>.

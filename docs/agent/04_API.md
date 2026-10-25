@@ -14,6 +14,10 @@
 
 ## Rotas
 
+### `POST /api/auctions/delete-completed`
+
+Admin ativo apenas. JSON `{eventId,confirm1,confirm2}`; UUID da operação e as duas frases são obrigatórios: `excluir leilões encerrados` e `quero excluir os encerrados`. API normaliza caixa/espaços; RPC exige literais. Retorna `{data:{deleted_auctions}}`, no-store. 400 confirmação/ID inválido, 403 sem papel admin, 409 conflito de eventId e 503 RPC ainda ausente. Executa uma única RPC transacional para todos sold/closed/cancelled, sem depender do snapshot do painel. Repetir o mesmo ID retorna o resultado anterior durante a retenção do cache. Não faz logout, reset de lotes ou limpeza global do Storage.
+
 ### `POST /api/auctions/new` — criar leilão único (wizard `/auctions/new/single`)
 - Body: `eventId`, `card{name, card_number, variant, condition, language, image_url, collection}`, `auction{lot_number?, starting_price, bid_increment, buyout_price?, option_count?, scheduled_at, scheduled_end_at?, group_id, pricing_mode: increment|custom, custom_values?, custom_buyout_last?}`.
 - Valores custom: `parseCustomValues` + `buildCustomValuesPlan` (`lib/auction-wizard.ts`) — server-side deriva `starting_price/bid_increment/buyout_price` e as `poll_options`.

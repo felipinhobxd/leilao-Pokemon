@@ -61,3 +61,7 @@ O antigo 0,96/1 GB e estimativas de MB/dia são históricos e não devem ser tra
 ## Validações ainda não realizadas
 
 Smokes reais de WhatsApp, pausa/retomada, dois ciclos de avisos, suspensão/expiração, Excel visual e recuperação de backup exigem sessão operacional própria. A existência de migrations não comprova esses fluxos. Não executá-los nesta tarefa documental.
+
+## P-28 — Concluído: botão para excluir todos os encerrados
+
+Solicitação explícita do operador substituiu a proposta de preservar pós-venda nesta etapa. Admin deve digitar duas frases; UI/API/RPC verificam ambas. Exclui sold/closed/cancelled e dependências, inclusive pendências financeiras; preserva open/draft/review e filas futuras. Operação transacional/idempotente por eventId e auditoria resumida. Migration 20261025055529 instalada/registrada e conferida sem exclusão de dados reais. P-18 permanece como decisão futura, não implementar a proteção de pós-venda por iniciativa própria.

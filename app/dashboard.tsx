@@ -1,5 +1,6 @@
 "use client";
 import Link from "next/link";
+import CompletedAuctionsDeleteDialog from "./completed-auctions-delete-dialog";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { createPublicSupabaseClient } from "@/lib/supabase";
@@ -43,6 +44,7 @@ export default function Dashboard() {
   const [retry, setRetry] = useState<Command | null>(null);
   const [clock, setClock] = useState(0);
   const [purgeOpen, setPurgeOpen] = useState(false);
+  const [deleteCompletedOpen, setDeleteCompletedOpen] = useState(false);
   const [purgeStep1, setPurgeStep1] = useState("");
   const [deleteAuctionOpen, setDeleteAuctionOpen] = useState(false);
   const [deleteAuctionConfirm, setDeleteAuctionConfirm] = useState("");
@@ -231,6 +233,20 @@ export default function Dashboard() {
     finally { mutationLock.current = false; setBusy(false); }
   }
 
+  async function deleteCompletedAuctions(confirm1: string, confirm2: string, eventId: string) {
+    if (mutationLock.current) return;
+    mutationLock.current = true; setBusy(true); setError(""); setNotice("");
+    try {
+      const response = await request("/api/auctions/delete-completed", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm1, confirm2, eventId }) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error);
+      setDeleteCompletedOpen(false); setSelected("");
+      setNotice(`${body.data?.deleted_auctions ?? 0} leilão(ões) encerrado(s) excluído(s) definitivamente.`);
+      await refresh();
+    } catch (e) { setError(e instanceof Error ? e.message : "Falha ao excluir os encerrados. Tente novamente para confirmar a mesma operação."); }
+    finally { mutationLock.current = false; setBusy(false); }
+  }
+
   const writable = role !== "viewer" && !busy && !retry;
   const warningStats = (id: unknown) => data?.participant_warning_stats?.find(s => s.participant_id === id);
   const auctions = data ? [...data.auctions].sort((a,b) => str(b,"created_at").localeCompare(str(a,"created_at"))) : [];
@@ -284,6 +300,8 @@ export default function Dashboard() {
   return <main className="shell">
     <header className="topbar"><div><p className="eyebrow">CENTRAL DE LEILÕES</p><h1>Leilão Pokémon</h1><p className="muted">Cartas, participantes e disputas em um só lugar.</p></div>{session && <div className="actions"><span className="status-pill">{realtime}</span><button disabled={busy} onClick={downloadBackup}>Baixar backup</button><button disabled={busy} onClick={exportExcel}>Exportar Excel</button><button disabled={busy} onClick={() => void db.auth.signOut()}>Sair</button></div>}</header>
     {error && <p role="alert" className="alert">{error}</p>}{notice && <p role="status" className="notice">{notice}</p>}
+    {session && data && role === "admin" && <div className="actions" style={{ marginBottom: 14 }}><button className="danger-btn" disabled={!writable} onClick={() => { setError(""); setDeleteCompletedOpen(true); }}>Excluir leilões encerrados</button></div>}
+    {deleteCompletedOpen && session && role === "admin" && <CompletedAuctionsDeleteDialog busy={busy} error={error} onClose={() => setDeleteCompletedOpen(false)} onConfirm={deleteCompletedAuctions} />}
     {retry && <button disabled={busy} onClick={() => void execute(retry)}>Reenviar a mesma operação</button>}
     {!ready ? <p>Carregando sessão…</p> : !session ? <form className="panel login form-grid" onSubmit={login}><h2>Acesso administrativo</h2><label>E-mail<input name="email" type="email" autoComplete="username" required /></label><label>Senha<input name="password" type="password" autoComplete="current-password" required /></label><button disabled={busy}>Entrar</button></form> : !data ? <section className="panel"><p>Carregando dados do banco…</p><button onClick={() => void refresh()}>Tentar novamente</button></section> : <>
       <section className="panel" style={{marginBottom:14}}><div className="panel-title"><div><p className="eyebrow">OPERAÇÃO AO VIVO</p><h2>{botLabel}</h2></div><span className="status-pill">Próximo lote #{nextLot}</span></div><div className="stats-grid"><div className="stat-card"><span>Bot</span><strong>{botLabel}</strong></div><div className="stat-card"><span>Grupo</span><strong>{operations.group?.name??"Não selecionado"}</strong></div><div className="stat-card"><span>Leilão atual</span><strong>{auction?`#${Number(auction.lot_number)||"—"} ${str(card,"name")}`:"Nenhum"}</strong></div><div className="stat-card"><span>Maior lance</span><strong>{price(amount)}</strong></div><div className="stat-card"><span>Participantes</span><strong>{participantCount}</strong></div><div className="stat-card"><span>Envios (24h)</span><strong title={dispatchLabel === "—" ? "Sem disparos terminais na janela" : `${dispatches?.sent ?? 0} enviados · ${dispatches?.failed ?? 0} falhos · ${dispatches?.pending ?? 0} pendentes`}>{dispatchLabel}</strong></div><div className="stat-card"><span>Tempo restante</span><strong>{auction?.status === "open" ? (clock ? remainingLabel(auction.scheduled_end_at, clock) : "Carregando…") : labelStatus[str(auction,"status")] ?? "—"}</strong></div></div><div className="actions" style={{marginTop:14}}><Link className="button-link" href="/auctions/new">＋ Novo leilão</Link><a className="button-link" href="#current-auction">Ver leilão atual</a><Link className="button-link" href="/whatsapp">Central WhatsApp</Link></div></section>

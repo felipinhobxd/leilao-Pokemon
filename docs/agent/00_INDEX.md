@@ -15,7 +15,8 @@
 - Sistema web de leilões de cartas Pokémon: painel Next.js, PostgreSQL/Supabase e bot local Baileys. Cadastro manual; IA/OCR e Electron foram removidos por decisão do operador.
 - Filas de até 200 itens, rascunhos com auto-save 45s, brindes, quatro fotos extras, preços automáticos/personalizados, pausa/retomada e edição pendente.
 - Avisos globais por redução direta ou retirada/re-oferta: histórico total preservado, ciclo de três com reset e DM apenas aos administradores. Suspensão com prazo/indefinida, banimento e reativação.
-- **Banco**: 68 registros remotos / 60 arquivos locais após a migration 20261025054810. Corrigida RPC instalada com guard 100 para aceitar 200; a constraint e o corpo local já aceitavam 200. Histórico por nome não comprova corpo integral. Mapeamento anterior: 23 versões diferentes e oito extras; não reaplicar por timestamp. Ver documento 13.
+- **Banco**: 69 registros remotos / 61 arquivos locais após as migrations 20261025054810 (fila 200) e 20261025055529 (exclusão manual de encerrados). Histórico por nome não comprova corpo integral. Mapeamento anterior: 23 versões diferentes e oito extras; não reaplicar por timestamp. Ver documento 13.
+- **Excluir leilões encerrados**: botão admin no painel, duas frases escritas verificadas na UI/API/RPC. Remove todos sold/closed/cancelled e dependências, inclusive pendências financeiras; preserva open/draft/review e agendados. Nenhuma exclusão real feita na implementação. Testes 87 raiz, typecheck, build e smoke aprovados, SQL isolado com mais de 500 registros.
 - Backup mais recente: local 20261010100000 / remoto 20261010192429; sete dias de auditoria/cache, timeout 55s e work_mem 32MB.
 - **Log Ingestion observado: 0,88/1 GB** em 2026-10-25, arredondado no Dashboard. Não é previsão nem consumo medido desta sessão. Evitar chamadas repetidas; não desligar proteções.
 - Validação anterior à correção P-25/P-26: typecheck, 78 testes da raiz, 52 do bot, check do bot (27), build e smoke sem login passaram. CI aprovado no commit d79feb9b; testes SQL do CI são em Postgres isolado.
@@ -27,7 +28,7 @@
 | [01_PROJECT_CONTEXT.md](01_PROJECT_CONTEXT.md) | Produto e componentes |
 | [02_ARCHITECTURE.md](02_ARCHITECTURE.md) | Comunicação, processos e contratos |
 | [03_DATABASE.md](03_DATABASE.md) | Tabelas, RPCs, RLS, limites e retenção |
-| [04_API.md](04_API.md) | 20 rotas; health público, demais administrativas |
+| [04_API.md](04_API.md) | Rotas; health público, demais administrativas |
 | [05_FRONTEND.md](05_FRONTEND.md) | Wizard, painel e Realtime confirmado |
 | [06_WHATSAPP_BOT.md](06_WHATSAPP_BOT.md) | Bot, supervisor, votos, fila e limitações de envio |
 | [08_AUCTION_DOMAIN.md](08_AUCTION_DOMAIN.md) | Regras e invariantes; sem reconhecimento de cartas |

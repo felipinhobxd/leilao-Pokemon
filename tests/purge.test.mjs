@@ -1,7 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { isPurgeFinalPhrase, isPurgeStep1, normalizePurgePhrase, parsePurgeRpcError, PURGE_FIX_MIGRATION } from "../lib/purge.ts";
+import { isPurgeFinalPhrase, isPurgeStep1, normalizePurgePhrase, parsePurgeRpcError, PURGE_FIX_MIGRATION, isCompletedAuctionsConfirmed, isCompletedAuctionsStep1 } from "../lib/purge.ts";
+
+test("completed auctions require both distinct confirmations", () => {
+  assert.equal(isCompletedAuctionsConfirmed("excluir leilões encerrados", "quero excluir os encerrados"), true);
+  assert.equal(isCompletedAuctionsConfirmed(" EXCLUIR  LEILÕES ENCERRADOS ", "QUERO EXCLUIR OS ENCERRADOS"), true);
+  assert.equal(isCompletedAuctionsStep1("excluir leilões encerrados"), true);
+  for (const [first, second] of [["", "quero excluir os encerrados"], ["excluir leilões encerrados", ""], ["excluir tudo", "quero excluir mesmo"], ["sim quero", "sim quero"], [null, undefined]]) {
+    assert.equal(isCompletedAuctionsConfirmed(first, second), false);
+  }
+});
 
 test("purge phrases: exact input passes", () => {
   assert.equal(isPurgeStep1("excluir tudo"), true);

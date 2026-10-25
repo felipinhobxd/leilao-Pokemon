@@ -4,6 +4,12 @@
 > Projeto: PokemonLeilao — `gsyuoggymjdzxibfujyv` (mesma referência do ambiente local)
 > Fonte: Dashboard Supabase autenticado pelo operador; histórico e consultas pontuais de catálogo, sem dados de negócio.
 
+## Inclusão posterior: exclusão manual dos encerrados
+
+Migration **20261025055529_delete_completed_auctions_with_two_confirmations.sql** criada pela CLI e instalada em produção pelo SQL Editor, sem chamar a RPC de exclusão. Um novo registro de versão/nome/SQL foi inserido no histórico na mesma transação; contagem resultante **61 locais / 69 remotos**. Conector continua retornando Unknown tool, inclusive get_advisors; não houve laudo novo do advisor. Revisão de acesso: SECURITY INVOKER, search_path vazio, EXECUTE somente service_role, ator admin ativo e duas frases obrigatórias; a exclusão efetiva reutiliza o helper existente.
+
+Antes da instalação, o MD5 do corpo de delete_auction (normalizado LF) confirmou compatibilidade com a versão local testada: `d203812c37fa13ee51af675eea59a206`. Após instalação, corpo de delete_completed_auctions confirmado por hash `b76972de48ed4ca70baec241a11d970c`, invoker, grants e registro da migration. Nenhum dado de negócio foi consultado ou apagado; nenhuma função de limpeza/backup foi executada. Log Ingestion no fim: **0,88/1 GB**, leitura arredondada, sem medição do delta exclusivo da tarefa.
+
 ## Correção posterior: filas acima de 100 cartas
 
 Em 2026-10-25, a inspeção de `pg_proc.prosrc` confirmou que a função **instalada em produção** ainda rejeitava `jsonb_array_length(items)>100`, apesar da tabela aceitar 200. O corpo local de `20260924220000_auction_lot_sequence_no_drift.sql` já usa 200; portanto, a correspondência do histórico não comprovou o corpo efetivamente instalado. A conferência inicial abaixo validou a constraint, não esse guard da RPC.

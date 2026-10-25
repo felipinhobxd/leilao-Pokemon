@@ -65,3 +65,9 @@ Typecheck, 83 testes raiz, 56 bot, check 41 e build aprovados. Novos testes: car
 ## Filas de 100 a 200 — 2026-10-25
 
 `auction-queue-scale.sql` ampliado: 35/100/101/200 aceitos, 201 rejeitado sem fila residual, posições completas/únicas, espaçamento de 30s, retry sem duplicação e grants service_role. Em PGlite descartável, schema/bridge + migrations carregados; o guard 100 observado em produção foi simulado e o teste falhou em 101 antes da correção. Nova migration aplicada duas vezes, teste ampliado e `giveaway-queue.sql` aprovados. PGlite usa UUID nativo sem extensão pgcrypto; a suíte do CI continua em Postgres 17. Produção validada apenas por catálogo/hash, sem criar leilões de teste.
+
+## Exclusão dos encerrados — 2026-10-25
+
+87 testes raiz, typecheck, build e smoke sem autenticação aprovados. `delete-completed-route.test.mjs` executa o handler real com auth/RPC isolados: 401/403, JSON/frases/eventId inválidos, normalização, argumentos e erros do banco. `delete-completed-auctions.sql` incluído no CI: mais de 500 terminais, sold/closed/cancelled, preservação de open/draft/review e fila agendada, ambas as frases, admin ativo, rollback atômico sob falha, consistência da fila/carta compartilhada, compra pendente, avisos globais, retry que preserva recém-encerrado, seleção vazia e trigger de auditoria restaurado. Passou em PGlite com schema/bridge + todas as migrations; também passou delete-auction.sql. PGlite usa UUID nativo sem pgcrypto; CI valida Postgres 17 real.
+
+Navegador local com o Dashboard e o componente reais, auth/dados/respostas simulados: botão admin, segunda frase oculta até a primeira válida, submit bloqueado com confirmação parcial, alteração da primeira zera a segunda, uma chamada com duas frases/eventId e aviso de resultado. Nenhuma chamada ao Supabase nesse teste. Em produção, apenas instalação e catálogo/hash; nenhuma exclusão real realizada.

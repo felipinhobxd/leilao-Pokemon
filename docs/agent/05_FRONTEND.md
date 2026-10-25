@@ -72,3 +72,9 @@ Mesmo contrato de valores (`pricingMode` custom/increment) para 1 carta; cria le
 - **P-25 corrigido**: prévias locais em fila compartilhada de duas tarefas, com placeholders/progresso; originais fora do DOM até haver miniatura reduzida, preservados para upload. Limite total 200; cancelamento na remoção/unmount; auto-save/publicação aguardam preparo. Testes de fila e navegador isolado documentados em [14_FRONTEND_AND_MENTIONS_PLAN.md](14_FRONTEND_AND_MENTIONS_PLAN.md).
 - `bulk-wizard.tsx` é um componente grande com várias responsabilidades — mexer em estado de `Draft` exige cuidado (mutações via `mutateCard` + `submission.current` fingerprint anti-duplo-envio).
 - Contrato de valores (`lib/auction-wizard.ts::buildCustomValuesPlan/parseCustomValues`) é compartilhado por wizard+API: mudança exige testes (`tests/auction-format.test.mjs`).
+
+## Exclusão manual dos leilões encerrados — 2026-10-25
+
+Botão “Excluir leilões encerrados” no topo do painel, visível apenas ao admin. Modal nativo exige `excluir leilões encerrados` e depois `quero excluir os encerrados`; alterar a primeira frase apaga a segunda. Cancelar/reabrir zera os campos. Bloqueia confirmação/cancelamento durante envio, mostra erros dentro do modal e atualiza o painel com a quantidade excluída. O mesmo eventId é mantido em tentativas no modal aberto; API/RPC validam ambas as frases. Não depende da lista visível ou do limite de 500 do snapshot.
+
+Escopo explicado antes da confirmação: vendidos, sem vencedor e cancelados, incluindo compras/pagamentos/entregas pendentes; preserva abertos, rascunhos/agendados e em revisão. Mantém participantes/avisos globais, sessão WhatsApp e numeração dos lotes. Imagens do Storage não são apagadas por esta ação, pois podem ter outras referências.

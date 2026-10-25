@@ -2,7 +2,7 @@
 
 > Área: Projeto inteiro
 > Escopo: Visão geral, objetivo do produto, componentes, ambientes
-$12026-10-05
+> Última atualização: 2026-10-25
 > Fonte principal: README.md, package.json, bot/package.json, código das sessões de trabalho até 2026-10-05
 
 ## O que o projeto faz
@@ -23,7 +23,7 @@ Operar leilões recorrentes em grupos de WhatsApp com o mínimo de trabalho manu
 
 ## Como as partes se comunicam
 
-- **Painel → Supabase**: API routes (`app/api/**`) chamam RPCs via client service_role (`lib/supabase-server.ts`). Nenhuma lógica de negócio em JS: **toda escrita crítica passa por RPCs transacionais** (ex.: `process_auction_command`, `create_auction_publish_queue`).
+- **Painel → Supabase**: API routes (`app/api/**`) usam client privilegiado (`lib/supabase-server.ts`). Operações críticas de leilão passam por RPCs transacionais (ex.: `process_auction_command`, `create_auction_publish_queue`); validação e planejamento de preços também existem em JS. Há escritas diretas de infraestrutura, como comandos do bot e quick polls.
 - **Bot → Supabase**: o bot é um *poller*: claim de dispatches (`claim_whatsapp_dispatch`), gravação de votos (`process_auction_command`), heartbeat em `whatsapp_bot_workers`.
 - **WhatsApp → Bot**: eventos Baileys (mensagens, atualizações de enquete) → decriptografia de votos (`bot/poll-votes.mjs`, identidades LID/telefone em `bot/poll-identities.mjs`) → comandos idempotentes no banco.
 - **Supabase → Painel**: leitura via snapshot RPCs (`read_dashboard_snapshot`, `read_auction_snapshot`).
@@ -47,7 +47,7 @@ Operar leilões recorrentes em grupos de WhatsApp com o mínimo de trabalho manu
 
 ## Ambiente de execução / variáveis críticas
 
-- **Raiz `.env.local`**: chaves Supabase (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`).
+- **Raiz `.env.local`**: chaves Supabase (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`, com fallback `SUPABASE_SERVICE_ROLE_KEY`).
 - **`bot/.env`**: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `BOT_ADMIN_USER_ID`, `BOT_ADMIN_WA_JIDS` (DMs de aviso; default: 554197285978, 5519989759121), retenção fixa de limpeza (12h), `BOT_NIGHT_RESTART_HOUR` (4).
 - Máquina-alvo do operador: Windows, Node 24.
 
@@ -65,8 +65,8 @@ Operar leilões recorrentes em grupos de WhatsApp com o mínimo de trabalho manu
 6. Valores personalizados de enquete viram `poll_options` persistidas no leilão (o bot publica o que está no banco).
 7. Node do bot roda com `--max-old-space-size=384` + restart noturno (RAM era o gargalo do PC do operador).
 
-## Estado atual (2026-10-05)
+## Estado conferido em 2026-10-25
 
-- 100% dos fluxos principais funcionais e testados (CI verde; suítes: 71 testes raiz, 40 bot).
-- Migrations de avisos/limpeza 12h versionadas, **aguardando aplicação manual no Supabase** (fluxo padrão do projeto — ver 11_PENDING).
+- Validação local anterior: typecheck, 78 testes da raiz, 52 do bot, check do bot (27), build e smoke de rejeição sem login aprovados. Não equivale a teste integral do WhatsApp.
+- Avisos, participantes, redução pós-retirada, limpeza 12h/prune 7d e backup corrigido registrados em produção; assinaturas e trechos atuais conferidos por catálogo. Ver `13_MIGRATION_AUDIT.md`.
 - Backlog real do operador em `11_PENDING_WORK.md`.

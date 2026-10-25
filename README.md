@@ -44,7 +44,7 @@ SUPABASE_SECRET_KEY=CHAVE_PRIVADA_APENAS_NO_SERVIDOR
 
 Na Vercel, a integração do Supabase fornece `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` e `SUPABASE_SECRET_KEY`. Para instalações locais/self-hosted, `SUPABASE_SERVICE_ROLE_KEY` continua aceito como fallback. Nunca use uma chave secreta em variável `NEXT_PUBLIC_*`, no navegador, no GitHub ou em mensagens.
 
-O banco de produção atual é `PokemonLeilao`. Alterações de schema devem ser feitas por migrations versionadas em `supabase/migrations/`; o Supabase continua sendo a fonte oficial dos leilões, lances, vencedores e histórico.
+O banco de produção atual é `PokemonLeilao`. A conferência de 2026-10-25 encontrou 67 registros de migrations, com correspondência por nome para os 59 arquivos locais; há versões remotas diferentes. Consulte [a auditoria de migrations](docs/agent/13_MIGRATION_AUDIT.md) antes de aplicar SQL; a antiga lista de pendências já foi atendida. Alterações de schema devem ser feitas por migrations versionadas em `supabase/migrations/`; o Supabase continua sendo a fonte oficial dos leilões, lances, vencedores e histórico.
 
 ## Instalação do bot no Windows
 
@@ -172,7 +172,7 @@ npm install
 npm run check
 ```
 
-O CI também valida PostgreSQL 17, migrations, fluxo transacional de criação de lote, concorrência de ARREMATE, eventos duplicados, scripts do serviço Windows, build de produção e proteção das rotas administrativas.
+O smoke local verifica rejeição de chamadas sem autenticação; não testa uma sessão completa de operador. O CI também valida PostgreSQL 17, migrations, fluxo transacional de criação de lote, concorrência de ARREMATE, eventos duplicados, scripts do serviço Windows, build de produção e proteção das rotas administrativas.
 
 ## Segurança
 
@@ -183,3 +183,9 @@ O CI também valida PostgreSQL 17, migrations, fluxo transacional de criação d
 - A pasta de sessão Baileys e as chaves privadas ficam fora do Git.
 - O worker local ainda é infraestrutura privilegiada porque utiliza uma chave de servidor; proteja o PC e o arquivo `bot/.env`.
 - Baileys é uma integração não oficial do WhatsApp e deve ser acompanhado após atualizações do WhatsApp/Baileys.
+
+## Memória de manutenção e consumo
+
+O estado atual está em [docs/agent/00_INDEX.md](docs/agent/00_INDEX.md). Os riscos de retenção/pós-venda e recuperação de anúncios estão registrados em [11_PENDING_WORK.md](docs/agent/11_PENDING_WORK.md), sem alteração de comportamento nesta revisão.
+
+Em 2026-10-25 o painel Supabase mostrou Log Ingestion 0,86/1 GB. Priorize consultas pontuais de catálogo; não execute backup, limpeza ou testes de carga para conferir migrations. Essa leitura não garante o consumo futuro dos processos em operação.

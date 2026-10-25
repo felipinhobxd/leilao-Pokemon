@@ -2,7 +2,7 @@
 
 > Área: Testes
 > Escopo: Suítes, comandos, cobertura, lacunas
-$12026-10-08
+> Última atualização: 2026-10-25
 > Fonte principal: `package.json`, `bot/package.json`, `.github/workflows/ci.yml`, `tests/**`, `bot/*.test.mjs`
 
 ## Comandos oficiais
@@ -18,9 +18,9 @@ npm run build          # next build
 
 # Bot
 npm --prefix bot ci
-npm --prefix bot run check   # node --check em todos os .mjs + patch-baileys --check + node --test poll-votes/queue-worker/vote-log
+npm --prefix bot run check   # node --check em todos os .mjs + patch-baileys --check + node --test poll-votes/queue-worker/vote-log/error-log (27 testes)
 
-# Smoke autenticado (contra build local rodando)
+# Smoke de rejeição sem autenticação (inicia servidor local na porta 3199)
 node tests/smoke.mjs
 ```
 
@@ -37,7 +37,7 @@ node tests/smoke.mjs
 - `tests/concurrency.py` (Python): buyouts concorrentes e eventos duplicados.
 - ⚠️ Localmente exige Postgres + psql; a validação local usual é confiar no CI.
 
-### 3. Bot — `node --test bot/*.test.mjs` (45)
+### 3. Bot — `node --test bot/*.test.mjs` (52)
 - poll-votes (decriptografia com pares LID/telefone), queue-worker (claim/lock/heartbeat/retry), poll-identities, poll-store, group-participants, bot-reconnect, warning-notify (formatador BRL/nbsp, entrega, retry parcial sem duplicar, sem socket) e **vote-log** (2026-10-08: log de re-oferta pós-retirada com marca de redução, normalizando o nbsp do BRL).
 - Lacunas: sem teste de sessão real Baileys (impossível offline), sem teste do restart noturno (lógica fina, revisada). A limpeza 12h é coberta por `tests/cleanup-retention.sql` (janela padrão dos dois lados + granularidade em horas).
 
@@ -53,3 +53,7 @@ node tests/smoke.mjs
 - Migrações novas sem suíte SQL dedicada (padrão atual: aplicação no CI + revisão cuidadosa).
 - Fluxo completo WhatsApp (só com grupos reais).
 - Export Excel: conferência visual (TOTAL, aba Alterações) pós-deploy.
+
+## Evidência da revisão
+
+Na análise anterior desta conversa passaram: typecheck, 78 testes da raiz, 52 do bot, check do bot com 27 testes, build e smoke HTTP sem login. Não foram repetidos para a revisão apenas documental de 2026-10-25. A conferência de produção usou histórico e uma consulta de catálogo, sem executar a suíte SQL no banco vivo. `npm run doctor` é diagnóstico parcial: não certifica histórico/versão de todas as funções e não foi executado nesta sessão para evitar chamadas extras.

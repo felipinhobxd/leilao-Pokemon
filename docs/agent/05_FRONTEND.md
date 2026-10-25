@@ -2,7 +2,7 @@
 
 > Área: Frontend Next.js
 > Escopo: Páginas, fluxos, estados, integrações
-$12026-10-07
+> Última atualização: 2026-10-25
 > Fonte principal: `app/layout.tsx`, `app/page.tsx`, `app/dashboard.tsx`, `app/auctions/new/**`, `app/whatsapp/**`, `lib/auction-draft.ts`
 
 ## Mapa real (arquivo → funcionalidade)
@@ -10,7 +10,7 @@ $12026-10-07
 | Funcionalidade | Arquivo |
 |---|---|
 | Login (Supabase Auth) | `app/page.tsx` |
-| Painel ao vivo (bot, grupo, leilão atual, maior lance, janela 30d, ações, **avisos de alteração de valores** com marca "após retirar o lance", **gestão de participantes**: suspender/reativar/banir, avisos total + K de 3, suspensão e notas) | `app/dashboard.tsx` |
+| Painel ao vivo (bot, grupo, leilão atual, maior lance, janela 24h, ações, **avisos de alteração de valores** com marca "após retirar o lance", **gestão de participantes**: suspender/reativar/banir, avisos total + K de 3, suspensão e notas) | `app/dashboard.tsx` |
 | Cadastro em **lote** (drag & drop de fotos, valores, fila, rascunhos, botão Brinde) | `app/auctions/new/page.tsx` → `app/auctions/new/bulk-wizard.tsx` |
 | Wizard de **carta única** | `app/auctions/new/single/page.tsx` → `app/auctions/new/wizard.tsx` |
 | **Brinde** (enquete rápida, movida da Central WhatsApp 2026-09-24) | `app/auctions/brinde/page.tsx` |
@@ -60,7 +60,7 @@ Mesmo contrato de valores (`pricingMode` custom/increment) para 1 carta; cria le
 - CSS global próprio (sem Tailwind); classes `.panel`, `.bulk-bar`, `.draft-card`, `.value-row`, `.queue-row`, `.whatsapp-preview`, `.wa-chat` etc.
 - Tempo de Brasília centralizado: `lib/brasilia-time.ts` (inputs `datetime-local`, formatação, conversão).
 - Moeda: `Intl.NumberFormat("pt-BR", BRL)`; planilha e wizard usam o mesmo formato.
-- Realtime: dashboard refaz poll (intervalo de relógio); uso direto de Supabase Realtime **não confirmado no código atual** (o README menciona; precisa de investigação antes de assumir).
+- Realtime CONFIRMADO em `app/dashboard.tsx`: canal `admin-auctions` observa `auction_events`; recarga com debounce de 5s. Polling de fallback 30s com aba visível; snapshot completo renovado conforme `fullLoadedAt` (60s).
 
 ## Erros/loading
 

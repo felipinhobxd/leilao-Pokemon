@@ -1,70 +1,57 @@
-# 00_INDEX — Memória persistente do projeto para agentes de IA
+# 00_INDEX — Memória persistente do projeto
 
-> Área: Mapa geral da documentação de agente
-> Escopo: Navegação e recuperação de contexto entre sessões
-> Última atualização: 2026-10-05
-> Fonte principal: Análise completa do código + sessões de 2026-09-24/25
+> Última atualização: 2026-10-25
+> Fonte: código local, validação da sessão anterior e conferência de produção em 2026-10-25.
 
-## Objetivo
+## Protocolo de início
 
-Esta pasta é a **memória persistente** do projeto `leilao-Pokemon`. Ela existe para que qualquer agente de IA (ou humano) inicie uma sessão de trabalho **sem reler o repositório inteiro** e **sem depender do histórico da conversa anterior**.
+1. Ler este índice e `12_SESSION_HANDOFF.md`.
+2. Para banco, ler `13_MIGRATION_AUDIT.md` antes de propor aplicação de SQL.
+3. Ler o documento da área e o backlog; não executar tarefas antigas automaticamente só por estarem em um handoff histórico.
+4. Ao concluir mudanças, atualizar área, backlog, handoff e índice. Distinguir fato do código, evidência de produção e hipótese; não inventar validação.
 
-Regras de manutenção (valem para TODOS os arquivos desta pasta):
+## Estado atual
 
-1. Toda mudança importante concluída → atualizar o `.md` da área afetada;
-2. → atualizar `11_PENDING_WORK.md`;
-3. → atualizar `12_SESSION_HANDOFF.md` (checkpoint obrigatório);
-4. → atualizar este índice quando o estado de uma área mudar;
-5. **NUNCA inventar** fato não confirmado no código — usar "Não confirmado no código atual." quando aplicável;
-6. Arquivos escritos PARA AGENTES: caminhos reais, funções, contratos, invariantes, riscos, comandos. Sem texto comercial.
-
-## Como recuperar o contexto após uma nova sessão (protocolo de boot)
-
-```
-1. Leia: docs/agent/00_INDEX.md        (este arquivo — mapa e estados)
-2. Leia: docs/agent/12_SESSION_HANDOFF.md (checkpoint da última sessão)
-3. Leia: o arquivo da área indicado pelo handoff (ex.: 07_CARD_RECOGNITION.md)
-4. Execute o "Próximo passo EXATO" descrito no handoff.
-```
+- Sistema web de leilões de cartas Pokémon: painel Next.js, PostgreSQL/Supabase e bot local Baileys. Cadastro manual; IA/OCR e Electron foram removidos por decisão do operador.
+- Filas de até 200 itens, rascunhos com auto-save 45s, brindes, quatro fotos extras, preços automáticos/personalizados, pausa/retomada e edição pendente.
+- Avisos globais por redução direta ou retirada/re-oferta: histórico total preservado, ciclo de três com reset e DM apenas aos administradores. Suspensão com prazo/indefinida, banimento e reativação.
+- **Banco conferido**: 67 registros remotos; os 59 arquivos locais têm correspondentes por nome. 23 versões diferem; oito registros remotos adicionais. As antigas pendências P-13/P-17 estão registradas. Não reaplicar por diferença de timestamp. Assinaturas/trechos principais do estado efetivo foram confirmados com uma consulta de catálogo.
+- Backup mais recente: local 20261010100000 / remoto 20261010192429; sete dias de auditoria/cache, timeout 55s e work_mem 32MB.
+- **Log Ingestion observado: 0,86/1 GB** em 2026-10-25, arredondado no Dashboard. Não é previsão nem consumo medido desta sessão. Evitar chamadas repetidas; não desligar proteções.
+- Validação anterior: typecheck, 78 testes da raiz, 52 do bot, check do bot (27), build e smoke sem login passaram. CI aprovado no commit d79feb9b; testes SQL do CI são em Postgres isolado.
 
 ## Mapa das áreas
 
-| Ordem | Arquivo | Área | Estado | Última atualização |
-| ----- | ----------------------- | ------------------- | ------ | ------------------ |
-| 01 | `01_PROJECT_CONTEXT.md` | Contexto geral | Estável — leitura obrigatória de todo agente novo | 2026-09-23 |
-| 02 | `02_ARCHITECTURE.md` | Arquitetura real | Estável | 2026-09-23 |
-| 03 | `03_DATABASE.md` | Supabase/PostgreSQL | ⚠️ Migrations pendentes de aplicação manual — 20261008230000 (P-17: prune 7 dias da auditoria, P-13 item 12) e possíveis anteriores — ver 11_PENDING | 2026-10-08 |
-| 04 | `04_API.md` | API Next.js (app/api) | Estável; rotas novas `/api/auctions/drafts`, `/api/quick-polls`, `/api/auctions/delete`; comandos PARTICIPANT_SUSPEND/REACTIVATE em /api/commands | 2026-10-07 |
-| 05 | `05_FRONTEND.md` | Frontend (app/) | Estável; wizard com rascunhos + brinde por carta + auto-save; dashboard com painel de avisos, exclusão e GESTÃO DE PARTICIPANTES (suspender/reativar/banir) | 2026-10-07 |
-| 06 | `06_WHATSAPP_BOT.md` | Bot Baileys (bot/) | Estável; abertura ATÔMICA; ciclo de 3; blindagem contra queda do Supabase (handlers no filho + describeError); bot 52 testes | 2026-10-08 |
-| 08 | `08_AUCTION_DOMAIN.md` | Domínio de leilão | Estável; exclusão real de leilão; ciclo de 3; brinde na fila; limpeza 12h; suspensão de participante; redução via retirada conta aviso | 2026-10-07 |
-| 09 | `09_TESTS_AND_VALIDATION.md` | Testes e validação | Estável — Node 78, bot 45, typecheck, build, 17 SQL test files | 2026-10-08 |
-| 10 | `10_SECURITY_AND_PERFORMANCE.md` | Segurança e performance | ⚠️ Supabase Log Ingestion quase no limite (0.96/1 GB); polling reduzido ~56% | 2026-09-25 |
-| 11 | `11_PENDING_WORK.md` | Trabalho pendente | 🔴 Migrations para aplicar (as 3 de 2026-10-07/08 JUNTAS) + P-11 Vercel; P-14 (.exe) CANCELADO e removido | 2026-10-08 |
-| 12 | `12_SESSION_HANDOFF.md` | Checkpoint da sessão | Atualizado a cada sessão | 2026-10-08 |
+| Arquivo | Área / situação |
+|---|---|
+| [01_PROJECT_CONTEXT.md](01_PROJECT_CONTEXT.md) | Produto e componentes |
+| [02_ARCHITECTURE.md](02_ARCHITECTURE.md) | Comunicação, processos e contratos |
+| [03_DATABASE.md](03_DATABASE.md) | Tabelas, RPCs, RLS, limites e retenção |
+| [04_API.md](04_API.md) | 20 rotas; health público, demais administrativas |
+| [05_FRONTEND.md](05_FRONTEND.md) | Wizard, painel e Realtime confirmado |
+| [06_WHATSAPP_BOT.md](06_WHATSAPP_BOT.md) | Bot, supervisor, votos, fila e limitações de envio |
+| [08_AUCTION_DOMAIN.md](08_AUCTION_DOMAIN.md) | Regras e invariantes; sem reconhecimento de cartas |
+| [09_TESTS_AND_VALIDATION.md](09_TESTS_AND_VALIDATION.md) | 78 raiz, 52 bot, check 27, SQL/CI e lacunas |
+| [10_SECURITY_AND_PERFORMANCE.md](10_SECURITY_AND_PERFORMANCE.md) | Auth, custos e restrição de Log Ingestion |
+| [11_PENDING_WORK.md](11_PENDING_WORK.md) | Pendências reais; aplicação antiga de migrations encerrada |
+| [12_SESSION_HANDOFF.md](12_SESSION_HANDOFF.md) | Checkpoint atual e próxima ação |
+| [13_MIGRATION_AUDIT.md](13_MIGRATION_AUDIT.md) | Mapeamento completo local/remoto e verificação de produção |
 
-## Estado atual resumido por área
+O número 07 foi retirado com o reconhecimento de cartas; não é documento faltante a recriar.
 
-- **Site/API (app/, lib/)** — funcional. Wizard em lote: rascunhos com auto-save, brinde por carta (foto+enquete no lugar do leilão), edição de lote pendente na fila, até 200 cartas. Dashboard: painel de avisos com ciclo de 3, exclusão real de leilão ("sim quero"), GESTÃO DE PARTICIPANTES (suspender com prazo/indefinida, reativar, banir; avisos total + K de 3; marca "após retirar o lance").
-- **Banco (supabase/)** — migrations de 2026-09-24/25 escritas e testadas no CI; algumas pendentes de aplicação manual (ver P-13). Snapshot do dashboard com LIMITs (fix de egress/log). Snapshot do export com LIMITs (fix de timeout). Limpeza fixa de 12 horas, com proteção por backup diário; migrations de produção já aplicadas e registradas no histórico atual. Máximo 200 cartas por fila. 2026-10-07: comandos PARTICIPANT_SUSPEND/REACTIVATE + chave participant_warning_stats (snapshot dashboard) + change_kind em value_change_log/participant_warnings + register_participant_reduction + ADDITION C no BID_PLACED (redução via retirada).
-- **Bot (bot/)** — funcional. Sequência de abertura ATÔMICA: regras → 3s → figurinha → @all (menções reais, todos os JIDs). Nunca duplica, nunca inverte ordem. DM de lote falho para os admins. Avisos: redução de lance conta no ciclo (troca direta E retirada+re-oferta menor); 3 = DM aos admins + reset; o participante NÃO recebe DM. As mudanças de 2026-10-07 NÃO tocam em bot/ (payload da DM idêntico).
-- **Performance/Supabase** — polling global reduzido ~56% (bot 5s, dashboard 30s, Realtime debounce 5s). Log Ingestion era 4.8 GB/dia → estimado ~80-120 MB/dia.
-- **CI (.github/workflows/ci.yml)** — verde: Postgres 17 + todas as migrations + 17 SQL test files (incl. cleanup-retention, participants-panel, withdraw-rebid-warning) + bot + build + smoke. Reconhecimento: REMOVIDO do produto (2026-10-05) — sem Python, sem ONNX, sem índices; o wizard é 100% manual. 2026-10-08: Node 78 (export-rows testável) + bot 45 (vote-log no check).
+## Atenções para o próximo trabalho
 
-## Próxima área recomendada
+Riscos identificados, ainda sem correção autorizada nesta sessão: retenção 12h remove pós-venda pendente; backup do dia não prova cobertura de todas as exclusões; anúncio final sem nova tentativa persistente; janela de concorrência da abertura; limites de snapshots e diagnóstico doctor incompleto. Ver backlog.
 
-Ver **`11_PENDING_WORK.md`** e **`12_SESSION_HANDOFF.md`**. Trabalho imediato: **aplicar migrations pendentes** (P-13 — incl. as duas de 2026-10-07: participantes e retirada/re-oferta, nessa ordem). A conversão para desktop .exe foi **CANCELADA e removida** (2026-09-29); o **reconhecimento de cartas foi REMOVIDO por completo** (2026-10-05) — o projeto é 100% web + bot, sem IA.
-
-## Comandos oficiais (referência rápida — detalhes em `09_TESTS_AND_VALIDATION.md`)
+## Comandos de referência
 
 ```bash
-npm ci                       # site (raiz)
-npm --prefix bot ci          # bot
-npm run typecheck            # tsc --noEmit
-npm test                     # node --test tests/*.test.mjs (78)
-npm --prefix bot run check   # sintaxe bot + patches + subset
-node --test bot/*.test.mjs   # suíte bot
-npm run build                # next build (RODE ANTES DO npm run start!)
-npm run start                # site (Next.js) + bot WhatsApp
-npm run doctor               # check-up pré-leilão: migrations, RPCs, bot, backup, figurinha
+npm run typecheck
+npm test
+node --test bot/*.test.mjs
+npm --prefix bot run check
+npm run build
+node tests/smoke.mjs
 ```
+
+`npm start` inicia site **e bot**, gerando tráfego real; não executar para revisão documental. `npm run doctor` consulta produção e não certifica todas as versões de migrations. Build antes de iniciar o painel local de produção, quando essa inicialização fizer parte da tarefa.

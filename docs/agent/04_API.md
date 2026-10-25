@@ -2,15 +2,15 @@
 
 > Área: API HTTP do painel
 > Escopo: Rotas, contratos, autenticação, idempotência
-$12026-10-07
+> Última atualização: 2026-10-25
 > Fonte principal: `app/api/**/route.ts`, `lib/backend.ts`, `lib/purge.ts`, `lib/rate-limit.ts`, `lib/auction-draft.ts`
 
 ## Padrão comum (confirmado em todas as rotas)
 
 - `export const runtime = "nodejs"`.
-- Auth: `authorize(request, write?)` (`lib/backend.ts`) — JWT Supabase do header `Authorization: Bearer`, validado contra `admin_profiles` (role admin/operator, `active`). Falha → `failure(error)` com status/PT-BR.
+- Auth: `authorize(request, write?)` (`lib/backend.ts`) — JWT Supabase do header `Authorization: Bearer`, validado contra `admin_profiles` (perfil ativo (viewer incluído) nas leituras; admin/operator nas escritas). Falha → `failure(error)` com status/PT-BR.
 - Escrita transacional: sempre via `db.rpc(...)` com service_role (`lib/supabase-server.ts`).
-- Nenhuma lógica de negócio em JS: as routes validam formato e chamam RPCs.
+- As rotas validam formato e chamam RPCs para operações transacionais; há também operações diretas em tabelas de infraestrutura (comandos do bot, grupos e quick polls). `/api/health` é público.
 
 ## Rotas
 
@@ -21,7 +21,7 @@ $12026-10-07
 - Suporte: `GET /api/auctions/new/status` — status de publicação pós-criação (usado pelo wizard único para acompanhar o envio).
 
 ### `POST /api/auctions/batch` — fila em lote (wizard `/auctions/new`)
-- Body: `eventId`, `queue{group_id, starts_at, interval_seconds}`, `items[1..100]{card, auction}` — cada item aceita `pricing_mode/custom_values/custom_buyout_last` (espelha a rota única; `poll_options` gravadas por item).
+- Body: `eventId`, `queue{group_id, starts_at, interval_seconds}`, `items[1..200]{card, auction}` — cada item aceita `pricing_mode/custom_values/custom_buyout_last` (espelha a rota única; `poll_options` gravadas por item).
 - **Itens de brinde (2026-09-24)**: item `giveaway{options[2..12]}` (carta marcada como Brinde) — NÃO vira leilão: o RPC cria enquete de brinde (foto + opções livres) na posição do lote; validação própria (nome obrigatório — é o título, foto HTTPS, opções 2..12 ≤100 chars); lote/duração/valores não se aplicam.
 - Valida: lotes únicos e >0, duração 1s–604800s, intervalo 1–86400s.
 - Cria TUDO via `create_auction_publish_queue`; erros mapeados (409 lote duplicado/grupo indisponível/evento conflitante).
@@ -38,7 +38,7 @@ $12026-10-07
 
 ### `GET /api/dashboard` — painel ao vivo
 - `?scope=operations` → só bot/grupo/dispatches; sem scope → `read_dashboard_snapshot` + operações.
-- Janela de dispatches: **30 dias** (`windowStart`), counts por status via PostgREST `head:true`.
+- Janela de dispatches: **24 horas** (`windowStart`), counts por status via PostgREST `head:true`.
 
 ### `GET /api/export` — planilha Excel (ExcelJS)
 - Fonte: `snapshot(db)` (`read_auction_snapshot`).
@@ -51,7 +51,7 @@ $12026-10-07
 
 ### `POST /api/commands` — comando de negócio idempotente
 - Corpo: `{type, eventId, id?, auctionId?, participantId?, amount?, occurredAt?, data?}` → `parseCommand` (`lib/commands.ts`, whitelist de tipos + validação de forma) → RPC `process_auction_command` (service_role). É o canal das ações do dashboard (cards, participantes, leilões, lances manuais). **Novos tipos (2026-10-07)**: `PARTICIPANT_SUSPEND` (exige `id`; `data.suspension_until` nula/ausente = indefinida, ou ISO futura) e `PARTICIPANT_REACTIVATE` (exige `id`). Mensagens PT-BR novas: `participant_not_found`, `invalid_suspension_until`, `participant_banned`.
-- Separado disto, o painel também enfileira comandos de CONTROLE do bot em `whatsapp_bot_commands` (poll do supervisor a cada 3s) — usados pela central WhatsApp (reconectar, logout, sincronizar grupos etc.).
+- Separado disto, o painel também enfileira comandos de CONTROLE do bot em `whatsapp_bot_commands` (poll do supervisor a cada 5s) — usados pela central WhatsApp (reconectar, logout, sincronizar grupos etc.).
 
 ### `POST /api/quick-polls` — brindes: enquete rápida (2026-09-24)
 - Body: `eventId`, `groupId` (ativo), `title` 1..200, `options` 2..12 (≤100 chars cada), `scheduledAt` (default agora; passado >2min → 400). Idempotência leve: `external_event_id = quick-poll:{eventId}` (mesmo eventId devolve a enquete existente).

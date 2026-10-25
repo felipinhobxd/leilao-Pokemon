@@ -21,12 +21,12 @@ O problema: o Baileys perde o socket com frequência. Se a queda coincide com o 
 Com `REDIS_URL` configurada no `.env` (ex.: `redis://127.0.0.1:6379`), o bot passa a usar uma fila **BullMQ + Redis**:
 
 - O Supabase (`whatsapp_dispatches`) continua sendo a fonte da verdade: claim, attempts, status e erros seguem auditáveis no painel.
-- O job sobrevive a quedas de socket **e a reinícios do processo** (fica persistido no Redis). Enquanto o WhatsApp está desconectado, o job apenas espera (`socket_whatsapp_down`) com backoff exponencial 5s→60s (25 tentativas ≈ 23 min) — sem gastar o orçamento de tentativas do SQL.
-- Após a reconexão o envio acontece automaticamente: nenhuma mensagem é perdida.
+- O job sobrevive a quedas de socket **e a reinícios do processo** (fica persistido no Redis). Enquanto o WhatsApp está desconectado, o job tenta aguardar (`socket_whatsapp_down`) com backoff exponencial 5s→60s (25 tentativas ≈ 23 min) — sem gastar o orçamento de tentativas do SQL.
+- Após a reconexão o envio acontece automaticamente: o envio volta a ser tentado, sujeito ao orçamento de retries.
 - Erros de dados (grupo indisponível, leilão não publicável, opções inválidas, carta sumiu) são **irrecuperáveis**: o lote é marcado `failed` na hora, sem queimar retries.
 - Idempotência por desenho: o worker re-lê o dispatch no Supabase e pula linhas já `sent`/`cancelled`/`failed`; o envio também é idempotente por etapa (`announcement_sent_at`/`poll_sent_at`).
-- **Sem Redis** (ou se o Redis falhar no momento do enfileiramento) o envio direto original é usado — degradação graciosa, zero perda de comportamento.
-- O painel ganha a métrica `dispatch_success_rate`: "Envios (7d)" mostra `sent/(sent+failed)` reais da tabela de disparos.
+- **Sem Redis** (ou se o Redis falhar no momento do enfileiramento) o envio direto original é usado — fallback para o caminho direto.
+- O painel ganha a métrica `dispatch_success_rate`: "Envios (24h)" mostra `sent/(sent+failed)` reais da tabela de disparos.
 
 A reconexão do Baileys continua sendo exclusiva de `connect()` + supervisor (`session-guard.mjs` garante sessão única); a fila nunca toca no socket.
 
@@ -149,7 +149,7 @@ O painel oferece:
 ## Arquitetura
 
 ```text
-Painel Netlify
+Painel Next.js / Vercel
 → Supabase
 → supervisor local (service.mjs)
 → bot Baileys (index.mjs)
@@ -159,8 +159,16 @@ Painel Netlify
 → painel
 ```
 
-O Baileys não deve ser hospedado permanentemente em Netlify Function, Edge Function ou Scheduled Function.
+O Baileys precisa de processo persistente e não deve rodar permanentemente em função serverless.
 
 ## Aviso
 
 Baileys é uma integração não oficial com o WhatsApp. Use um número separado quando possível e mantenha o volume de automação moderado.
+
+## Estado de manutenção — 2026-10-25
+
+Migrations de participantes, avisos, limpeza 12h/prune 7d e backup já registradas no PokemonLeilao; detalhes e versões remotas em [13_MIGRATION_AUDIT.md](../docs/agent/13_MIGRATION_AUDIT.md). Não reaplicar a lista antiga. O intervalo principal do bot e a consulta de comandos do supervisor são de cinco segundos.
+
+A limpeza atual pode remover pós-venda pendente antes dos lembretes de sete dias. O backup existente no dia não prova cobertura de toda exclusão posterior. Falhas de anúncio final e concorrência entre ticks da abertura também estão documentadas em [11_PENDING_WORK.md](../docs/agent/11_PENDING_WORK.md). Nada disso foi alterado nesta revisão documental.
+
+Log Ingestion mostrado no painel em 2026-10-25: 0,86/1 GB. Não iniciar/reiniciar o bot nem disparar backups/testes apenas para conferir migrations; usar metadados pontuais. Logs locais do terminal e linhas da tabela auction_events não são a mesma métrica de ingestão dos serviços Supabase.

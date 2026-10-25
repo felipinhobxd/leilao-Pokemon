@@ -2,12 +2,12 @@
 
 > Área: Regras de negócio do leilão
 > Escopo: Lote, carta, valores, lances, enquete, ARREMATE, vencedor, fila, avisos
-$12026-10-07
+> Última atualização: 2026-10-25
 > Fonte principal: `lib/auction-wizard.ts`, `app/api/auctions/**`, `supabase/migrations/**` (RPCs), `bot/index.mjs`, `bot/format.mjs`, `app/api/export/route.ts`
 
 ## Conceitos e onde vivem
 
-- **Carta (`cards`)**: cadastrada no momento da criação do leilão (wizard); campos usados: nome, número, variante (Normal/Holo/Reverse Holo/...), condição (NM/LP-SP/MP/HP/DMG), idioma (pt-BR/en/ja/es/other), imagem (Supabase Storage), preço inicial e ARREMATE de referência. `collection` existe no schema mas foi REMOVIDO da UI (payload mantém por compatibilidade).
+- **Carta (`cards`)**: cadastrada no momento da criação do leilão (wizard); campos usados: nome, número, variante (Normal/Holo/Reverse Holo/...), condição (NM/LP-SP/MP/HP/DMG), idioma (pt-BR/en/ja/other na UI atual), imagem (Supabase Storage), preço inicial e ARREMATE de referência. `collection` existe no schema mas foi REMOVIDO da UI (payload mantém por compatibilidade).
 - **Lote/Leilão (`auctions`)**: `lot_number` (sequência única do operador), duração (`scheduled_end_at` / `duration_seconds`), `bid_increment` (guarda do banco p/ novos lances manuais), `poll_options` (jsonb — o que a enquete publica).
 - **Valores da enquete**: modo `increment` (inicial + incremento + ARREMATE opcional + nº de opções 2..12) ou `custom` (`lib/auction-wizard.ts::parseCustomValues/buildCustomValuesPlan`: valores exatos digitados, vírgula decimal pt-BR, 2..12 estritamente crescentes; primeiro = lance inicial; "maior valor = ARREMATE" opcional; `bid_increment` = menor intervalo entre valores — o guarda do banco nunca rejeita opção listada). Rótulos: `R$ X,XX` e `R$ X,XX 🦭` para ARREMATE.
 - **Enquete**: enviada pelo bot com `buildPollTitle` ("N. Lances") + opções do banco. **Foto antes, enquete 5s depois**.
@@ -17,7 +17,7 @@ $12026-10-07
 - **Pagamento pós-venda (P-09, 2026-09-24)**: delivery nasce `waiting_payment`; painel marca "Pagamento recebido" (`mark_purchase_paid` → payment `paid` + delivery `ready`, audita 1×); enquanto não marcado, o bot manda DM de lembrete a cada 7 dias ao arrematante (sem aviso/punição; máx. 5 por padrão).
 - **Brinde (P-07, 2026-09-24)**: enquete livre (texto/emoji) criada no painel (`whatsapp_quick_polls`), publicada pelo bot no horário agendado; "quem clicar primeiro leva" — votos visíveis na própria enquete do WhatsApp.
 - **Fotos de detalhe (P-08, 2026-09-24)**: até 4 por carta (`cards.extra_images`); o bot publica em sequência após a foto principal; o delay de 5s da enquete conta após a última.
-- **Aviso global (`participant_warnings`)**: cada `BID_CHANGED` com redução = 1 aviso no contador do USUÁRIO (vale no sistema inteiro, nunca reseta, um por evento por idempotência). Exatamente 3 → `admin_notifications` → DM aos admins (formato em `bot/warning-notify.mjs`). **O participante NÃO recebe DM** (decisão do operador 2026-09-24) — a redução só conta; o bot loga no terminal na hora ("🔄 Voto alterado … · lote N · ⚠️ redução") e o dashboard lista ao vivo (painel "Avisos de alteração de valores", migration 20260924180000). O Excel mantém as abas dedicadas. Subir/manter valor não gera aviso. **Caminho novo (2026-10-07, migration 20261007110000)**: retirar o lance e re-ofertar MENOR também é redução — o `BID_PLACED` pós-retirada compara com o último lance withdrawn (ADDITION C + `register_participant_reduction`) e conta no MESMO ciclo de 3, marcado `change_kind='withdraw_rebid'` ("após retirar o lance" no painel e coluna "Como" no Excel). Subir/igualar após retirar só registra no `value_change_log`, sem aviso.
+- **Aviso global (`participant_warnings`)**: cada `BID_CHANGED` com redução = 1 aviso no contador do USUÁRIO (vale no sistema inteiro; histórico total preservado, ciclo reinicia, um por evento por idempotência). Três no ciclo → `admin_notifications` → DM aos admins (formato em `bot/warning-notify.mjs`). **O participante NÃO recebe DM** (decisão do operador 2026-09-24) — a redução só conta; o bot loga no terminal na hora ("🔄 Voto alterado … · lote N · ⚠️ redução") e o dashboard lista ao vivo (painel "Avisos de alteração de valores", migration 20260924180000). O Excel mantém as abas dedicadas. Subir/manter valor não gera aviso. **Caminho novo (2026-10-07, migration 20261007110000)**: retirar o lance e re-ofertar MENOR também é redução — o `BID_PLACED` pós-retirada compara com o último lance withdrawn (ADDITION C + `register_participant_reduction`) e conta no MESMO ciclo de 3, marcado `change_kind='withdraw_rebid'` ("após retirar o lance" no painel e coluna "Como" no Excel). Subir/igualar após retirar só registra no `value_change_log`, sem aviso.
 - **Suspensão de participante (2026-10-07, migration 20261007100000)**: `PARTICIPANT_SUSPEND` com prazo grava só `suspension_until` (status segue 'active' → o guard `participant_not_eligible` AUTO-EXPIRA; lances ativos permanecem mas ficam inelegíveis até expirar); sem prazo = `status='suspended'` (indefinida, só volta reativando); `PARTICIPANT_REACTIVATE` limpa status+prazo (desfaz ban também); banido não é suspenso. Comandos idempotentes pelo eventId; auditoria dupla (auction_events do comando + trigger `audit_admin_change` em participants).
 - **Fila (`auction_publish_queues`)**: criação em lote gera fila + dispatches ordenados (`queue_position`); intervalo entre publicações 1s–24h; pausa/retomada persistente (`paused`), cancelamento, progresso (`summary`) na tela do wizard.
 
@@ -41,7 +41,15 @@ $12026-10-07
 
 - 1 participante = no máx. 1 lance `active` por leilão (RPC garante).
 - EventId idêntico ⇒ resultado idêntico em cache; divergente ⇒ erro (anti-replay).
-- Nenhuma publicação sem `poll_message_id` gravado (re-envio seria detectado como jobId duplicado).
+- Preservar IDs estáveis e etapas do dispatch: `poll_message_id` é persistido antes do envio. O banco e o WhatsApp são sistemas separados; isso reduz risco de duplicação, sem garantir entrega exatamente uma vez.
 - `poll_options` do banco são a verdade do que foi publicado — wizard/bot nunca recalculam sozinhos na publicação.
 - Contador de avisos é por PARTICIPANTE (global), não por leilão; nunca zera com troca de leilão/limpeza. Os DOIS caminhos de redução (troca direta e retirada+re-oferta menor) somam no MESMO ciclo de 3.
 - TOTAL da planilha soma apenas a coluna de valores das vendas (fórmula `=SUM` na faixa exata das linhas de compra).
+
+## Retenção e limites operacionais
+
+- O ciclo de avisos reinicia ao completar três; o histórico total não zera com troca de leilão.
+- O cache `processed_commands` tem retenção padrão de sete dias: a identidade permanece importante, mas o replay em cache não é eterno.
+- A limpeza de 12h atualmente apaga também compras/pagamentos/entregas de leilões terminais sem filtrar pendências. O lembrete exige compra sobrevivente por sete dias. Esse conflito está documentado, sem alteração de regra nesta sessão.
+- O guard de backup aceita um arquivo do dia; não comprova que cubra todas as linhas removidas depois.
+- Registro do vencedor no banco não garante entrega do anúncio ao WhatsApp.

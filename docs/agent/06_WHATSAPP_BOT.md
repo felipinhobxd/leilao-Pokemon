@@ -2,7 +2,7 @@
 
 > Área: Bot WhatsApp
 > Escopo: Supervisor, filho Baileys, fila, votos, avisos, sessão, segurança
-$12026-09-25
+> Última atualização: 2026-10-25
 > Fonte principal: `bot/service.mjs`, `bot/index.mjs`, `bot/queue-worker.mjs`, `bot/poll-votes.mjs`, `bot/poll-identities.mjs`, `bot/warning-notify.mjs`, `bot/session-guard.mjs`, `bot/group-participants.mjs`, `bot/format.mjs`, `bot/dispatch-id.mjs`, `bot/instrument.mjs`, `bot/sync-groups.mjs`, `bot/package.json`, `.github/workflows/ci.yml`
 
 ## Arquitetura do processo
@@ -10,7 +10,7 @@ $12026-09-25
 - **`service.mjs` (supervisor, Node 24, Windows)**: único ponto de entrada (`npm --prefix bot start` = `node --env-file=.env service.mjs`; também spawnado por `scripts/start-all.mjs`).
   - Exige env: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `BOT_ADMIN_USER_ID`.
   - Cria seu próprio client Supabase; **não** tem socket do WhatsApp.
-  - Ciclos: heartbeat (10–15s) em `whatsapp_bot_workers` (status/QR/expiração → painel); poll de `whatsapp_bot_commands` (3s); **limpeza 12h** (`cleanup_old_auctions`, ≥1x/hora); **restart noturno** (`BOT_NIGHT_RESTART_HOUR` default 4h05 — mata o filho, exit handler reinicia em 5s).
+  - Ciclos: heartbeat (10–15s) em `whatsapp_bot_workers` (status/QR/expiração → painel); poll de `whatsapp_bot_commands` (5s); **limpeza 12h** (`cleanup_old_auctions`, no máximo 1x/hora; timer de verificação 10min); **restart noturno** (`BOT_NIGHT_RESTART_HOUR` default 4h05 — mata o filho, exit handler reinicia em 5s).
   - Spawn do filho com `--max-old-space-size=384` (RAM era 1,8–2 GB ocioso; V8 não devolvia ao Windows).
   - Shutdown limpo (SIGINT/SIGTERM): para filho, limpa timers, publica estado `disconnected`.
 - **`index.mjs` (filho Baileys)**: conecta a sessão (`./sessao`, multi-file auth), processa eventos, publica dispatches, finaliza leilões, drena notificações de admins.
@@ -19,7 +19,7 @@ $12026-09-25
 ## Inicialização e reconexão (index.mjs)
 
 - `makeWASocket({ markOnlineOnConnect: false, syncFullHistory: false, emitOwnEvents: true, getMessage: getStoredPollMessage })` + `patch-baileys.mjs` no postinstall.
-- `connection.update`: `open` → inicia scheduler 3s + sync de grupos; `close` → backoff exponencial de reconexão; QR com TTL (`BOT_QR_TTL_SECONDS`); `connectionReplaced` → encerra com code 2 (só um processo pode ter a sessão).
+- `connection.update`: `open` → inicia scheduler 5s + sync de grupos; `close` → backoff exponencial de reconexão; QR com TTL (`BOT_QR_TTL_SECONDS`); `connectionReplaced` → encerra com code 2 (só um processo pode ter a sessão).
 - Variáveis-chave: `sock`, `socketReady`, `schedulerTimer`, `reconnecting`.
 
 ## Fila e dispatches (queue-worker.mjs + index.mjs)
@@ -29,7 +29,7 @@ $12026-09-25
 - Publicação do lote: **imagem primeiro** (legenda `buildAuctionCaption` de `format.mjs`: nº do lote, nome, condição, bandeira de idioma) e **enquete 5s depois** (`buildPollTitle`: "N. Lances"; opções = `dispatch.poll_options` do banco).
 - `dispatch-id.mjs` gera ids estáveis de mensagem/enquete (idempotência de envio: jobId duplicado = lote já na fila → ignora).
 - Estados de entrega: `scheduled → sending → sent | failed` (+`attempts`, `last_error`); retry com backoff; falha não perde o restante da fila.
-- **Duplicação**: impossível por design — claim atômica + event-id estável por dispatch + `poll_message_id` gravado no banco no primeiro envio.
+- **Duplicação**: claim atômica, IDs estáveis e etapas persistidas reduzem o risco. Enviar ao WhatsApp e confirmar no banco são operações separadas; não há garantia absoluta de exactly-once.
 
 ## Votos de enquete → lances (poll-votes.mjs, poll-identities.mjs, index.mjs)
 
@@ -41,11 +41,11 @@ $12026-09-25
 - **Fechamento por tempo ANUNCIA no grupo** (`finalizeDueAuctions`): mensagem de vencedor com nota de empate ("venceu quem deu o lance primeiro") e aviso de encerrado sem lances — CONFIRMADO 2026-09-23. **HOTFIX 2026-09-29 (spam 7x)**: anúncio UMA vez por leilão (Set `finalizeAnnounced`, cap 200); anúncio SÓ quando o `result.auction.status` é `closed`/`sold` — RPC que resolve sem transição loga `⚠️ Finalize sem transição` e NÃO anuncia; `auction_not_open` no catch marca o evento (ARREMATE corrida) e segue; erro real logado com a mensagem completa. Disparos imediatos de scheduler/finalize no `open` REMOVIDOS (corrida com a abertura invertia a ordem no grupo; o 1º tick de 5s cobre a reconexão).
 - **Supervisor mantém** (2026-09-23): backup diário 4h30 (`bot/backup.mjs` → `bot/backups/`), limpeza 12h, restart noturno e tee de log em `bot/logs/bot-YYYY-MM-DD.log` (`bot/file-logger.mjs`, retenção 14 dias).
 - **P-06 (2026-09-24)**: ARREMATADO e Leilão encerrado fazem **@menção real** ao vencedor — JID de telefone resolvido por `bot/participant-contact.mjs` (pn > lid > fallback); sem JID, mensagem sai com nome plano.
-- **P-07 (2026-09-24)**: `sendDueQuickPolls()` no ciclo de 3s publica brindes agendados pelo painel (`whatsapp_quick_polls`); idempotente por `sent_at` + messageId estável; grupo inativo/opções ruins → marcado sem envio. **Formulário movido para `/auctions/brinde`** (decisão do operador: brinde pertence à área de leilões — botão "🎁 Brinde" no topbar do wizard; a Central WhatsApp não tem mais o formulário). **Brinde por carta (20260924160000)**: brindes da FILA (carta marcada como brinde no wizard) publicam FOTO da carta (caption = título, messageId estável `quick-announce`, crash → reenvio dedup) + a enquete; fila PAUSADA não publica brinde (`queue.status` via embed — o resume re-agenda); a conclusão da fila espera brindes pendentes (trigger em quick_polls).
+- **P-07 (2026-09-24)**: `sendDueQuickPolls()` no ciclo de 5s publica brindes agendados pelo painel (`whatsapp_quick_polls`); idempotente por `sent_at` + messageId estável; grupo inativo/opções ruins → marcado sem envio. **Formulário movido para `/auctions/brinde`** (decisão do operador: brinde pertence à área de leilões — botão "🎁 Brinde" no topbar do wizard; a Central WhatsApp não tem mais o formulário). **Brinde por carta (20260924160000)**: brindes da FILA (carta marcada como brinde no wizard) publicam FOTO da carta (caption = título, messageId estável `quick-announce`, crash → reenvio dedup) + a enquete; fila PAUSADA não publica brinde (`queue.status` via embed — o resume re-agenda); a conclusão da fila espera brindes pendentes (trigger em quick_polls).
 - **Spam de "Voto recebido para enquete desconhecida" corrigido (2026-09-24)**: votos em enquetes que o bot não rastreia (brindes do painel, enquetes antigas já limpas pela rotina de 12h) são ESPERADOS — o warn por EVENTO inundava o console (dezenas de linhas idênticas por enquete). Agora loga UMA vez por enquete por sessão (`unknownPollWarned`, Set limitado a 200 em index.mjs).
 - **CORREÇÃO RAIZ — votos não computados (2026-09-29)**: votos de enquete chegam às vezes ENCAPSULADOS em `ephemeralMessage` (padrão em grupos com mensagens temporárias — ex.: grupos novos) / `viewOnceMessage` / `editedMessage`. O Baileys normaliza internamente, mas o evento entrega a mensagem CRUA: o check DIRETO `message.message.pollUpdateMessage` nunca via o voto — ele caía no fluxo de "mensagem comum" (só enriquecia o participante) e era DESCARTADO EM SILÊNCIO. Fix: `unwrapMessageContent` (poll-votes.mjs, espelha normalizeMessageContent do Baileys) usado em `handleIncomingMessages` + `processIncomingPollMessage` + `decryptIncomingPollVote` (aceita/deriva o conteúdo normalizado). Atualização de enquete SEM payload de voto agora loga em vez de silêncio. Testes: `bot/poll-votes.test.mjs` (voto encapsulado decriptado + unwrap aninhado/cíclico).
-- **REGRAS DO LEILÃO (2026-09-25, pedido da operadora)**: `sendRulesAnnouncements()` roda ANTES da figurinha no ciclo — envia o texto de regras default 2 min antes do anúncio (BOT_RULES_MINUTES_BEFORE, relativo ao BOT_ANNOUNCE_MINUTES_BEFORE; padrão T-7 da fila → regras, T-5 → figurinha+@all, T-0 → lote 1). Texto = verbatim da operadora, sobreponível em `bot/data/rules-message.json` {"text"} sem tocar no código; idempotência por announce-state.json (chave `rules_announced`, independente da da figurinha); mesma janela de grace e mesmos guards (fila viva, grupo ativo).
-- **P-05 (2026-09-24: gatilho corrigido)**: figurinha de abertura capturada pelo operador (`!figurinha` na mesma conversa da figurinha; persiste em `bot/data/announcement-sticker.json`, doctor checa) + mensagem "@all O leilão vai começar!" com menção REAL de todos os participantes (`groupMetadata`). **Auditoria 2 (2026-09-29)**: a captura agora também desembrulha containers (ephemeralMessage) — em conversas com mensagens temporárias, figurinha e comando `!figurinha` chegam encapsulados e a captura falhava em silêncio (mesma família do bug dos votos). **Gatilho pela FILA** (`starts_at`): janela `BOT_ANNOUNCE_MINUTES_BEFORE` (5) antes até `ANNOUNCE_GRACE_MINUTES` (15) depois; pausada = silêncio; idempotente por `announce-state.json`; roda PRIMEIRO no ciclo de 3s (o gatilho antigo, no 1º dispatch, perdia a corrida com o claim em filas "Agora" e nem existia com brinde na posição 1).
+- **REGRAS DO LEILÃO — implementação atual**: `sendOpeningSequence` envia regras → espera 3s quando há figurinha → figurinha → @all. O gatilho é a janela da fila (padrão cinco minutos antes, grace quinze minutos depois), usando a mesma marcação de abertura. A descrição antiga de regras em T-7 e figurinha em T-5 não corresponde mais a esse caminho. O texto pode ser substituído em `bot/data/rules-message.json`.
+- **P-05 (2026-09-24: gatilho corrigido)**: figurinha de abertura capturada pelo operador (`!figurinha` na mesma conversa da figurinha; persiste em `bot/data/announcement-sticker.json`, doctor checa) + mensagem "@all O leilão vai começar!" com menção REAL de todos os participantes (`groupMetadata`). **Auditoria 2 (2026-09-29)**: a captura agora também desembrulha containers (ephemeralMessage) — em conversas com mensagens temporárias, figurinha e comando `!figurinha` chegam encapsulados e a captura falhava em silêncio (mesma família do bug dos votos). **Gatilho pela FILA** (`starts_at`): janela `BOT_ANNOUNCE_MINUTES_BEFORE` (5) antes até `ANNOUNCE_GRACE_MINUTES` (15) depois; pausada = silêncio; idempotente por `announce-state.json`; roda PRIMEIRO no ciclo de 5s (o gatilho antigo, no 1º dispatch, perdia a corrida com o claim em filas "Agora" e nem existia com brinde na posição 1).
 - **Avisos no TERMINAL (2026-09-24)**: os drenos logam quem trocou e onde — participante: "⚠️ {nome} reduziu o lance no lote N ({carta}): R$ X → R$ Y · aviso K de 3 · DM enviada/SEM DM"; admins (no 3º): "⚠️ 3 AVISOS: {nome} — última redução no lote N ({carta}): R$ X → R$ Y · DM enviada a N admin(s)".
 - **Re-oferta pós-retirada no TERMINAL (2026-10-08)**: o `BID_PLACED` após uma retirada (participante remove o voto e volta com outro valor) loga `🗳️ Voto após retirada: {nome} → retirou R$ X → R$ Y · lote N[ · ⚠️ redução: aviso global registrado]` — `describeVoteReceived` (`bot/vote-log.mjs`, 5 testes no `check`) consulta o último lance **withdrawn** do participante no leilão, espelhando o ADDITION C do RPC. Primeiro voto da pessoa segue logando "🗳️ Voto recebido".
 - **BLINDAGEM CONTRA QUEDA DO SUPABASE (2026-10-08)**: na queda de 2026-10-08 (Cloudflare 520/521/525 no host do Supabase, ~18h18 SP), o FILHO morreu com `UnhandledPromiseRejection` — `finalizeDueAuctions` era try/finally SEM catch e jogava o erro cru do supabase-js (`throw error`) para fora via `void finalizeDueAuctions()` (IIFE do ciclo sem .catch); o supervisor tem handlers e sobreviveu, mas o filho não tinha NENHUM. Correções: (1) catch no `finalizeDueAuctions`; (2) `.catch` no IIFE do ciclo (index.mjs); (3) handlers `uncaughtException`/`unhandledRejection` no FILHO — loga e SEGUE VIVO (exit 1/2 continuam sendo a via real de saída: logout/440); (4) `describeError` (`bot/error-log.mjs`, 7 testes no `check`) — logs de erro em UMA linha: extrai o `<title>` das páginas HTML do Cloudflare, remove tags, colapsa espaços e trunca (antes, CADA erro despejava a página HTML inteira no terminal e nos arquivos de log).
@@ -58,10 +58,10 @@ $12026-09-25
 - O RPC grava avisos por **redução** de lance e, com 3 exatos, insere `admin_notifications` (idempotente).
 - **O PARTICIPANTE NÃO RECEBE DM** (decisão do operador, re-confirmada 2026-09-24): a redução apenas CONTA no avisômetro global — sem punição, sem mensagem direta à pessoa.
 - **Terminal em tempo real (2026-09-24)**: no processamento do voto o bot loga `🔄 Voto alterado: {nome} (fone) → R$ X → R$ Y · lote N · ⚠️ redução: aviso global registrado` — quem trocou, em qual enquete/lote e os preços, na hora.
-- O filho drena no ciclo de 3s: formata a DM (`formatWarningNotification`: usuário, total global, última ocorrência com carta/lote/valores/horário, histórico dos anteriores) e envia para `BOT_ADMIN_WA_JIDS` (default 554197285978 e 5519989759121).
-- `sent_at` só após TODOS os admins; `payload.sent_to` faz retry parcial reenviar SÓ ao que faltou (zero DM duplicada). No 3º aviso o terminal loga o resumo (quem/lote/valores/quantos admins).
+- O filho drena no ciclo de 5s: formata a DM (`formatWarningNotification`: usuário, total global, última ocorrência com carta/lote/valores/horário, histórico dos anteriores) e envia para `BOT_ADMIN_WA_JIDS` (default 554197285978 e 5519989759121).
+- `sent_at` só após TODOS os admins; `payload.sent_to` faz retry parcial reenviar só ao destinatário ainda não registrado. Reduz duplicação, sujeito à janela entre envio e persistência. No 3º aviso o terminal loga o resumo (quem/lote/valores/quantos admins).
 - O DASHBOARD mostra a lista ao vivo (painel "Avisos de alteração de valores" — migration 20260924180000, snapshot com `participant_warnings` + `value_change_log`).
-- ⚠️ Enquanto a migration `20260923093000` não for aplicada, o dreno loga erro (tabela inexistente) e continua funcional — barulho esperado no console.
+- Migration de avisos registrada em produção com versão remota `20260923163815`; não há pendência de aplicação desse item (conferência 2026-10-25).
 
 ## Grupos, participantes e estado
 
@@ -85,6 +85,12 @@ $12026-09-25
 
 - **Queda do processo**: supervisor reinicia em 5s; votos que chegarem durante a queda ficam no WhatsApp e são processados no reconnect (guardas `stale_event` protegem ordem).
 - **`connectionReplaced`**: sessão aberta em outro lugar → filho sai com code 2; operador vê erro 440.
-- **Reprocessamento**: garantido ausente por `processed_commands` + advisory lock + vote_state; nunca "re-enviar" um comando sem o MESMO eventId.
+- **Reprocessamento**: `processed_commands` + advisory lock + vote_state protegem contra repetição; preservar o MESMO eventId em retries. O cache possui retenção padrão de sete dias, não garantia eterna de replay.
 - **processamento repetido de enquetes**: mensagens de enquete re-hidratadas de `poll_message_json` (`reviveStoredMessage`) — cuidado ao mexer nesse formato.
 - Windows: supervisor mata a árvore via `taskkill /T /F` no start-all.
+
+## Limites identificados na revisão de 2026-10-25
+
+- A abertura é sequenciada dentro de uma chamada; `openingBusy` retorna imediatamente a ciclos seguintes. Atrasos maiores que 5s podem deixar outro tick iniciar o scheduler antes de a abertura anterior terminar. Não afirmar atomicidade entre ticks.
+- O fechamento é salvo antes do anúncio; falha do WhatsApp após a transação pode deixar resultado sem anúncio. Não há outbox persistente nesse caminho.
+- Retenção de vendas em 12h conflita com lembrete padrão em 7d; backup do dia não prova cobertura de registros posteriores à cópia. Pendências em `11_PENDING_WORK.md`; não corrigidas nesta revisão.

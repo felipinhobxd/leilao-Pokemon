@@ -2,8 +2,12 @@
 
 > Área: Banco de dados
 > Escopo: Tabelas, RPCs, triggers, RLS, estados, idempotência, perigos
-> Última atualização: 2026-10-07
+> Última atualização: 2026-10-25
 > Fonte principal: `supabase/schema.sql`, `supabase/operations.sql`, `supabase/whatsapp_bridge.sql`, `supabase/migrations/*.sql` (todas), `lib/backend.ts`, `app/api/**`, `bot/**`
+
+## Estado de produção conferido em 2026-10-25
+
+Histórico com 67 registros, 59 arquivos locais correspondentes por nome; assinaturas/trechos principais confirmados em catálogo. As antigas pendências P-13/P-17 estão registradas. Versões remotas podem diferir dos nomes locais. Veja o mapeamento completo e os limites da conferência em `13_MIGRATION_AUDIT.md`; não reaplicar a lista antiga.
 
 ## Como o schema chega ao banco
 
@@ -42,17 +46,18 @@ Ordem de aplicação (confirmada no CI `ci.yml`): `tests/bootstrap.sql` → `sup
 
 ### `process_auction_command(p_command jsonb, p_admin_user_id uuid)` — o coração
 
-- Definida em `supabase/migrations/20260921130000_tiebreak_and_purge_all.sql`; **corpo substituído** (verbatim + adições marcadas `ADDITION A/B`) em `20260923093000_global_warnings_value_history.sql`.
+- Há versões históricas em `20260921130000` e `20260923093000`; o corpo local atual está em `20261007110000_withdraw_rebid_reduction_warning.sql` (remoto `20261008001232`), com comandos de participantes, ciclo de avisos e redução pós-retirada. Não editar apenas uma versão antiga.
 - Tipos: `CARD_*`, `PARTICIPANT_*`, `AUCTION_CREATE/UPDATE/DELETE/OPEN/FINALIZE`, `BID_PLACED/BID_CHANGED/BID_WITHDRAWN`, `BUYOUT_REQUESTED/BUYOUT_CONFIRMED`.
 - Idempotência: `pg_advisory_xact_lock(hashtextextended(eid,0))` + `processed_commands`; repetição idêntica devolve resultado em cache; divergente → `event_id_conflict`.
 - Guardas de lance: `auction_not_open`, `deadline_expired`, `participant_not_eligible`, `stale_event`, `invalid_bid_amount` (≥ inicial, 2 casas), `active_bid_exists/not_found`, `bid_increment_required`.
 - Tie-break do vencedor: `amount DESC, COALESCE(whatsapp_event_at, processed_at), processed_at, confirmation_order` (horário REAL do voto).
 - Comandos `PARTICIPANT_SUSPEND`/`PARTICIPANT_REACTIVATE` (20261007100000): SUSPEND com prazo grava SÓ `suspension_until` (status segue 'active' → o guard `participant_not_eligible` AUTO-EXPIRA quando o prazo passa); sem prazo vira `status='suspended'` (indefinida); banido não é suspenso (`participant_banned`); REACTIVATE limpa status+prazo (desfaz ban também). Erros novos: `invalid_suspension_until`, `participant_banned`. O evento de auditoria liga o `participant_id` (pid:=rid).
 - ADDITION C (20261007110000): `BID_PLACED` pós-RETIRADA compara com o último lance `withdrawn` do participante NO MESMO leilão (alias `prev` — regra 42702; índice `bids_auction_participant_recent_idx`) → `register_participant_reduction` grava `value_change_log` (change_kind='withdraw_rebid') para toda re-oferta e aviso+ciclo de 3 apenas na REDUÇÃO. O bloco B.2 (BID_CHANGED) permanece inline verbatim, intocado.
-- Hooks 20260923093000 (apenas em `BID_CHANGED`): grava `value_change_log`; se `novo < anterior` → 1 linha em `participant_warnings` (ON CONFLICT nada); se total do usuário = **exatamente 3** → 1 linha em `admin_notifications` com payload completo (histórico incluso).
+- Hooks 20260923093000 (apenas em `BID_CHANGED`): grava `value_change_log`; se `novo < anterior` → 1 linha em `participant_warnings` (ON CONFLICT nada); se total do usuário = **3 no ciclo aberto** → 1 linha em `admin_notifications` com payload completo (histórico incluso).
 
 ### `register_participant_reduction(...)` — helper do caminho retirada+re-oferta (20261007110000)
 
+- A versão atual é a correção `20261008001511_fix_reduction_lot_number_bigint.sql`: `p_lot_number bigint`, confirmado no catálogo de produção. A assinatura integer da migration anterior foi substituída.
 - Grava `value_change_log` + `participant_warnings` + ciclo de 3 + `admin_notifications` com o MESMO shape de payload que `bot/warning-notify.mjs` lê (zero mudança no bot). Chamado apenas pelo ADDITION C do `process_auction_command` (BID_PLACED pós-withdrawn); roda DENTRO da transação do chamador. Idempotência: `ON CONFLICT (external_event_id)` + o cache `processed_commands` do comando que o chamou. Server-only (revoke + grant execute to service_role).
 
 ### Demais RPCs
@@ -64,14 +69,14 @@ Ordem de aplicação (confirmada no CI `ci.yml`): `tests/bootstrap.sql` → `sup
 - `resolve_whatsapp_participant(...)` — LID/telefone → participante (merge de identidades; conflito → evento auditado).
 - `read_auction_snapshot()` / `read_dashboard_snapshot()` — export/dashboard; a 20260923093000 adiciona as 3 tabelas novas ao auction snapshot; a **20260924180000** adiciona `value_change_log` + `participant_warnings` (limit 100) ao DASHBOARD snapshot — o painel ao vivo mostra qual enquete/lote, valores e horários (antes só o Excel tinha). A **20261007100000** adiciona a chave `participant_warning_stats` (total global + ciclo aberto por participante; as LINHAS de `participants` não mudam — contrato de tests/dashboard-snapshot.sql); a **20261007110000** adiciona `change_kind` às duas listas de avisos do dashboard snapshot (o export/backup usam `select *` — a coluna flui sozinha).
 - `purge_all_business_data(p_confirm)` — exclusão total com frase `quero excluir mesmo` (validação tripla UI→API→DB), ordem FK-safe, SECURITY DEFINER, reseta sequences.
-- `export_business_backup()` (20260923120000; corpo substituído na 20260924140000, 20260924150000 — drafts limit 50 — e na **20260924170000, do PRÓPRIO OPERADOR**, que acrescentou os campos do brinde na fila: `queue_id, queue_position, image_url` no bloco de quick_polls, limit 500) — snapshot JSON; consumido pelo bot (cópia diária 4h30 em `bot/backups/`) e por `GET /api/admin/backup`.
+- `export_business_backup()` — snapshot JSON, consumido pelo bot e por `GET /api/admin/backup`. Corpo atual: `20261010100000_bound_backup_audit_export.sql` (remoto `20261010192429`), com campos de brinde, rascunhos e retenção da auditoria/cache; limites na seção de backup abaixo. A cópia diária nominal é às 4h30; o guard de limpeza também pode gerar cópia antes desse horário.
 - `upsert_auction_draft(p_payload, p_admin_user_id)` / `delete_auction_draft(p_draft_id, p_admin_user_id)` (20260924150000) — salvar/excluir rascunho do wizard. Upsert idempotente por PK (id gerado no cliente, SEM processed_commands); guards espelham a rota (título 1..120, cards 1..200, ≤512KB); propriedade: rascunho alheio vira `draft_not_found`; delete idempotente por estado.
 - `purge_all_business_data(p_confirm)` — corpo MAIS RECENTE agora é o da 20260924150000 (adicionou `auction_drafts` à cadeia de deletes e ao `deleted` do retorno).
 - `mark_purchase_paid(p_purchase_id, p_admin_user_id, p_method, p_reference)` (20260924120000) — baixa de pagamento idempotente por estado: payments → `paid`, delivery → `ready`, audita UMA vez; para os lembretes DM do bot.
 - `cleanup_old_auctions(p_hours=12, p_audit_days=7)` — o RPC usa **12 horas** como padrão para leilões terminais; o parâmetro é em HORAS, com piso de 1h. A limpeza só roda depois de existir backup na nuvem e remove apenas leilões terminais (`closed`, `sold`, `cancelled`) além de 12h. Só leilões terminais (`closed`, `sold`, `cancelled`) além de 12h entram na limpeza. Cartas SEM leilão (criadas manualmente ou brindes) SOBREVIVEM — só cartas órfãs dos leilões apagados na MESMA execução são removidas (o sweep antigo apagava qualquer carta sem leilão, por mais recente que fosse). **2026-10-08 (P-17)**: ganhou `p_audit_days` (default 7) — poda `auction_events` de auditoria (incluindo as ~39k linhas de `auction_id` NULL do trigger `audit_admin_change`) e `processed_commands` além de 7 dias, dentro da mesma transação protegida (drop/restaura do `immutable_audit` + guard de backup). Retorno ganha as chaves `audit_events`/`processed_commands`. Assinatura atual: `(integer, integer)` — drop + create (Postgres não aceita mudança de assinatura via CREATE OR REPLACE) com revoke/grant reestabelecidos; chamada do bot (só `p_hours`) segue resolvendo via default.
 - `delete_auction(p_auction_id, p_confirm, p_admin)` (20260925130000) — exclusão REAL com frase "sim quero" (tripla UI→API→RPC); apaga árvore FK-safe; carta órfã junto; participant_warnings sobrevive (SET NULL); SECURITY DEFINER (drop/recreate do immutable_audit); fila vazia removida (adição do operador).
 - `update_pending_queue_item(p_dispatch_id, p_payload, p_admin)` (20260924210000) — editar lote pendente: preços/duração/foto + re-gera poll_options + recompute scheduled_end_at.
-- `read_auction_snapshot()` / `read_dashboard_snapshot()` — AMBAS com LIMITs (20260925140000/150000): bids 50k, events 5k, cards 2000, auctions 500. Fix de timeout 57014 e egress (~4.8 GB/dia → ~100 MB/dia).
+- `read_auction_snapshot()` / `read_dashboard_snapshot()` — AMBAS com LIMITs, diferentes por finalidade: export (`20260925140000`) cards/auctions/compras 10k, bids 50k, events 5k; dashboard (`20261007110000`, corpo atual) cards/participants 2k, auctions/bids/compras 500, events 15. LIMITs não garantem relatório completo ao exceder o teto.
 
 ## Triggers
 
@@ -105,8 +110,15 @@ Toda tabela de negócio: `enable row level security` + `revoke from public,anon,
 - **`process_auction_command`**: só altere reproduzindo o corpo inteiro verbatim + hooks marcados — drift quebra idempotência/tie-break/avisos.
 - **`external_event_id`** é contrato de idempotência em 5 tabelas — nunca mude o formato dos eventIds do bot (`wa-vote:{poll}:{participant}:{ts}:{amount}`, `wa-withdraw:...`) sem tratar replay.
 - **`immutable_audit`**: UPDATE/DELETE em `auction_events` fora das duas funções autorizadas levanta exceção.
-- **Migrations aplicadas manualmente**: arquivo novo no repo NÃO altera o banco do operador até aplicar; antes de aplicar, recursos novos ficam desligados (com log de aviso, sem crash).
+- **Migrations aplicadas manualmente**: arquivo novo no repo NÃO altera o banco do operador até aplicar; antes de aplicar uma mudança futura, o recurso pode falhar; arquivo novo no Git não comprova estado de produção.
 - **`poll_options`** (jsonb) é o que o bot publica — mudança de formato quebra a publicação.
 - **FKs**: `whatsapp_dispatches.queue_id` é RESTRICT (deletar fila exige deletar dispatches antes — `cleanup_old_auctions` faz nessa ordem); `participant_warnings.auction_id` é SET NULL (contador global sobrevive à limpeza).
 - **RLS**: tabela nova sem o trio revoke/grant/policy = `authenticated` sem leitura.
 - **Sequences** `auction_lot_number_seq` / `bids_confirmation_order_seq`: resetadas apenas pelo purge-all.
+
+## Backup atual e retenção
+
+- `export_business_backup`: corpo local mais recente em `20261010100000_bound_backup_audit_export.sql`, registrado remotamente como `20261010192429`. Configuração efetiva confirmada: timeout 55s e work_mem 32MB. O ajuste anterior `20261007100551` usava 64MB e foi substituído.
+- Auditoria/cache exportados só nos últimos sete dias; quick polls limitadas a 500 e rascunhos a 50. Demais tabelas exportadas pelo corpo atual sem aqueles LIMITs. JSON não inclui bytes de imagens nem sessão Baileys.
+- `cleanup_old_auctions` atual: `(integer, integer)` defaults 12h/7d; registrado remotamente como `20261009001546`. Não executar para conferir: ler catálogo.
+- Atenção: a seleção de limpeza não preserva compra não paga/entrega pendente; o guard verifica arquivo do dia, não cobertura temporal. São pendências separadas da aplicação de migrations.

@@ -21,6 +21,11 @@ begin
   if length(content)<=262144 or public.read_business_backup_chunk(id,262140,31)<>substring(content from 262140 for 31) then raise exception 'chunk_boundary_mismatch'; end if;
   if octet_length(content)<>(meta->>'bytes')::integer or not (data->'tables' ? 'auctions') or not (data->'tables' ? 'whatsapp_auction_notices') then raise exception 'invalid_backup_snapshot'; end if;
   if data->'tables'<>public.export_business_backup() then raise exception 'text_backup_must_preserve_tables_and_content'; end if;
+  if exists(select 1 from public.business_backup_receipts r,jsonb_each(r.coverage) t,
+    lateral jsonb_array_elements(data->'tables'->t.key) row_data
+    where r.export_id=id and not(t.value ? encode(sha256(convert_to(row_data::text,'UTF8')),'hex'))) then
+    raise exception 'fingerprints_do_not_match_exported_snapshot';
+  end if;
   begin
     perform public.prepare_business_backup(gen_random_uuid());raise exception 'expected_busy';
   exception when others then if sqlerrm<>'backup_busy' then raise; end if; end;

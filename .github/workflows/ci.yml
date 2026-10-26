@@ -74,6 +74,8 @@ jobs:
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/operation-backup-status.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/poll-game.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/business-backup.sql
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/backup-unicode-chunks.sql
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/backup-scale.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/backup-coverage.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/backup-restore.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/dashboard-snapshot.sql

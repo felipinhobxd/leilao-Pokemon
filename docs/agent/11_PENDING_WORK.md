@@ -100,3 +100,7 @@ P-18: resolvido conservadoramente na limpeza automática e no botão de encerrad
 ## Diagnóstico de backup/limpeza — concluído
 
 [23_BACKUP_PROTECTION_PANEL.md](23_BACKUP_PROTECTION_PANEL.md): confirmação do objeto e validade separadas do resultado histórico da limpeza, sem polling novo. Retomada controlada do supervisor e primeira confirmação real são a próxima fase proposta; não executadas por inferência do backlog.
+
+## Retomada e primeira confirmação — concluídas
+
+[24_SAFE_RESUME_AND_FIRST_CONFIRMED_BACKUP.md](24_SAFE_RESUME_AND_FIRST_CONFIRMED_BACKUP.md): três etapas autorizadas concluídas; supervisor conectado e snapshot real confirmado após correção de custo de memória/blocos. Falha antiga de publicação não foi reenviada. Sem fase nova automática.

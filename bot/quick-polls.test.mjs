@@ -15,7 +15,7 @@ const code = source.slice(start, end);
 function fixture(overrides = {}) {
   const poll = { id: 'quiz', group_id: 'group', title: 'Qual?', options: ['A', 'B'], game_kind: 'quiz', prize_name: 'Carta' };
   const state = { pending: [poll], group: { data: { active: true, group_jid: 'fixture@g.us' } },
-    writes: [], sends: [], errors: [], published: [], drains: [], wakes: 0, ...overrides };
+    writes: [], sends: [], errors: [], published: [], drains: [], selections: [], wakes: 0, ...overrides };
   const context = { socketReady: true, pollMessageCache: new Map(), voteQueue: Promise.resolve(),
     dispatchMessageId, dispatchPollSecret, serializeMessage: JSON.stringify,
     drainPendingPollVotes: async id => state.drains.push(id),
@@ -30,16 +30,38 @@ function fixture(overrides = {}) {
       return { key: { id: options.messageId }, message: content };
     } },
     db: { from: table => {
-      let update;
+      let update, targetId;
+      const filters = [], orders = [];
       const query = {
-        select() { return this; }, is() { return this; }, lte() { return this; }, order() { return this; }, eq() { return this; },
-        limit: async () => ({ data: state.pending, error: state.pendingError }),
+        select() { return this; },
+        is(column, value) { filters.push({ kind: 'is', column, value }); return this; },
+        lte(column, value) { filters.push({ kind: 'lte', column, value }); return this; },
+        order(column) { orders.push(column); return this; },
+        eq(column, value) { if (column === 'id') targetId = value; filters.push({ kind: 'eq', column, value }); return this; },
+        limit: async count => {
+          state.selections.push({ filters, orders, count });
+          // Emulate the server's anti-join, THEN limit. The real client query
+          // contract is separately checked against the serialized REST URL.
+          const excludePaused = filters.some(f => f.kind === 'eq' && f.column === 'paused_queue.status' && f.value === 'paused')
+            && filters.some(f => f.kind === 'is' && f.column === 'paused_queue' && f.value === null);
+          const dueBefore = filters.find(f => f.kind === 'lte' && f.column === 'scheduled_at')?.value;
+          const pending = state.pending.filter(row => !row.sent_at && (!row.scheduled_at || row.scheduled_at <= dueBefore)
+            && (!excludePaused || row.queue?.status !== 'paused'));
+          pending.sort((a, b) => {
+            for (const column of orders) {
+              if (a[column] < b[column]) return -1;
+              if (a[column] > b[column]) return 1;
+            }
+            return 0;
+          });
+          return { data: pending.slice(0, count), error: state.pendingError };
+        },
         update(value) { update = value; state.writes.push(value); return this; },
         maybeSingle: async () => {
           if (table === 'whatsapp_groups') return state.group;
           if (!update) return state.confirmationResult ?? { data: null };
           if (Object.hasOwn(state, 'recordResult')) return state.recordResult;
-          return { data: { id: poll.id, ...update } };
+          return { data: { id: targetId ?? poll.id, ...update } };
         },
       };
       return query;
@@ -140,6 +162,45 @@ test('paused queue, disconnected socket and pending query failure never publish'
   assert.equal(f.state.errors.length, 1);
 });
 
+test('two older paused games cannot block a later queued quiz or standalone giveaway', async () => {
+  const f = fixture();
+  const paused = [1, 2].map(n => ({ ...f.poll, id: `paused-${n}`, scheduled_at: `2020-01-0${n}T00:00:00Z`, queue: { status: 'paused' } }));
+  const quiz = { ...f.poll, id: 'queued', title: 'Quiz ativo', scheduled_at: '2020-01-03T00:00:00Z', queue: { status: 'running' } };
+  const giveaway = { ...f.poll, id: 'standalone', game_kind: 'giveaway', title: 'Brinde avulso', scheduled_at: '2020-01-04T00:00:00Z', queue: null };
+  f.state.pending = [...paused, quiz, giveaway]; await f.run();
+  assert.deepEqual(f.state.sends.filter(send => send.content.poll).map(send => send.content.poll.name), ['Quiz ativo', 'Brinde avulso']);
+  assert.equal(f.state.published.length, 2); assert.equal(f.state.writes.length, 2);
+  assert.equal(f.state.errors.length, 0); assert.equal(f.state.selections.length, 1);
+  assert.ok(paused.every(row => !row.sent_at), 'paused records stay pending');
+  assert.ok(f.state.sends.every(send => !paused.some(row => send.options.messageId === dispatchMessageId(row.id, 'quick-poll'))));
+});
+
+test('arbitrarily many paused items are skipped before the bounded two-item selection', async () => {
+  const f = fixture();
+  const paused = Array.from({ length: 1001 }, (_, n) => ({ ...f.poll, id: `paused-${n}`, scheduled_at: '2020-01-01T00:00:00Z', queue: { status: 'paused' } }));
+  f.poll.scheduled_at = '2020-01-02T00:00:00Z';
+  f.state.pending = [...paused, f.poll]; await f.run();
+  assert.equal(f.state.published.length, 1); assert.equal(f.state.errors.length, 0);
+  assert.equal(f.state.selections.length, 1); assert.equal(f.state.selections[0].count, 2);
+});
+
+test('all paused produces no writes and resumes safely in a later cycle', async () => {
+  const f = fixture(); f.poll.queue = { status: 'paused' }; await f.run();
+  assert.equal(f.state.sends.length, 0); assert.equal(f.state.errors.length, 0);
+  f.poll.queue.status = 'running'; await f.run();
+  assert.equal(f.state.published.length, 1); assert.equal(f.state.writes.length, 1);
+});
+
+test('filtering still respects future dates, sent records, deterministic ties and the batch cap', async () => {
+  const f = fixture();
+  const row = id => ({ ...f.poll, id, title: id, scheduled_at: '2020-01-01T00:00:00Z' });
+  f.state.pending = [row('c'), row('a'), row('b'), { ...row('sent'), sent_at: '2020-01-02T00:00:00Z' },
+    { ...row('future'), scheduled_at: '2999-01-01T00:00:00Z' }];
+  await f.run();
+  assert.deepEqual(f.state.sends.filter(send => send.content.poll).map(send => send.content.poll.name), ['a', 'b']);
+  assert.equal(f.state.writes.length, 2); assert.equal(f.state.errors.length, 0);
+});
+
 for (const affected of [true, false]) test(`real Supabase client confirms ${affected ? 'one updated row' : 'zero affected rows'} in the PATCH response`, async () => {
   const f = fixture(), requests = [];
   f.context.db = createClient('https://fixture.invalid', 'fixture-key', {
@@ -157,6 +218,13 @@ for (const affected of [true, false]) test(`real Supabase client confirms ${affe
   const patch = requests.find(request => request.method === 'PATCH');
   assert.equal(patch.url.searchParams.get('select'), 'id,sent_at,poll_message_id');
   assert.equal(patch.url.searchParams.get('id'), 'eq.quiz');
+  const selection = requests[0].url.searchParams;
+  assert.match(selection.get('select'), /paused_queue:auction_publish_queues\(\)/);
+  assert.equal(selection.get('paused_queue.status'), 'eq.paused');
+  assert.equal(selection.get('paused_queue'), 'is.null');
+  assert.equal(selection.get('sent_at'), 'is.null');
+  assert.equal(selection.get('limit'), '2');
+  assert.equal(selection.get('order'), 'scheduled_at.asc,id.asc');
   assert.equal(requests.length, 3, 'normal confirmation adds no second request');
   assert.equal(f.state.published.length, affected ? 1 : 0);
   assert.equal(f.state.errors.length, affected ? 0 : 1);

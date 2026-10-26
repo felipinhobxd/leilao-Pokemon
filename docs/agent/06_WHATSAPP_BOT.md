@@ -1,6 +1,6 @@
 # 06_WHATSAPP_BOT — Worker Baileys (bot/)
 
-> Fases 1/2: [27_PHASED_REVIEW_FIXES.md](27_PHASED_REVIEW_FIXES.md). Bot 0.2.12 no disco: votos persistentes e confirmação real de publicação. Falhas de grupo/configuração/envio não marcam brinde como enviado. UPDATE devolve confirmação; resposta perdida tenta uma leitura pontual. Supervisor/filho ativos preservados; ativação completa exige recarregar ambos. Pedir autorização antes da fase 3.
+> Fases 1–3: [27_PHASED_REVIEW_FIXES.md](27_PHASED_REVIEW_FIXES.md). Bot 0.2.13 no disco: votos persistentes, confirmação real de publicação e filas pausadas excluídas no servidor antes do limite de dois. Brindes avulsos preservados, sem nova consulta periódica. Supervisor/filho ativos preservados; ativação completa exige recarregar ambos. Pedir autorização antes da fase 4.
 
 > Estado atual consolidado: [19_SETTLEMENT_PROTECTION_AND_RECOVERY.md](19_SETTLEMENT_PROTECTION_AND_RECOVERY.md) e [18_RELIABILITY_AND_UI_REVIEW.md](18_RELIABILITY_AND_UI_REVIEW.md), bot 0.2.10, Next.js 16.4.3. Seções de versões anteriores abaixo são histórico; não reaplicar migrations ou instruções antigas automaticamente.
 

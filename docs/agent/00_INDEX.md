@@ -1,6 +1,6 @@
 # 00_INDEX — Memória persistente do projeto
 
-> Fase atual: [27_PHASED_REVIEW_FIXES.md](27_PHASED_REVIEW_FIXES.md). Fases 1/2 implementadas: votos persistentes e confirmação real de publicação de brindes/quiz. Bot 0.2.12 no disco; processos ativos preservados. Sem migration nova na fase 2. **Parar e pedir autorização para fase 3**.
+> Fase atual: [27_PHASED_REVIEW_FIXES.md](27_PHASED_REVIEW_FIXES.md). Fases 1–3 implementadas: votos persistentes, confirmação real de publicação e filas pausadas excluídas antes do limite de dois brindes. Bot 0.2.13 no disco; processos ativos preservados. Sem migration nova nas fases 2/3. **Parar e pedir autorização para fase 4**.
 
 > Excel atualizado: [26_EXCEL_BID_HISTORY.md](26_EXCEL_BID_HISTORY.md). Primeiro/último lance por participante e leilão, mudanças de valor e horários em Brasília. 148 testes raiz locais aprovados. Sem migration, chamadas extras ao Supabase ou alterações no bot.
 

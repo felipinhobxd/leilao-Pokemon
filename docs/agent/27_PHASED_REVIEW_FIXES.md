@@ -6,7 +6,7 @@ Autorização de 26/10/2026: **parar ao final de cada fase e pedir autorização
 |---|---|---|
 | 1 | Votos após falha temporária | Código implementado e RPC instalada; ativação completa requer carregar supervisor/filho 0.2.11. Processos reais preservados nesta fase. |
 | 2 | Erro na consulta de grupo não pode virar brinde enviado | Autorizada e implementada em 26/10; bot 0.2.12 no disco, processos preservados. |
-| 3 | Dois brindes pausados não podem bloquear os seguintes | Aguardando autorização. |
+| 3 | Dois brindes pausados não podem bloquear os seguintes | Autorizada e implementada em 26/10; bot 0.2.13 no disco, processos preservados. |
 | 4 | Desbloquear com segurança criação pendente inexistente e recusada | Aguardando autorização. |
 
 ## Fase 1 — fila local durável
@@ -54,7 +54,7 @@ Fase 1 publicada: CI [40366389765](https://github.com/felipinhobxd/leilao-Pokemo
 
 `sendDueQuickPolls()` verifica o erro da consulta do grupo. Grupo ausente/inativo/sem destino e opções insuficientes continuam **pendentes**, sem gravar `sent_at` fictício. Exigem corrigir a configuração ou cancelar o item; a fila não deve concluir alegando publicação inexistente. O painel continua mostrando o agendamento pendente, sem novo estado persistido de erro nesta fase.
 
-Envio só é tentado com socket pronto. Uma falha fica isolada ao item e permite tentar o outro já selecionado. A seleção de dois itens antes do filtro de pausa continua sendo a **fase 3**, ainda não autorizada; dois itens permanentemente inválidos também podem reter essa janela até correção/cancelamento.
+Envio só é tentado com socket pronto. Uma falha fica isolada ao item e permite tentar o outro já selecionado. A seleção de dois itens antes do filtro de pausa foi corrigida na **fase 3**, autorizada posteriormente; dois itens permanentemente inválidos continuam podendo reter essa janela até correção/cancelamento.
 
 Após confirmação do socket, o UPDATE retorna `id,sent_at,poll_message_id` na própria resposta. Zero linhas, resposta incompatível ou erro não ativam o cache de votos nem anunciam sucesso local. Se o UPDATE acusa erro, uma leitura pontual tenta confirmar se ele foi efetivado apesar da resposta perdida. Só libera votos se encontrar o mesmo ID de mensagem e `sent_at` preenchido. Se ambas as respostas falharem após um commit, a confirmação continua inconclusiva: conferir antes de intervir, sem apagar a fila local de votos ou republicar manualmente por inferência.
 
@@ -65,4 +65,20 @@ IDs determinísticos de anúncio/enquete, segredo da enquete, serialização e f
 - **20 testes novos** executam a função real com fronteiras de rede simuladas: falhas de consulta/envio/gravação, zero linhas, confirmação perdida/recuperada, retentativa com os mesmos IDs/segredo, opções inválidas, pausa, socket desconectado e compatibilidade com brindes antigos. Incluídos no `check` do bot/CI.
 - Validação local: **150 testes raiz e 108 testes do bot**, check do bot, typecheck, build e smoke de autenticação aprovados. Dois testes usam o cliente Supabase instalado com transporte local simulado e conferem o retorno da atualização na mesma requisição. Sem alteração de SQL/UI; a CI completa também verifica essas áreas antes de encerrar a fase.
 
-Ao concluir publicação/CI, **parar e pedir autorização para a fase 3**. Fase 4 também requer autorização própria.
+Fase 2 publicada: commit `f976ab4f`, [CI 40409811880](https://github.com/felipinhobxd/leilao-Pokemon/actions/runs/40409811880) e deployment aprovados. A fase 3 recebeu autorização explícita depois dessa conclusão.
+
+## Fase 3 — filas pausadas fora da seleção
+
+`sendDueQuickPolls()` agora exclui enquetes associadas a filas pausadas **no servidor, antes de aplicar o limite de dois**. Usa a relação vazia `paused_queue:auction_publish_queues()`, filtra essa relação por `status=paused` e exige sua ausência (`paused_queue is null`), conforme o [anti-join documentado pelo PostgREST](https://docs.postgrest.org/en/stable/references/api/resource_embedding.html#null-filtering-on-embedded-resources). A relação original `queue(status)` permanece disponível e mantém a checagem defensiva local.
+
+Brindes avulsos (sem fila) continuam elegíveis. Mantidos `sent_at is null`, prazo já vencido e ordem por `scheduled_at`; o ID desempata horários iguais. Não aumenta o limite, não pagina em loop nem baixa todos os pausados. Uma consulta de seleção por ciclo existente de 5s, com no máximo dois itens retornados. Sem migration, RPC nova, alteração de políticas ou gravação de teste no Supabase.
+
+A pausa é observada no snapshot da seleção; esta correção não cria claim distribuído nem transação entre WhatsApp e banco para uma pausa concorrente posterior. Não muda reagendamento ao retomar, IDs/segredo de mensagem, confirmação de publicação da fase 2, fila durável de votos da fase 1, prazo dos lances ou intervalo dos resultados. Configurações inválidas permanecem pendentes e exigem correção/cancelamento pelo operador, como descrito na fase 2.
+
+- **Bot 0.2.13 no disco**; supervisor e filho ativos não foram reiniciados. Ativação completa das fases 1–3 exige carregar os dois em reinício planejado, sem disputa ativa.
+- **Quatro testes novos**, além dos 20 da fase 2: dois pausados antes de quiz ativo/brinde avulso; 1.001 pausados antes de um elegível; todos pausados e posterior retomada; prazo/envio anterior/desempate/limite de dois. O cliente Supabase real com transporte simulado também confere o alias e filtros serializados na URL REST.
+- Consulta real somente de leitura no projeto `PokemonLeilao`, reproduzindo a seleção do código: API aceitou o filtro e retornou **zero registros** no momento da verificação. Não houve dados pendentes reais para demonstrar o bloqueio; a regressão e a retomada foram verificadas com dados fictícios nos testes.
+- **150 testes raiz, 112 testes do bot**, check do bot, typecheck, build e smoke de autenticação locais aprovados. Conferir CI completa e deployment do commit final antes de encerrar a fase.
+- Sem mensagem real, backup, logs detalhados, consulta periódica adicional ou novo timer. Uma leitura pontual de validação na produção; consumo de Log Ingestion não medido e sem garantia sobre o bot em execução.
+
+Após publicação/CI da fase 3, **parar e pedir autorização para a fase 4**, sobre a criação que permanece pendente após uma recusa definitiva.

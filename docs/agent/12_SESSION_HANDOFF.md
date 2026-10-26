@@ -1,6 +1,6 @@
 # 12 — Handoff atual
 
-> Fase 2: [27_PHASED_REVIEW_FIXES.md](27_PHASED_REVIEW_FIXES.md). Falha de grupo nunca grava falso sent_at; envio e registro precisam de confirmação. 20 testes novos de publicação, incluídos no check/CI. Bot 0.2.12 no disco, supervisor/filho preservados; ativação completa exige reinício planejado. Sem migration ou mensagens reais de teste. **PARAR e pedir autorização para fase 3**; fase 4 também exige autorização própria.
+> Fase 3: [27_PHASED_REVIEW_FIXES.md](27_PHASED_REVIEW_FIXES.md). Anti-join de filas pausadas antes do limite de dois, preservando avulsos e ordem; quatro regressões novas e contrato REST validado. 150 testes raiz/112 bot, check/typecheck/build/smoke locais aprovados; conferir CI/deployment final. Bot 0.2.13 no disco, supervisor/filho preservados; ativação completa exige reinício planejado. Sem migration ou mensagens reais de teste; uma leitura REST pontual retornou zero pendentes. **PARAR e pedir autorização para fase 4**.
 
 > Excel atualizado: [26_EXCEL_BID_HISTORY.md](26_EXCEL_BID_HISTORY.md). Nova aba por participante/leilão e alterações com valor anterior → novo, primeiro/último horário e vínculo anterior quando identificável. 148 testes raiz, typecheck e build locais aprovados; conferir CI/deploy do commit final. Sem migration, consultas ao Supabase ou alterações/reinício do bot. Exportar antes da limpeza de 12h; dados excluídos não reaparecem no Excel.
 

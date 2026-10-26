@@ -1053,10 +1053,15 @@ async function sendDueQuickPolls() {
   try {
     const nowIso = new Date().toISOString();
     const { data: pending, error } = await db.from("whatsapp_quick_polls")
-      .select("id,group_id,title,options,image_url,scheduled_at,game_kind,correct_index,prize_name,winner_event_id,queue:auction_publish_queues(status)")
+      .select("id,group_id,title,options,image_url,scheduled_at,game_kind,correct_index,prize_name,winner_event_id,queue:auction_publish_queues(status),paused_queue:auction_publish_queues()")
+      // Anti-join before LIMIT: paused queues cannot occupy both selected
+      // slots. The empty embed also keeps standalone polls (no queue).
+      .eq("paused_queue.status", "paused")
+      .is("paused_queue", null)
       .is("sent_at", null)
       .lte("scheduled_at", nowIso)
       .order("scheduled_at", { ascending: true })
+      .order("id", { ascending: true })
       .limit(2);
     if (error) throw new Error(error.message);
     for (const poll of pending ?? []) {

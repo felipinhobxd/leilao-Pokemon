@@ -1,5 +1,7 @@
 # 12 — Handoff atual
 
+> Atualização posterior: P-19 implementado em [22_BACKUP_COVERAGE_BEFORE_CLEANUP.md](22_BACKUP_COVERAGE_BEFORE_CLEANUP.md). Recibo confirmado da nuvem e cobertura das linhas antes da limpeza. Código do backup/supervisor alterado, sem reiniciar processos. Detalhes/limites e versão efetiva no documento 22; trechos anteriores são históricos.
+
 Projeto D:\LeilaoPokemon, main, remoto felipinhobxd/leilao-Pokemon. Autor F <felipinhovecoski@gmail.com>.
 
 Estado: [19_SETTLEMENT_PROTECTION_AND_RECOVERY.md](19_SETTLEMENT_PROTECTION_AND_RECOVERY.md), complementado pela revisão de UI/confiabilidade do documento 18. Bot 0.2.10 / Next 16.4.3. Nesta rodada nenhum arquivo em bot/ foi alterado, nenhum processo do bot foi iniciado/reiniciado e nenhuma mensagem real foi enviada.

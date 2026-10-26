@@ -13,6 +13,7 @@ insert into public.payment_reminders(purchase_id,participant_id) select id,parti
 insert into public.auction_events(auction_id,event_type,created_at) select auction_id,'settlement_history',now()-interval '20 days' from public.purchases;
 set local role service_role;
 do $$ declare result jsonb; begin
+ perform public.test_confirm_backup();
  result:=public.cleanup_old_auctions();
  if (result->>'preserved_financial_auctions')::int<>4 or (result->'deleted'->>'auctions')::int<>1 then raise exception 'financial_cleanup_selection_wrong: %',result; end if;
  if (select count(*) from public.purchases)<>4 or (select count(*) from public.payments)<>4 or (select count(*) from public.deliveries)<>4 or (select count(*) from public.payment_reminders)<>4 then raise exception 'financial_tree_lost'; end if;

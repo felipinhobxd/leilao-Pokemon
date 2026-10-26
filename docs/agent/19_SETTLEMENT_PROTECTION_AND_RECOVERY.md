@@ -1,5 +1,7 @@
 # 19 — Proteção financeira e recuperação de backup
 
+> Atualização posterior: P-19 implementado em [22_BACKUP_COVERAGE_BEFORE_CLEANUP.md](22_BACKUP_COVERAGE_BEFORE_CLEANUP.md). Recibo confirmado da nuvem e cobertura das linhas antes da limpeza. Código do backup/supervisor alterado, sem reiniciar processos. Detalhes/limites e versão efetiva no documento 22; trechos anteriores são históricos.
+
 Atualizado em 2026-10-25. Pedido do operador: começar pelas pendências financeiras e recuperação de backups, com cuidado para não quebrar o bot. Este documento complementa e substitui as regras de retenção/cobertura descritas anteriormente no documento 18.
 
 ## O que mudou

@@ -30,6 +30,10 @@ end $$;
 reset role;
 update storage.objects set name=name||'.gz' where bucket_id='business-backups';
 set local role service_role;
-do $$begin if (public.cleanup_old_auctions()->>'blocked')::boolean is true then raise exception 'gzip_copy_must_satisfy_daily_guard'; end if; end $$;
+do $$begin
+ if (public.cleanup_old_auctions()->>'blocked')::boolean is not true then raise exception 'filename_is_not_coverage'; end if;
+ perform public.test_confirm_backup();
+ if (public.cleanup_old_auctions()->>'blocked')::boolean is true then raise exception 'confirmed_snapshot_must_allow_cleanup'; end if;
+end $$;
 reset role;
 rollback;

@@ -52,6 +52,7 @@ begin
      set ended_at=now()-interval '30 minutes',
          updated_at=now()-interval '30 minutes'
    where id=aid;
+  perform public.test_confirm_backup();
   result := public.cleanup_old_auctions();
   if not exists(select 1 from public.auctions where id=aid) then
     raise exception 'ASSERT_FAILED: default retention deleted a 30-minute-old auction';
@@ -63,6 +64,7 @@ begin
      set ended_at=now()-interval '2 hours',
          updated_at=now()-interval '2 hours'
    where id=aid;
+  perform public.test_confirm_backup();
   result := public.cleanup_old_auctions(1);
   if exists(select 1 from public.auctions where id=aid) then
     raise exception 'ASSERT_FAILED: p_hours=1 kept a 2-hour-old auction';
@@ -104,6 +106,7 @@ begin
      set ended_at=now()-interval '6 hours',
          updated_at=now()-interval '6 hours'
    where id=aid;
+  perform public.test_confirm_backup();
   result := public.cleanup_old_auctions();
   if not exists(select 1 from public.auctions where id=aid) then
     raise exception 'ASSERT_FAILED: 6-hour-old auction disappeared (default retention should be 12h)';
@@ -114,6 +117,7 @@ begin
      set ended_at=now()-interval '13 hours',
          updated_at=now()-interval '13 hours'
    where id=aid;
+  perform public.test_confirm_backup();
   result := public.cleanup_old_auctions();
   if exists(select 1 from public.auctions where id=aid) then
     raise exception 'ASSERT_FAILED: 13-hour-old auction survived the 12h retention';
@@ -134,6 +138,7 @@ begin
   insert into public.processed_commands(external_event_id,request,result,created_at)
   values ('prune-fresh-command','{}'::jsonb,'{}'::jsonb,now()-interval '1 day');
 
+  perform public.test_confirm_backup();
   result := public.cleanup_old_auctions();
   if exists(select 1 from public.auction_events where external_event_id='prune-old-audit') then
     raise exception 'ASSERT_FAILED: 8-day-old audit event survived the 7-day prune';
@@ -164,6 +169,7 @@ begin
   end if;
 
   -- 5c. Granularidade: p_audit_days=1 apaga também o evento/comando de 1 dia.
+  perform public.test_confirm_backup();
   result := public.cleanup_old_auctions(12, 1);
   if exists(select 1 from public.auction_events where external_event_id='prune-fresh-audit') then
     raise exception 'ASSERT_FAILED: p_audit_days=1 did not prune the 1-day-old audit event';

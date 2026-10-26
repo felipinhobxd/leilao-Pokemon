@@ -10,7 +10,7 @@ import { describeError } from "./error-log.mjs";
 import { createSupabaseFetch, createErrorReporter } from "./supabase-resilience.mjs";
 const reportServiceError=createErrorReporter();
 import { WebSocket } from "ws";
-import { BACKUP_BUCKET, runBusinessBackup } from "./backup.mjs";
+import { runBusinessBackup } from "./backup.mjs";
 import { createOperationHealth } from "./operation-health.mjs";
 const operationHealth = createOperationHealth();
 
@@ -475,12 +475,12 @@ async function getTodayKey(now = new Date()) {
 }
 
 async function hasTodaysCloudBackup(now = new Date()) {
-  const today = await getTodayKey(now);
-  const prefix = `backup-${today.replaceAll("-", "")}-`;
-  const { data, error } = await db.storage.from(BACKUP_BUCKET)
-    .list("backups", { limit: 100, sortBy: { column: "name", order: "desc" } });
+  const midnight = new Date(now);
+  midnight.setHours(0, 0, 0, 0);
+  const { data, error } = await db.rpc('has_confirmed_business_backup', {p_since:midnight.toISOString()})
+    .abortSignal(AbortSignal.timeout(10_000));
   if (error) throw new Error(`backup_cloud_check_failed: ${error.message}`);
-  return (data ?? []).some(item => String(item?.name || "").startsWith(prefix));
+  return data === true;
 }
 
 // A exportação completa pode ser pesada (principalmente auction_events). Depois

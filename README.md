@@ -1,5 +1,7 @@
 # Leilão Pokémon
 
+Limpeza automática agora exige backup da nuvem confirmado com cobertura dos registros; dados alterados depois da cópia adiam a exclusão. [Operação e limites](docs/agent/22_BACKUP_COVERAGE_BEFORE_CLEANUP.md), incluindo atualização do supervisor sem reinício automático.
+
 Painel administrativo para leilões de cartas Pokémon com Supabase como fonte oficial da verdade, Next.js na Vercel e um worker local Node.js/Baileys para a integração com WhatsApp.
 
 ## Arquitetura

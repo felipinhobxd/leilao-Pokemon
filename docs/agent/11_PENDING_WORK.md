@@ -28,7 +28,7 @@ Limite da conclusão: correspondência de histórico por nome + metadados/trecho
 | ID | Prioridade | Pendência / evidência |
 |---|---|---|
 | P-18 | Alta | Limpeza 12h de leilão terminal apaga compras/pagamentos/entregas sem preservar pendência; lembrete padrão exige 7d. Avaliar retenção separada do pós-venda, preservando a decisão de limpeza do operador. Código: cleanup_old_auctions e bot/payment-reminder.mjs. |
-| P-19 | Alta | Guard de backup verifica arquivo do dia e não cobertura dos registros apagados posteriormente. Banco em UTC; arquivos Node usam fuso local. Definir cobertura temporal e validar restauração antes de mudar a rotina. |
+| P-19 | Implementado | Recibo de upload confirmado e hash de todas as linhas afetadas; divergência/ausência de cópia adia a limpeza. Documento 22. Supervisor ativo precisa carregar código novo em reinicialização planejada; não reiniciado nesta tarefa. |
 | P-20 | Concluído para finalização agendada | Bot 0.2.7 finaliza em lote e registra resultado na outbox transacional, com entrega persistente/retry e intervalo de 15s. Não unifica notificações imediatas de ARREMATE. |
 | P-21 | Média | openingBusy retorna imediatamente ao próximo tick; abertura que dura mais de 5s pode não bloquear dispatch de outro tick. Avaliar Promise compartilhada ou exclusão do ciclo inteiro. Cenário inferido do código, sem reprodução WhatsApp. |
 | P-22 | Média | doctor valida presença parcial, trata respostas não-404 como tabela presente, usa select=id para payment_reminders e não aceita SUPABASE_SECRET_KEY como o backend. Fortalecer diagnóstico sem loops. |
@@ -92,3 +92,7 @@ P-21 resolvido por ciclo assíncrono compartilhado; P-22 resolvido no doctor. P-
 ## Atualização autorizada — proteção financeira e recuperação (documento 19)
 
 P-18: resolvido conservadoramente na limpeza automática e no botão de encerrados, que agora preservam todo leilão com compra vinculada, mesmo pago. Exclusão individual e Excluir TUDO continuam explícitas/destrutivas. Essa nova autorização substitui as decisões históricas de não mudar a limpeza. P-23: removidos limites de drafts/quick polls, preservadas todas as colunas dos lembretes/jogos, pacote de imagens opcional e ensaio das 22 tabelas em schema isolado; promoção operacional em produção/Auth/sessão seguem fora do pacote. P-19 continua aberto. Detalhes e limites no documento 19.
+
+## P-19 — Cobertura confirmada antes da limpeza
+
+[22_BACKUP_COVERAGE_BEFORE_CLEANUP.md](22_BACKUP_COVERAGE_BEFORE_CLEANUP.md): implementado com recibo privado, confirmação após upload, proteção contra mudanças posteriores e comparação atômica. Sem novos backups por tentativa ou reinício do bot. Esta autorização substitui a pendência histórica acima.

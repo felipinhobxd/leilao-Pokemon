@@ -12,13 +12,15 @@
 import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import { readBusinessBackup, compressBusinessBackup } from "../lib/business-backup.mjs";
 
 const here = join(fileURLToPath(new URL(".", import.meta.url)));
 export const BACKUPS_DIR = join(here, "backups");
 export const BACKUP_BUCKET = "business-backups";
 
-export async function uploadBackupToCloud(db, payload, now = new Date()) {
+export async function uploadBackupToCloud(db, payload, now = new Date(), exportId) {
+  if (!exportId) throw new Error('backup_export_id_missing');
   const { data: buckets } = await db.storage.listBuckets();
   if (!Array.isArray(buckets) || !buckets.some(bucket => bucket.name === BACKUP_BUCKET)) {
     const { error } = await db.storage.createBucket(BACKUP_BUCKET, { public: false });
@@ -31,6 +33,15 @@ export async function uploadBackupToCloud(db, payload, now = new Date()) {
     .from(BACKUP_BUCKET)
     .upload(`backups/backup-${stamp}.json.gz`, compressed, { contentType: "application/gzip", upsert: true });
   if (error) throw new Error(error.message);
+  // A successful upload alone does not prove which database snapshot it holds.
+  // Register its digest/size/version before authorizing any automatic cleanup.
+  const confirmed = await db.rpc('confirm_business_backup', {
+    p_export_id: exportId,
+    p_payload_sha256: createHash('sha256').update(payload, 'utf8').digest('hex'),
+    p_object_name: `backups/backup-${stamp}.json.gz`,
+    p_compressed_bytes: compressed.length,
+  }).abortSignal(AbortSignal.timeout(10_000));
+  if (confirmed.error || confirmed.data !== true) throw new Error('backup_cloud_confirmation_failed', {cause:confirmed.error});
   // Retenção na nuvem: mantém os N mais recentes (padrão 7 — ponto de
   // recuperação externo semanal; o disco continua guardando 30).
   const keep = Math.max(1, Number(process.env.BOT_BACKUP_CLOUD_KEEP || 7));
@@ -43,7 +54,7 @@ export async function uploadBackupToCloud(db, payload, now = new Date()) {
 }
 
 export async function runBusinessBackup(db, now = new Date()) {
-  const { payload } = await readBusinessBackup(db);
+  const { payload, export_id } = await readBusinessBackup(db);
   const pad = value => String(value).padStart(2, "0");
   const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
   mkdirSync(BACKUPS_DIR, { recursive: true });
@@ -59,7 +70,7 @@ export async function runBusinessBackup(db, now = new Date()) {
   }
   let cloudPath = null;
   try {
-    cloudPath = await uploadBackupToCloud(db, payload, now);
+    cloudPath = await uploadBackupToCloud(db, payload, now, export_id);
   } catch (reason) {
     // Nuvem é complemento: falha dela NUNCA derruba o backup local diário.
     console.warn("Backup: falha ao subir para o Storage (fica só o local):", reason?.message || reason);

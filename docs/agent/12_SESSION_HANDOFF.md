@@ -1,5 +1,7 @@
 # 12 — Handoff atual
 
+> Excel atualizado: [26_EXCEL_BID_HISTORY.md](26_EXCEL_BID_HISTORY.md). Nova aba por participante/leilão e alterações com valor anterior → novo, primeiro/último horário e vínculo anterior quando identificável. 148 testes raiz, typecheck e build locais aprovados; conferir CI/deploy do commit final. Sem migration, consultas ao Supabase ou alterações/reinício do bot. Exportar antes da limpeza de 12h; dados excluídos não reaparecem no Excel.
+
 > Política atual autorizada: [25_AUTOMATIC_CLEANUP_ALL_OUTCOMES.md](25_AUTOMATIC_CLEANUP_ALL_OUTCOMES.md). Limpeza automática inclui vendidos/arremates e dados financeiros após 12h do envio, condicionada à cobertura do backup. Substitui a preservação automática de compras descrita historicamente abaixo. Migration 20261026041119 instalada (74 locais/82 remotos).
 
 > Atualização atual: [24_SAFE_RESUME_AND_FIRST_CONFIRMED_BACKUP.md](24_SAFE_RESUME_AND_FIRST_CONFIRMED_BACKUP.md). Supervisor retomado/conectado, primeiro backup confirmado (52,7MB, 22 tabelas). Duas otimizações de memória/UTF-8 instaladas: 73 migrations locais/81 remotas. Etapas anteriores que dizem não iniciar o bot são histórico.

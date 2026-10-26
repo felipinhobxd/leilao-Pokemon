@@ -1,5 +1,7 @@
 # 04_API — API Next.js (app/api)
 
+> `/api/export` atualizado em 26/10: [26_EXCEL_BID_HISTORY.md](26_EXCEL_BID_HISTORY.md), resumo dos lances por participante/leilão e horários das mudanças. Mantém uma leitura autenticada do snapshot existente e cache privado; nenhuma migration ou consulta adicional.
+
 > Estado atual consolidado: [19_SETTLEMENT_PROTECTION_AND_RECOVERY.md](19_SETTLEMENT_PROTECTION_AND_RECOVERY.md) e [18_RELIABILITY_AND_UI_REVIEW.md](18_RELIABILITY_AND_UI_REVIEW.md), bot 0.2.10, Next.js 16.4.3. Seções de versões anteriores abaixo são histórico; não reaplicar migrations ou instruções antigas automaticamente.
 
 

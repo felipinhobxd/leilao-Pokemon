@@ -19,3 +19,6 @@ Etapa posterior: documento 20, aviso de atualização do painel implementado, 12
 
 
 Etapa de navegação iniciada após aviso ao operador e CI verde de 55e6a40e. Provider/GuardedLink cobre menus e links de cancelar nos dois wizards; lote pode salvar e sair somente com rascunho completo. Fotos locais pendentes continuam protegidas, falhas não navegam; single tem descarte explícito sem publicar. beforeunload centralizado; não bloqueia toda navegação de histórico do navegador. 127 testes raiz/typecheck/build locais aprovados e teste visual salvou/reabriu corretamente. Consultar CI/deploy finais. Documento 20.
+
+
+Próxima etapa autorizada e anunciada: documento 21, edição das cartas selecionadas no cadastro ainda não publicado. Seleção por UUID entre páginas/filtros/reorder; campos explícitos, preços atômicos, jogos preservados, cópia de configuração com whitelist e desfazer de um nível que não sobrescreve alterações posteriores. CopyPrevious passa a mesma whitelist e não duplica mídia/respostas/tipo. 134 testes raiz, typecheck e build locais aprovados; conferir CI/deploy finais. Sem alterar bot, schema ou polling. Não iniciar P-19/recuperação operacional sem novo aviso/escopo.

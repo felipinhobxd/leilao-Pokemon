@@ -31,8 +31,8 @@
 .draft-fields label,.value-row label,.publication-grid label{display:grid;gap:5px}
 .draft-fields .wide{grid-column:1/-1}
 .value-row{display:grid;grid-template-columns:minmax(160px,1.4fr) repeat(6,minmax(100px,1fr));gap:10px;align-items:end;padding:12px}
-.value-row>div:first-child{display:grid;gap:4px}
-.value-row>div:first-child span{font-size:.82rem;color:var(--muted)}
+.value-row>div:first-of-type{display:grid;gap:4px}
+.value-row>div:first-of-type span{font-size:.82rem;color:var(--muted)}
 .poll-mini{grid-column:1/-1;display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0;max-width:100%}
 .poll-mini span{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;min-height:34px;max-width:100%;padding:7px 11px;border:1px solid var(--chip-border);border-radius:999px;background:var(--chip-bg);color:var(--chip-text);font-size:.8rem;font-weight:700;line-height:1.2;white-space:nowrap}
 .publication-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}

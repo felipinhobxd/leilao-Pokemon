@@ -14,6 +14,10 @@ Proteção conservadora de compras na limpeza automática/manual dos encerrados;
 
 Documento [20_PANEL_FRESHNESS_AND_NAVIGATION.md](20_PANEL_FRESHNESS_AND_NAVIGATION.md): aviso de dados desatualizados, última leitura completa e tentativa manual, sem ampliar polling ou alterar o bot. Etapa 1 com CI aprovada. Após aviso explícito, implementada confirmação nos menus/links de cancelar e Salvar rascunho e sair; limites de beforeunload/histórico no documento 20.
 
+## Edição das selecionadas — próxima etapa autorizada
+
+[21_SELECTED_CARD_EDITING.md](21_SELECTED_CARD_EDITING.md): seleção estável entre páginas/filtros, aplicação de campos às escolhidas, cópia segura e desfazer preservando edições posteriores. Apenas no cadastro ainda não publicado, sem alterar bot/migrations.
+
 ## Protocolo de início
 
 1. Ler este índice e `12_SESSION_HANDOFF.md`.

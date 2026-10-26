@@ -237,3 +237,6 @@ O painel mostra a última leitura completa e avisa sobre falha de atualização,
 
 
 Ao sair pelos menus ou links de cancelar durante a criação, o painel confirma alterações/fotos pendentes. No cadastro em lote, **Salvar rascunho e sair** só continua após salvar tudo; falhas mantêm a edição. O cadastro único permite continuar ou descartar sem publicar. [Escopo e limites da proteção](docs/agent/20_PANEL_FRESHNESS_AND_NAVIGATION.md).
+
+
+No cadastro em lote, selecione cartas e use **Edição das selecionadas** para aplicar um campo ou copiar configurações. A seleção acompanha filtros, páginas e ordem; nomes, fotos, lotes e respostas de jogos são preservados. Valores só afetam leilões compatíveis. **Desfazer última aplicação** preserva edições posteriores. [Escopo e validação](docs/agent/21_SELECTED_CARD_EDITING.md).

@@ -23,6 +23,10 @@ function decimal(raw:string,min:number,max:number){
   return String(value);
 }
 function validatePricing(card:BulkEditableCard){
+  if(card.pricingMode==="increment"){
+    try{decimal(card.startingPrice,0,moneyLimit);decimal(card.increment,0.01,moneyLimit);if(card.buyout.trim())decimal(card.buyout,0.01,moneyLimit);}
+    catch{throw new Error(`${card.name||"Uma das cartas"}: informe preços válidos, com até duas casas decimais.`);}
+  }
   const values=card.pricingMode==="custom"?parseCustomValues(card.customValues):null;
   const plan=card.pricingMode==="custom"?buildCustomValuesPlan(values??[],card.customBuyoutLast):buildPollPlan(Number(card.startingPrice),Number(card.increment),card.buyout.trim()?Number(card.buyout):null,Number(card.optionCount));
   if("error" in plan&&plan.error||plan.options.length<2||plan.options.length>12||plan.options.some(option=>!Number.isFinite(option.amount)||option.amount<0||option.amount>moneyLimit))throw new Error(`${card.name||"Uma das cartas"}: os valores resultariam em uma enquete inválida. Confira o inicial, incremento, arremate e limite de 12 opções.`);

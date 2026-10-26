@@ -24,6 +24,7 @@ test('a price conflict in one target rejects the complete operation without muta
  assert.throws(()=>applyDraftBulkEdit(cards,new Set(['first','second']),{field:'startingPrice',value:'10'}),/enquete inválida/);
  assert.deepEqual(cards,original);
  for(const value of ['','NaN','-1','1e3','1.234','10000000000'])assert.throws(()=>applyDraftBulkEdit(cards,new Set(['first']),{field:'startingPrice',value}));
+ const badSource=card('source',{startingPrice:'5.001'});assert.throws(()=>applyDraftBulkEdit([badSource,card('target')],new Set(['target']),{field:'copy',sourceId:'source'}),/duas casas decimais/);
 });
 
 test('explicit custom values validate options and never change quiz answers',()=>{

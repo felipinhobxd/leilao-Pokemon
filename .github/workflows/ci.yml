@@ -93,11 +93,12 @@ jobs:
           python3 tests/concurrency.py
           python3 tests/concurrency-quiz.py
           python3 tests/concurrency-cleanup.py
+      - name: Install browser runtime
+        timeout-minutes: 15
+        run: npx playwright install --with-deps chromium
       - name: Browser flows with isolated auth and API fixtures
         timeout-minutes: 10
-        run: |
-          npx playwright install --with-deps chromium
-          npm run test:browser
+        run: npm run test:browser
       - name: Preserve browser failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v4

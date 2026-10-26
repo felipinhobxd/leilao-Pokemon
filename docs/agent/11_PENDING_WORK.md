@@ -104,3 +104,7 @@ P-18: resolvido conservadoramente na limpeza automática e no botão de encerrad
 ## Retomada e primeira confirmação — concluídas
 
 [24_SAFE_RESUME_AND_FIRST_CONFIRMED_BACKUP.md](24_SAFE_RESUME_AND_FIRST_CONFIRMED_BACKUP.md): três etapas autorizadas concluídas; supervisor conectado e snapshot real confirmado após correção de custo de memória/blocos. Falha antiga de publicação não foi reenviada. Sem fase nova automática.
+
+## Decisão posterior do operador — retenção financeira automática
+
+[25_AUTOMATIC_CLEANUP_ALL_OUTCOMES.md](25_AUTOMATIC_CLEANUP_ALL_OUTCOMES.md): preservação automática de compras substituída por exclusão de todos os resultados elegíveis após 12h do envio, com backup integral e manifesto financeiro. P-18 passa a ser decisão consciente de retenção do operador; não reintroduzir preservação automática de compras por inferência de MD histórico. Botão manual mantém regra própria.

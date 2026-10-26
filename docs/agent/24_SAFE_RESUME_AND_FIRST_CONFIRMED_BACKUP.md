@@ -1,5 +1,7 @@
 # 24 — Retomada e primeiro backup confirmado
 
+> Política atual autorizada: [25_AUTOMATIC_CLEANUP_ALL_OUTCOMES.md](25_AUTOMATIC_CLEANUP_ALL_OUTCOMES.md). Limpeza automática inclui vendidos/arremates e dados financeiros após 12h do envio, condicionada à cobertura do backup. Substitui a preservação automática de compras descrita historicamente abaixo. Migration 20261026041119 instalada (74 locais/82 remotos).
+
 Concluído em 26/10/2026 após autorização explícita para as três etapas: conferir pendências, retomar supervisor e validar o primeiro backup confirmado. Horários abaixo em Brasília.
 
 ## 1. Conferência antes de iniciar

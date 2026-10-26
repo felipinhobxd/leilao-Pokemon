@@ -1,5 +1,7 @@
 # 22 — Cobertura do backup antes da limpeza automática
 
+> Política atual autorizada: [25_AUTOMATIC_CLEANUP_ALL_OUTCOMES.md](25_AUTOMATIC_CLEANUP_ALL_OUTCOMES.md). Limpeza automática inclui vendidos/arremates e dados financeiros após 12h do envio, condicionada à cobertura do backup. Substitui a preservação automática de compras descrita historicamente abaixo. Migration 20261026041119 instalada (74 locais/82 remotos).
+
 Pedido autorizado em 25/10/2026: conferir e resolver P-19, preservando o bot e a meta de 1GB de Log Ingestion. Este documento substitui a limitação P-19 dos documentos anteriores.
 
 ## Proteção implementada

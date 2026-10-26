@@ -33,6 +33,7 @@ export default function BackupProtectionCard({data,writable,onBackup,backupBusy}
     </dl>}
     {known && !backup.validSnapshotAt && backup.latestConfirmedAt && <p>Última confirmação registrada: {when(backup.latestConfirmedAt)}.</p>}
     <div className="cleanup-report"><h4>Última tentativa de limpeza</h4>
+      <p className="muted">A limpeza automática inclui vendas, arremates e seus pagamentos após 12 horas do envio, com cobertura confirmada no backup. Itens abertos ou em revisão e avisos pendentes aguardam.</p>
       <span className={`health-tag ${cleanup?.status==='completed' && worker?.online ? 'good' : 'attention'}`}>
         {cleanup?.status==='blocked' ? 'Limpeza adiada' : cleanup?.status==='completed' ? 'Tentativa concluída' : cleanup?.status==='failed' ? 'Falha na tentativa' : 'Ainda não informada'}
       </span>

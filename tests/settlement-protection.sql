@@ -1,4 +1,4 @@
--- Disposable database only. No business deletion is exercised in production.
+-- Disposable database only. Updated operator policy: automatic cleanup includes sales.
 begin;
 insert into public.participants(id,whatsapp_id,display_name) values('10000000-0000-0000-0000-000000000099','settlement-test','Pós-venda');
 insert into public.cards(id,name,starting_price) select ('20000000-0000-0000-0000-'||lpad(i::text,12,'0'))::uuid,'Financeiro '||i,5 from generate_series(1,5) i;
@@ -15,10 +15,10 @@ set local role service_role;
 do $$ declare result jsonb; begin
  perform public.test_confirm_backup();
  result:=public.cleanup_old_auctions();
- if (result->>'preserved_financial_auctions')::int<>4 or (result->'deleted'->>'auctions')::int<>1 then raise exception 'financial_cleanup_selection_wrong: %',result; end if;
- if (select count(*) from public.purchases)<>4 or (select count(*) from public.payments)<>4 or (select count(*) from public.deliveries)<>4 or (select count(*) from public.payment_reminders)<>4 then raise exception 'financial_tree_lost'; end if;
- if (select count(*) from public.auction_events where event_type='settlement_history')<>4 then raise exception 'financial_audit_pruned'; end if;
- if exists(select 1 from public.auctions where id='30000000-0000-0000-0000-000000000005') then raise exception 'nonfinancial_cleanup_stopped'; end if;
+ if (result->'deleted'->>'auctions')::int<>5 or (result->'deleted'->>'purchases')::int<>4 then raise exception 'authorized_sale_cleanup_wrong: %',result; end if;
+ if exists(select 1 from public.purchases) or exists(select 1 from public.payments) or exists(select 1 from public.deliveries) or exists(select 1 from public.payment_reminders) then raise exception 'financial_children_not_removed'; end if;
+ if exists(select 1 from public.auction_events where event_type='settlement_history') then raise exception 'sale_audit_not_removed'; end if;
+
 end $$;
 reset role;
 rollback;

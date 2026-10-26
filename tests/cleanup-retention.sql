@@ -49,7 +49,7 @@ begin
 
   -- (1) Terminal de 30 minutos: o padrao (12h) tem que mante-lo.
   update public.auctions
-     set ended_at=now()-interval '30 minutes',
+     set started_at=now()-interval '30 minutes', ended_at=now()-interval '30 minutes',
          updated_at=now()-interval '30 minutes'
    where id=aid;
   perform public.test_confirm_backup();
@@ -61,7 +61,7 @@ begin
   -- (2) Terminal de 2 horas + p_hours=1 => apagado. E a prova de que o
   -- parametro agora e em HORAS: com piso de 1 DIA ele sobreviveria.
   update public.auctions
-     set ended_at=now()-interval '2 hours',
+     set started_at=now()-interval '2 hours', ended_at=now()-interval '2 hours',
          updated_at=now()-interval '2 hours'
    where id=aid;
   perform public.test_confirm_backup();
@@ -103,7 +103,7 @@ begin
 
   -- (3) Terminal de 6 horas: ainda dentro da janela de 12h.
   update public.auctions
-     set ended_at=now()-interval '6 hours',
+     set started_at=now()-interval '6 hours', ended_at=now()-interval '6 hours',
          updated_at=now()-interval '6 hours'
    where id=aid;
   perform public.test_confirm_backup();
@@ -114,7 +114,7 @@ begin
 
   -- (4) Terminal de 13 horas: alem da janela de 12h => apagado.
   update public.auctions
-     set ended_at=now()-interval '13 hours',
+     set started_at=now()-interval '13 hours', ended_at=now()-interval '13 hours',
          updated_at=now()-interval '13 hours'
    where id=aid;
   perform public.test_confirm_backup();

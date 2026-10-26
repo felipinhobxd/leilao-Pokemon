@@ -1,5 +1,7 @@
 # 19 — Proteção financeira e recuperação de backup
 
+> Política atual autorizada: [25_AUTOMATIC_CLEANUP_ALL_OUTCOMES.md](25_AUTOMATIC_CLEANUP_ALL_OUTCOMES.md). Limpeza automática inclui vendidos/arremates e dados financeiros após 12h do envio, condicionada à cobertura do backup. Substitui a preservação automática de compras descrita historicamente abaixo. Migration 20261026041119 instalada (74 locais/82 remotos).
+
 > Atualização posterior: P-19 implementado em [22_BACKUP_COVERAGE_BEFORE_CLEANUP.md](22_BACKUP_COVERAGE_BEFORE_CLEANUP.md). Recibo confirmado da nuvem e cobertura das linhas antes da limpeza. Código do backup/supervisor alterado, sem reiniciar processos. Detalhes/limites e versão efetiva no documento 22; trechos anteriores são históricos.
 
 Atualizado em 2026-10-25. Pedido do operador: começar pelas pendências financeiras e recuperação de backups, com cuidado para não quebrar o bot. Este documento complementa e substitui as regras de retenção/cobertura descritas anteriormente no documento 18.

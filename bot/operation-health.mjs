@@ -10,6 +10,7 @@ export function createOperationHealth(now = () => new Date().toISOString()) {
       if (previous?.database && typeof previous.database === 'object') state.database = previous.database;
       if (previous?.mention && typeof previous.mention === 'object') state.mention = previous.mention;
       if (previous?.cleanup && typeof previous.cleanup === 'object') state.cleanup = previous.cleanup;
+      if (previous?.votes && typeof previous.votes === 'object') state.votes = previous.votes;
     },
     database(ok) {
       if (!ok) { state.database.failedAt = now(); delete state.database.recoveredAt; }
@@ -23,5 +24,10 @@ export function createOperationHealth(now = () => new Date().toISOString()) {
       state.cleanup = {status, at: now(), reason: known.includes(reason) ? reason : '', deleted: Number.isSafeInteger(deleted) && deleted >= 0 ? deleted : 0};
     },
     mention(issue) { state.mention = { at: now(), issue: String(issue ?? '').slice(0, 400) }; },
+    votes(value) {
+      const count = key => Number.isSafeInteger(value?.[key]) && value[key] >= 0 ? Math.min(10000, value[key]) : 0;
+      state.votes = { at: now(), pending: count('pending'), review: count('review'),
+        issue: ['storage_error', 'capacity', 'corrupt', 'review', 'retrying'].includes(value?.issue) ? value.issue : '' };
+    },
   };
 }

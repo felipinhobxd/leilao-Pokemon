@@ -1,5 +1,7 @@
 # Leilão Pokémon
 
+Proteção de votos no bot 0.2.11: fila local persistente, retentativas e revisão de eventos sem confirmação. A ativação exige carregar a versão nova do supervisor e filho. [Fases e operação](docs/agent/27_PHASED_REVIEW_FIXES.md).
+
 Excel com primeiro/último lance por participante e lote, horários de Brasília com segundos/milissegundos e cada troca no formato **valor anterior → novo valor**. Exporte antes da limpeza automática: a planilha inclui somente o histórico ainda disponível. [Detalhes e limites](docs/agent/26_EXCEL_BID_HISTORY.md).
 
 Limpeza automática inclui vendidos, arremates e dados financeiros após 12h do envio, com backup da nuvem confirmado e cobertura dos registros; dados alterados depois da cópia adiam a exclusão. [Operação e limites](docs/agent/22_BACKUP_COVERAGE_BEFORE_CLEANUP.md), incluindo atualização do supervisor sem reinício automático.

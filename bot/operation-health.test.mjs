@@ -2,6 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createOperationHealth } from './operation-health.mjs';
 
+test('vote telemetry is bounded, survives supervisor restart and never includes raw votes or errors', () => {
+  const health = createOperationHealth(() => '2026-10-26T04:00:00Z');
+  health.votes({ pending: 2, review: 1, issue: 'review', message: 'private vote', token: 'secret' });
+  const restored = createOperationHealth(); restored.restore(health.state);
+  assert.equal(restored.state.votes.pending, 2); assert.equal(restored.state.votes.review, 1);
+  assert.equal(restored.state.votes.at, '2026-10-26T04:00:00Z');
+  assert.ok(!JSON.stringify(restored.state).includes('secret'));
+  health.votes({ pending: Infinity, review: -1, issue: 'https://private.invalid/token' });
+  assert.equal(health.state.votes.pending, 0); assert.equal(health.state.votes.review, 0); assert.equal(health.state.votes.issue, '');
+});
+
 test('bounded telemetry keeps backup failures until the next attempt and survives supervisor restart', () => {
   let at='2026-10-25T07:00:00Z';const health=createOperationHealth(()=>at);
   health.database(false);assert.equal(health.state.database.failedAt,at);

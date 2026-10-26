@@ -4,6 +4,20 @@ function png(color){const crc=buf=>{let n=0xffffffff;for(const x of buf){n^=x;fo
 const photo=(name,color)=>({name,mimeType:'image/png',buffer:png(color)});
 test.beforeEach(async({request})=>{await request.post('/__fixture/reset');});
 
+test('vote protection diagnostics show pending/review counts only on demand and remain accessible',async({page,request})=>{
+ await request.post('/__fixture/config',{data:{operationResponse:{worker:{online:true,status:'connected',heartbeat:new Date().toISOString(),version:'0.2.11',protectionVersion:1,backup:{},database:{},votes:{pending:2,review:1,issue:'review',at:new Date().toISOString()}}}}});
+ await page.goto('/');await page.getByText('Diagnóstico e recuperação da operação',{exact:true}).click();
+ expect((await (await request.get('/__fixture/calls')).json()).filter(c=>c.url==='/api/operations')).toHaveLength(0);
+ await page.getByRole('button',{name:'Verificar agora',exact:true}).click();
+ await expect(page.getByRole('heading',{name:'Proteção dos votos',exact:true})).toBeVisible();
+ await expect(page.getByText('Revisão necessária',{exact:true})).toBeVisible();
+ await expect(page.getByText('2 voto(s) pendente(s) · 1 para revisão.',{exact:true})).toBeVisible();
+ await expect(page.getByText(/sem alterar o prazo de lances/)).toBeVisible();
+ await page.getByRole('button',{name:'Auditar acessibilidade local',exact:true}).press('Enter');
+ await expect(page.locator('#audit-result')).toHaveText('[]',{timeout:15000});
+ expect((await (await request.get('/__fixture/calls')).json()).filter(c=>c.url==='/api/operations')).toHaveLength(1);
+});
+
 test('backup confirmation and deferred cleanup are distinct, accessible and fetched only on demand',async({page,request})=>{
  await page.goto('/');await page.getByText('Diagnóstico e recuperação da operação',{exact:true}).click();
  let calls=(await (await request.get('/__fixture/calls')).json()).filter(c=>c.url==='/api/operations');

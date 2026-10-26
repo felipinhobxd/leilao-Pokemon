@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readableIssue,cleanupReason,readCleanupReport} from '../lib/operation-health.ts';
+import {readableIssue,cleanupReason,readCleanupReport,readVoteHealth} from '../lib/operation-health.ts';
+test('vote diagnostics allow only counts, a valid timestamp and known issues', () => {
+ assert.equal(readVoteHealth(null),null);
+ assert.deepEqual(readVoteHealth({at:'invalid',pending:Infinity,review:-1,issue:'secret',message:'private'}),{at:null,pending:0,review:0,issue:''});
+ assert.deepEqual(readVoteHealth({at:'2026-10-26T04:00:00Z',pending:2,review:1,issue:'review'}),{at:'2026-10-26T04:00:00Z',pending:2,review:1,issue:'review'});
+});
 test('operational errors do not expose provider HTML, signed URLs or bearer credentials',()=>{
   assert.equal(readableIssue(null),'');assert.ok(!readableIssue('<!doctype html><html>error</html>').includes('<'));
   const text=readableIssue('Erro https://example.com?token=secret Bearer abc.def\n Tente depois');

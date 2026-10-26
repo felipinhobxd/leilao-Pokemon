@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { VoteReviewError } from './vote-inbox.mjs';
 
 export function selectedGameOption(options, vote) {
   const selected=vote?.selectedOptions;
@@ -12,7 +13,7 @@ export async function handleGameVote({db,poll,pollUpdate,resolveIdentity,ensureP
   const index=selectedGameOption(poll.options,pollUpdate.vote);
   if (index<0 || index!==poll.correct_index) return false;
   const identity=await resolveIdentity(pollUpdate);
-  if (!identity) return false;
+  if (!identity) throw new VoteReviewError('vote_identity_unresolved');
   const participant=await ensureParticipant(identity);
   const {data,error}=await db.rpc('claim_quick_poll_prize',{
     p_poll_id:poll.id,p_participant_id:participant.id,p_option_index:index,

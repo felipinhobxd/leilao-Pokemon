@@ -1,5 +1,8 @@
 import "./session-guard.mjs";
 import { createSerialCycle } from "./serial-cycle.mjs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createVoteInbox, VoteNotReadyError, VoteReviewError } from "./vote-inbox.mjs";
 import makeWASocket, {
   BufferJSON,
   DisconnectReason,
@@ -111,7 +114,11 @@ const paymentReminderDrain = createPaymentReminderDrain({
 });
 const contactNames = new Map();
 const pollMessageCache = new Map();
-const pendingPollVotes = new Map();
+const voteInbox = createVoteInbox({
+  directory: join(process.env.BOT_DATA_DIR || fileURLToPath(new URL('./data/', import.meta.url)), 'vote-inbox'),
+  processVote: (message, delivery) => applyIncomingPollMessage(message, delivery),
+  onStatus: status => console.log('__LEILAO_VOTES__' + JSON.stringify(status)),
+});
 const trackedGroupJids = new Set();
 // Enquetes "desconhecidas" já avisadas nesta sessão: votos em brindes do
 // painel e enquetes antigas já limpas são ESPERADOS (decisão: sem rastrear
@@ -490,15 +497,9 @@ async function persistDispatchMessageIds(dispatch) {
 }
 
 async function drainPendingPollVotes(pollMessageId) {
-  const waiting = pendingPollVotes.get(pollMessageId) ?? [];
-  pendingPollVotes.delete(pollMessageId);
-  // One bad message must not discard the rest of the queue: a single throw
-  // here used to drop every already-dequeued vote and flip an already-sent
-  // dispatch back to 'scheduled' upstream.
-  for (const message of waiting) {
-    try { await processIncomingPollMessage(message); }
-      catch (error) { console.error("Falha ao processar voto enfileirado:", describeError(error)); }
-  }
+  // The received events are already on disk, including votes received while
+  // the poll is being published. Drain respects each poll's own FIFO/backoff.
+  await voteInbox.drain();
 }
 
 async function sendDispatchInternal(claimedDispatch) {
@@ -709,9 +710,9 @@ function logResolvedParticipant(participant, identity) {
   console.log(`👥 Participante resolvido: ${participant.display_name} | LID: ${lid} | PN: ${pn}`);
 }
 
-async function handlePollVote(dispatch, pollUpdate, originalMessageOverride) {
+async function handlePollVote(dispatch, pollUpdate, originalMessageOverride, delivery = {}) {
   const identity = await resolveVoterIdentity(pollUpdate);
-  if (!identity) return;
+  if (!identity) throw new VoteReviewError('vote_identity_unresolved');
   let participant;
   try {
     participant = await ensureParticipant(identity);
@@ -729,8 +730,8 @@ async function handlePollVote(dispatch, pollUpdate, originalMessageOverride) {
         external_event_id: `wa-identity-conflict:${dispatch.poll_message_id}:${Date.now()}`.slice(0, 200),
         payload: { identities, display_name: identity.displayName || null, reason: "participant rows need merge" },
       }).catch(() => {});
-      console.error(`⚠️  Conflito de identidade no leilão ${dispatch.auction_id}: jids ${identities.join(", ")} precisam de merge — voto auditado e descartado.`);
-      return;
+      console.error(`⚠️  Conflito de identidade no leilão ${dispatch.auction_id}: jids ${identities.join(", ")} precisam de merge — voto auditado e guardado para revisão.`);
+      throw new VoteReviewError('whatsapp_identity_conflict');
     }
     throw error;
   }
@@ -758,6 +759,7 @@ async function handlePollVote(dispatch, pollUpdate, originalMessageOverride) {
       } catch (error) {
         if (String(error?.message || error).includes("auction_not_open")) {
           await auditLateVote(dispatch.auction_id, participant.id, "BID_WITHDRAWN_AFTER_CLOSE", eventId, { voter_jid: voterJid, phone_e164: participant.phone_e164, display_name: participant.display_name, event_at: occurredAt });
+          if (delivery.attempts > 0) return { review: true, reason: 'auction_not_open_after_retry' };
         } else throw error;
       }
     }
@@ -819,6 +821,7 @@ async function handlePollVote(dispatch, pollUpdate, originalMessageOverride) {
       const { data: closedAuction } = isBuyout ? await db.from("auctions").select("winner_participant_id,final_price,status").eq("id", dispatch.auction_id).maybeSingle() : { data: null };
       await auditLateVote(dispatch.auction_id, participant.id, rejectedType, eventId, { voter_jid: voterJid, phone_e164: participant.phone_e164, display_name: participant.display_name, option: selected.label, amount, reason: message.slice(0, 300), winner_participant_id: closedAuction?.winner_participant_id ?? null, final_price: closedAuction?.final_price ?? null, event_at: occurredAt });
       console.log(`${isBuyout ? "🥈 ARREMATE posterior" : "⚠️ Voto rejeitado"}: ${participant.display_name}${participant.phone_e164 ? ` (${participant.phone_e164})` : ""} → ${selected.label}`);
+      if (delivery.attempts > 0) return { review: true, reason: message.slice(0, 200) };
       return;
     }
     throw error;
@@ -846,20 +849,22 @@ async function loadDispatchForPoll(pollMessageId) {
 }
 
 async function processIncomingPollMessage(message, contentOverride) {
+  voteInbox.enqueue(message, contentOverride ?? unwrapMessageContent(message?.message));
+  await voteInbox.drain();
+}
+
+async function applyIncomingPollMessage(message, delivery = {}) {
   // Votos chegam às vezes ENCAPSULADOS (ephemeralMessage etc.) — o conteúdo
   // real é extraído uma vez aqui e em handleIncomingMessages com o MESMO
   // helper, para o voto nunca mais cair no fluxo de "mensagem comum".
-  const content = contentOverride ?? unwrapMessageContent(message?.message);
+  const content = unwrapMessageContent(message?.message);
   const creationKey = content?.pollUpdateMessage?.pollCreationMessageKey;
   const pollMessageId = creationKey?.id;
   if (!pollMessageId) return;
 
   const cached = pollMessageCache.get(pollMessageId);
   if (cached && !cached.ready) {
-    const waiting = pendingPollVotes.get(pollMessageId) ?? [];
-    waiting.push(message);
-    pendingPollVotes.set(pollMessageId, waiting);
-    return;
+    throw new VoteNotReadyError();
   }
 
   if(!cached && unknownPollWarned.has(pollMessageId))return;
@@ -871,15 +876,14 @@ async function processIncomingPollMessage(message, contentOverride) {
     const group=Array.isArray(poll.group)?poll.group[0]:poll.group;
     if(String(message?.key?.remoteJid)!==group?.group_jid)return;
     const original=loaded.cached?.message || (poll.poll_message_json?reviveStoredMessage(poll.poll_message_json):null);
-    if(!original)return;
-    try {
-      const decrypted=await decryptIncomingPollVote({sock,message,content,pollMessage:original,pollKey:loaded.cached?.key??creationKey});
-      if(decrypted && await handleGameVote({db,poll,pollUpdate:decrypted.pollUpdate,resolveIdentity:resolveVoterIdentity,ensureParticipant,eventTime}))auctionNoticeDrain.wake();
-    }catch(error){reportServiceError('Quiz/brinde: falha ao processar voto',error);}
+    if(!original)throw new VoteNotReadyError();
+    const decrypted=await decryptIncomingPollVote({sock,message,content,pollMessage:original,pollKey:loaded.cached?.key??creationKey});
+    if(decrypted && await handleGameVote({db,poll,pollUpdate:decrypted.pollUpdate,resolveIdentity:resolveVoterIdentity,ensureParticipant,eventTime}))auctionNoticeDrain.wake();
     return;
   }
   const dispatch = loaded.dispatch;
   if (!dispatch?.poll_message_json && !loaded.cached?.message) {
+    if (dispatch) throw new VoteNotReadyError();
     // Loga UMA vez por enquete por sessão (Set limitado): cada voto de cada
     // participante disparava o warn de novo — dezenas de linhas idênticas.
     if (!unknownPollWarned.has(pollMessageId)) {
@@ -900,25 +904,12 @@ async function processIncomingPollMessage(message, contentOverride) {
     fromMe: creationKey.fromMe,
   };
 
-  try {
-    const decrypted = await decryptIncomingPollVote({ sock, message, content, pollMessage, pollKey });
-    if (!decrypted) {
-      // Atualização de enquete SEM payload de voto (ex.: snapshot/sincronismo):
-      // antes era silêncio total — agora fica rastreável no terminal.
-      console.warn(`Atualização de enquete sem payload de voto: ${pollMessageId} — ignorada.`);
-      return;
-    }
-    await handlePollVote(dispatch, decrypted.pollUpdate, pollMessage);
-  } catch (error) {
-    const diagnostic = error?.diagnostic ?? {};
-    console.warn("Falha real ao descriptografar/processar voto:", {
-      message: error?.message || String(error),
-      pollMessageId: diagnostic.pollMessageId || pollMessageId,
-      fromMe: diagnostic.fromMe ?? Boolean(message?.key?.fromMe),
-      creatorCandidates: diagnostic.creatorCandidates,
-      voterCandidates: diagnostic.voterCandidates,
-    });
+  const decrypted = await decryptIncomingPollVote({ sock, message, content, pollMessage, pollKey });
+  if (!decrypted) {
+    console.warn(`Atualização de enquete sem payload de voto: ${pollMessageId} — ignorada.`);
+    return;
   }
+  return await handlePollVote(dispatch, decrypted.pollUpdate, pollMessage, delivery);
 }
 
 async function enrichParticipantFromMessage(message) {
@@ -1129,7 +1120,15 @@ async function finalizeDueAuctions() {
   finalizeBusy=true;
   try {
     await voteQueue;
-    const {data,error}=await db.rpc("finalize_due_auction_batch",{p_admin_user_id:ADMIN_USER_ID});
+    // Snapshot only deadlines already past in the previous scheduler window.
+    // A request crossing the deadline must not finalize a newly due auction
+    // whose last received vote arrived after this guard was captured.
+    const dueBefore = new Date(Date.now() - 5000).toISOString();
+    const guard = voteInbox.finalizationGuard();
+    if (!guard.safe) return; // An unreadable/full inbox cannot certify any result.
+    const {data,error}=await db.rpc("finalize_due_auction_batch_guarded", {
+      p_admin_user_id: ADMIN_USER_ID, p_pending_poll_ids: guard.pollIds, p_due_before: dueBefore,
+    });
     if(error)throw error;
     if(data>0)auctionNoticeDrain.wake();
     await auctionNoticeDrain.tick();
@@ -1167,6 +1166,12 @@ async function connect() {
   sock.ev.on("contacts.upsert", contacts => contacts.forEach(rememberContact));
   sock.ev.on("contacts.update", contacts => contacts.forEach(rememberContact));
   sock.ev.on("messages.upsert", ({ messages }) => {
+    // Persist ALL poll events synchronously before any enrichment/database
+    // await. A failure for one message must not discard the rest of a batch.
+    for (const message of messages ?? []) {
+      try { voteInbox.enqueue(message, unwrapMessageContent(message?.message)); }
+      catch (error) { reportServiceError('Falha ao guardar voto recebido; confira a fila local', error); }
+    }
     voteQueue = voteQueue.then(() => handleIncomingMessages(messages)).catch(error => console.error("Falha na fila de mensagens/votos:", describeError(error)));
   });
   sock.ev.on("connection.update", ({ connection, qr, lastDisconnect }) => {
@@ -1187,6 +1192,8 @@ async function connect() {
 // chegarem antes de soltar a figurinha + @all.
 const schedulerCycle = createSerialCycle(async () => {
         await sendOpeningSequence();
+        voteQueue = voteQueue.catch(error => reportServiceError('Fila de votos', error)).then(() => voteInbox.drain());
+        await voteQueue;
         await Promise.all([runScheduler(), finalizeDueAuctions(), adminNotificationDrain.tick(), sendDueQuickPolls(), paymentReminderDrain.tick()]);
       });
 schedulerTimer = setInterval(() => {

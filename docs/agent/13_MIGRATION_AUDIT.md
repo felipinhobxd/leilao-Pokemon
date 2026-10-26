@@ -1,5 +1,7 @@
 # 13_MIGRATION_AUDIT — Conferência de produção
 
+> 26/10, fase 1: `20261026165459_guard_finalization_for_pending_votes.sql` instalada no projeto correto, criada pela CLI e renomeada para a versão registrada. 75 arquivos locais/83 registros remotos. RPC de três argumentos, SECURITY INVOKER, search_path vazio e EXECUTE somente para service_role confirmados por catálogo. Nenhuma finalização real chamada. [Contrato e limites](27_PHASED_REVIEW_FIXES.md); não reparar diferenças históricas automaticamente.
+
 > Política atual autorizada: [25_AUTOMATIC_CLEANUP_ALL_OUTCOMES.md](25_AUTOMATIC_CLEANUP_ALL_OUTCOMES.md). Limpeza automática inclui vendidos/arremates e dados financeiros após 12h do envio, condicionada à cobertura do backup. Substitui a preservação automática de compras descrita historicamente abaixo. Migration 20261026041119 instalada (74 locais/82 remotos).
 
 > Atualização atual: [24_SAFE_RESUME_AND_FIRST_CONFIRMED_BACKUP.md](24_SAFE_RESUME_AND_FIRST_CONFIRMED_BACKUP.md). Supervisor retomado/conectado, primeiro backup confirmado (52,7MB, 22 tabelas). Duas otimizações de memória/UTF-8 instaladas: 73 migrations locais/81 remotas. Etapas anteriores que dizem não iniciar o bot são histórico.

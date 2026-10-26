@@ -1,5 +1,7 @@
 # 00_INDEX — Memória persistente do projeto
 
+> Fase atual: [27_PHASED_REVIEW_FIXES.md](27_PHASED_REVIEW_FIXES.md). Fase 1 implementada: fila local de votos, revisão visível e finalização protegida. Bot no disco 0.2.11, **processos ativos preservados**. Migration 20261026165459 instalada (75 locais/83 remotos). Ao terminar, pedir autorização antes da fase 2.
+
 > Excel atualizado: [26_EXCEL_BID_HISTORY.md](26_EXCEL_BID_HISTORY.md). Primeiro/último lance por participante e leilão, mudanças de valor e horários em Brasília. 148 testes raiz locais aprovados. Sem migration, chamadas extras ao Supabase ou alterações no bot.
 
 > Política atual autorizada: [25_AUTOMATIC_CLEANUP_ALL_OUTCOMES.md](25_AUTOMATIC_CLEANUP_ALL_OUTCOMES.md). Limpeza automática inclui vendidos/arremates e dados financeiros após 12h do envio, condicionada à cobertura do backup. Substitui a preservação automática de compras descrita historicamente abaixo. Migration 20261026041119 instalada (74 locais/82 remotos).

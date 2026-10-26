@@ -1,5 +1,7 @@
 # 11_PENDING_WORK — Trabalho pendente
 
+> Revisão de 26/10 em quatro fases: [27_PHASED_REVIEW_FIXES.md](27_PHASED_REVIEW_FIXES.md). Fase 1 implementada no código + RPC; processos reais preservados. Fases 2 (consulta de grupo → falso envio), 3 (brindes pausados bloqueiam seguintes) e 4 (confirmação pendente prende cadastro) aguardam autorização individual. Não executar os três itens em lote.
+
 > Estado atual consolidado: [19_SETTLEMENT_PROTECTION_AND_RECOVERY.md](19_SETTLEMENT_PROTECTION_AND_RECOVERY.md) e [18_RELIABILITY_AND_UI_REVIEW.md](18_RELIABILITY_AND_UI_REVIEW.md), bot 0.2.10, Next.js 16.4.3. Seções de versões anteriores abaixo são histórico; não reaplicar migrations ou instruções antigas automaticamente.
 
 

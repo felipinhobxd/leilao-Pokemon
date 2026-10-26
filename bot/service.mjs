@@ -196,6 +196,10 @@ function handleChildLine(line, isError = false) {
     try { operationHealth.mention(JSON.parse(line.slice('__LEILAO_MENTION__'.length)).issue); } catch {}
     return;
   }
+  if (!isError && line.startsWith('__LEILAO_VOTES__')) {
+    try { operationHealth.votes(JSON.parse(line.slice('__LEILAO_VOTES__'.length))); } catch {}
+    return;
+  }
 
   if (line.includes("✅ WhatsApp conectado")) {
     runtime.status = "connected";

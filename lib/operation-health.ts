@@ -30,9 +30,18 @@ export function readCleanupReport(value: unknown): CleanupReport | null {
   return {status:row.status as CleanupReport['status'],at:row.at,reason:typeof row.reason === 'string' && Object.hasOwn(cleanupReasons,row.reason) ? row.reason : '',deleted:Number.isSafeInteger(row.deleted) && Number(row.deleted)>=0 ? Number(row.deleted) : 0};
 }
 
+export type VoteHealth = { at: string | null; pending: number; review: number; issue: string };
+export function readVoteHealth(value: unknown): VoteHealth | null {
+  if (!value || typeof value !== 'object') return null;
+  const row = value as Record<string, unknown>;
+  const count = (key: string) => Number.isSafeInteger(row[key]) && Number(row[key]) >= 0 ? Math.min(10000, Number(row[key])) : 0;
+  return { at: typeof row.at === 'string' && Number.isFinite(Date.parse(row.at)) ? row.at : null, pending: count('pending'), review: count('review'),
+    issue: ['storage_error', 'capacity', 'corrupt', 'review', 'retrying'].includes(String(row.issue)) ? String(row.issue) : '' };
+}
+
 export type OperationHealth = {
   checkedAt: string;
-  worker: { status: string; online: boolean; heartbeat: string | null; version: string | null; issue: string; protectionVersion?: number; cleanup?: CleanupReport | null; mention?: { at?: string; issue?: string }; backup: { status?: string; at?: string; error?: string; cloud?: boolean }; database: { failedAt?: string; recoveredAt?: string } } | null;
+  worker: { status: string; online: boolean; heartbeat: string | null; version: string | null; issue: string; protectionVersion?: number; cleanup?: CleanupReport | null; votes?: VoteHealth | null; mention?: { at?: string; issue?: string }; backup: { status?: string; at?: string; error?: string; cloud?: boolean }; database: { failedAt?: string; recoveredAt?: string } } | null;
   backupProtection?: BackupProtection | null;
   backupReadFailed: boolean;
   notices: { id: string; kind: string; attempts: number; nextAttempt: string; issue: string; retryable: boolean; locked: boolean }[];

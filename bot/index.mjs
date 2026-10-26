@@ -1048,7 +1048,7 @@ async function sendOpeningSequence() {
 
 let quickPollsBusy = false;
 async function sendDueQuickPolls() {
-  if (!sock || quickPollsBusy) return;
+  if (!sock || !socketReady || quickPollsBusy) return;
   quickPollsBusy = true;
   try {
     const nowIso = new Date().toISOString();
@@ -1065,48 +1065,62 @@ async function sendDueQuickPolls() {
       // pausados e os brindes não podem furar isso. Fila ausente = brinde
       // avulso do painel: publica normal.
       if (poll.queue?.status === "paused") continue;
-      const { data: group } = await db.from("whatsapp_groups").select("group_jid,active").eq("id", poll.group_id).maybeSingle();
-      const values = Array.isArray(poll.options) ? poll.options.map(value => String(value)).filter(Boolean).slice(0, 12) : [];
-      if (!group?.active || values.length < 2) {
-        // Grupo desativado ou opções inválidas: marca como enviado para não
-        // travar a fila para sempre (decisão visível no banco).
-        await db.from("whatsapp_quick_polls").update({ sent_at: new Date().toISOString() }).eq("id", poll.id);
-        console.warn(`🎁 Brinde ${poll.id} marcado sem envio (grupo inativo ou opções inválidas).`);
-        continue;
+      try {
+        const { data: group, error: groupError } = await db.from("whatsapp_groups").select("group_jid,active").eq("id", poll.group_id).maybeSingle();
+        if (groupError) throw new Error(`quick_poll_group_lookup_failed: ${groupError.message}`);
+        const values = Array.isArray(poll.options) ? poll.options.map(value => String(value)).filter(Boolean).slice(0, 12) : [];
+        // Keep unsent records pending. Only a real publication may complete the
+        // queue; a missing/inactive group requires correction, never a fake send.
+        if (!group?.active || !group.group_jid) throw new Error("quick_poll_group_unavailable");
+        if (values.length < 2) throw new Error("quick_poll_invalid_options");
+        // Brinde de carta (2026-09-24): a FOTO do prêmio sai antes da enquete,
+        // com messageId estável — crash no meio reenvia imagem+enquete (o
+        // WhatsApp deduplica os messageIds), igual ao fluxo de dispatches.
+        if (typeof poll.image_url === "string" && /^https:\/\//.test(poll.image_url)) {
+          const announcement = await sock.sendMessage(group.group_jid, { image: { url: poll.image_url }, caption: poll.game_kind === "quiz" ? `🧩 Quiz · ${poll.prize_name}\n\n${poll.title}` : String(poll.title) }, { messageId: dispatchMessageId(poll.id, "quick-announce") });
+          if (!announcement?.key?.id) throw new Error("quick_poll_announcement_send_failed");
+        } else if(poll.game_kind==='quiz') {
+          const introduction=await sock.sendMessage(group.group_jid,{text:`🧩 Quiz · Prêmio: ${poll.prize_name}`},{messageId:dispatchMessageId(poll.id,'quick-announce')});
+          if(!introduction?.key?.id)throw new Error('quick_poll_announcement_send_failed');
+        }
+        const stableId=dispatchMessageId(poll.id,'quick-poll');
+        if(poll.game_kind!=='legacy')pollMessageCache.set(stableId,{gamePoll:poll,ready:false});
+        const message = await sock.sendMessage(group.group_jid, {
+          poll: { name: String(poll.title), values, selectableCount: 1, messageSecret: dispatchPollSecret(`quick-${poll.id}`) },
+        }, { messageId: dispatchMessageId(poll.id, "quick-poll") });
+        if (!message?.key?.id || poll.game_kind!=='legacy' && !message.message) throw new Error("quick_poll_send_failed");
+        let {data:recorded,error:recordError}=await db.from("whatsapp_quick_polls")
+          .update({ sent_at: new Date().toISOString(), poll_message_id: String(message.key.id),...(poll.game_kind!=='legacy'?{poll_message_json:serializeMessage(message.message)}:{}) })
+          .eq("id", poll.id).select("id,sent_at,poll_message_id").maybeSingle();
+        if (recordError) {
+          // A timeout may hide a committed UPDATE. Confirm this exact message
+          // once before leaving its local vote cache unready; no polling added.
+          const confirmation = await db.from("whatsapp_quick_polls")
+            .select("id,sent_at,poll_message_id").eq("id", poll.id).maybeSingle();
+          if (confirmation.error) throw new Error(recordError.message);
+          recorded = confirmation.data;
+        }
+        // A cancelled/deleted row or a filtered UPDATE can affect zero rows
+        // without an API error. Do not activate votes/report success in that case.
+        if(recorded?.id!==poll.id || !recorded.sent_at || recorded.poll_message_id!==String(message.key.id))throw new Error("quick_poll_publication_not_recorded");
+        if(poll.game_kind!=='legacy'){
+          const entry={gamePoll:{...poll,group:{group_jid:group.group_jid}},key:message.key,message:message.message,ready:false};
+          pollMessageCache.set(stableId,entry);pollMessageCache.set(String(message.key.id),entry);
+          while(pollMessageCache.size>200){const oldest=[...pollMessageCache.keys()].find(id=>pollMessageCache.get(id)?.ready);if(!oldest)break;pollMessageCache.delete(oldest);}
+          voteQueue=voteQueue.catch(error=>reportServiceError('Quiz/brinde: fila de votos',error)).then(async()=>{
+            entry.ready=true;
+            await drainPendingPollVotes(stableId);
+            if(message.key.id!==stableId)await drainPendingPollVotes(String(message.key.id));
+          });
+          await voteQueue;
+        }
+        auctionNoticeDrain.wake();
+        console.log(`🎁 Brinde publicado: "${poll.title}" (${values.length} opções).`);
+      } catch (error) {
+        // Existing reporter limits this scope to one local line/minute. A bad
+        // item must not prevent the other selected item from being attempted.
+        reportServiceError("Brinde: falha ao publicar", error);
       }
-      // Brinde de carta (2026-09-24): a FOTO do prêmio sai antes da enquete,
-      // com messageId estável — crash no meio reenvia imagem+enquete (o
-      // WhatsApp deduplica os messageIds), igual ao fluxo de dispatches.
-      if (typeof poll.image_url === "string" && /^https:\/\//.test(poll.image_url)) {
-        const announcement = await sock.sendMessage(group.group_jid, { image: { url: poll.image_url }, caption: poll.game_kind === "quiz" ? `🧩 Quiz · ${poll.prize_name}\n\n${poll.title}` : String(poll.title) }, { messageId: dispatchMessageId(poll.id, "quick-announce") });
-        if (!announcement?.key?.id) throw new Error("quick_poll_announcement_send_failed");
-      } else if(poll.game_kind==='quiz') {
-        const introduction=await sock.sendMessage(group.group_jid,{text:`🧩 Quiz · Prêmio: ${poll.prize_name}`},{messageId:dispatchMessageId(poll.id,'quick-announce')});
-        if(!introduction?.key?.id)throw new Error('quick_poll_announcement_send_failed');
-      }
-      const stableId=dispatchMessageId(poll.id,'quick-poll');
-      if(poll.game_kind!=='legacy')pollMessageCache.set(stableId,{gamePoll:poll,ready:false});
-      const message = await sock.sendMessage(group.group_jid, {
-        poll: { name: String(poll.title), values, selectableCount: 1, messageSecret: dispatchPollSecret(`quick-${poll.id}`) },
-      }, { messageId: dispatchMessageId(poll.id, "quick-poll") });
-      if (!message?.key?.id || poll.game_kind!=='legacy' && !message.message) throw new Error("quick_poll_send_failed");
-      const {error:recordError}=await db.from("whatsapp_quick_polls")
-        .update({ sent_at: new Date().toISOString(), poll_message_id: String(message.key.id),...(poll.game_kind!=='legacy'?{poll_message_json:serializeMessage(message.message)}:{}) })
-        .eq("id", poll.id);
-      if(recordError)throw new Error(recordError.message);
-      if(poll.game_kind!=='legacy'){
-        const entry={gamePoll:{...poll,group:{group_jid:group.group_jid}},key:message.key,message:message.message,ready:false};
-        pollMessageCache.set(stableId,entry);pollMessageCache.set(String(message.key.id),entry);
-        while(pollMessageCache.size>200){const oldest=[...pollMessageCache.keys()].find(id=>pollMessageCache.get(id)?.ready);if(!oldest)break;pollMessageCache.delete(oldest);}
-        voteQueue=voteQueue.catch(error=>reportServiceError('Quiz/brinde: fila de votos',error)).then(async()=>{
-          entry.ready=true;
-          await drainPendingPollVotes(stableId);
-          if(message.key.id!==stableId)await drainPendingPollVotes(String(message.key.id));
-        });
-        await voteQueue;
-      }
-      auctionNoticeDrain.wake();
-      console.log(`🎁 Brinde publicado: "${poll.title}" (${values.length} opções).`);
     }
   } catch (error) {
     reportServiceError("Brinde: falha ao publicar", error);

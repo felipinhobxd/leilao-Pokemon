@@ -1,6 +1,6 @@
 # Leilão Pokémon
 
-Proteção de votos no bot 0.2.11: fila local persistente, retentativas e revisão de eventos sem confirmação. A ativação exige carregar a versão nova do supervisor e filho. [Fases e operação](docs/agent/27_PHASED_REVIEW_FIXES.md).
+Bot 0.2.12: brindes/quiz só são confirmados após envio e registro; falhas de grupo mantêm o item pendente. Proteção de votos: fila local persistente, retentativas e revisão de eventos sem confirmação. A ativação exige carregar a versão nova do supervisor e filho. [Fases e operação](docs/agent/27_PHASED_REVIEW_FIXES.md).
 
 Excel com primeiro/último lance por participante e lote, horários de Brasília com segundos/milissegundos e cada troca no formato **valor anterior → novo valor**. Exporte antes da limpeza automática: a planilha inclui somente o histórico ainda disponível. [Detalhes e limites](docs/agent/26_EXCEL_BID_HISTORY.md).
 

@@ -5,7 +5,7 @@ Autorização de 26/10/2026: **parar ao final de cada fase e pedir autorização
 | Fase | Escopo | Estado |
 |---|---|---|
 | 1 | Votos após falha temporária | Código implementado e RPC instalada; ativação completa requer carregar supervisor/filho 0.2.11. Processos reais preservados nesta fase. |
-| 2 | Erro na consulta de grupo não pode virar brinde enviado | Aguardando autorização. |
+| 2 | Erro na consulta de grupo não pode virar brinde enviado | Autorizada e implementada em 26/10; bot 0.2.12 no disco, processos preservados. |
 | 3 | Dois brindes pausados não podem bloquear os seguintes | Aguardando autorização. |
 | 4 | Desbloquear com segurança criação pendente inexistente e recusada | Aguardando autorização. |
 
@@ -48,4 +48,21 @@ Revisões não são reprocessadas/excluídas automaticamente. Antes de decidir u
 - Primeira CI: os **42 testes de navegador passaram em 44,1s**, mas instalação do Chromium + execução ultrapassaram o teto conjunto de 10min. Separados os passos: instalação até 15min, testes mantêm 10min. Não relaxa timeout de caso nem remove verificação. Conferir nova CI do ajuste.
 - Supabase: metadados pontuais, instalação e advisors antes/depois. Sem logs detalhados, backup grande, carga, limpeza, mensagem ou reinício. Meta de Log Ingestion 1GB mantida, sem nova medição/garantia do consumo ativo. Advisors sem novidade: quatro INFO de tabelas privadas ([RLS](https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy)) e WARN preexistente de [proteção contra senhas vazadas](https://supabase.com/docs/guides/auth/password-security#password-strength-and-leaked-password-protection).
 
-Após publicação/CI desta fase, pedir autorização para a **fase 2**, sem iniciá-la automaticamente.
+Fase 1 publicada: CI [40366389765](https://github.com/felipinhobxd/leilao-Pokemon/actions/runs/40366389765) e deployment aprovados. Fase 2 autorizada explicitamente em 26/10/2026.
+
+## Fase 2 — confirmação real de publicação
+
+`sendDueQuickPolls()` verifica o erro da consulta do grupo. Grupo ausente/inativo/sem destino e opções insuficientes continuam **pendentes**, sem gravar `sent_at` fictício. Exigem corrigir a configuração ou cancelar o item; a fila não deve concluir alegando publicação inexistente. O painel continua mostrando o agendamento pendente, sem novo estado persistido de erro nesta fase.
+
+Envio só é tentado com socket pronto. Uma falha fica isolada ao item e permite tentar o outro já selecionado. A seleção de dois itens antes do filtro de pausa continua sendo a **fase 3**, ainda não autorizada; dois itens permanentemente inválidos também podem reter essa janela até correção/cancelamento.
+
+Após confirmação do socket, o UPDATE retorna `id,sent_at,poll_message_id` na própria resposta. Zero linhas, resposta incompatível ou erro não ativam o cache de votos nem anunciam sucesso local. Se o UPDATE acusa erro, uma leitura pontual tenta confirmar se ele foi efetivado apesar da resposta perdida. Só libera votos se encontrar o mesmo ID de mensagem e `sent_at` preenchido. Se ambas as respostas falharem após um commit, a confirmação continua inconclusiva: conferir antes de intervir, sem apagar a fila local de votos ou republicar manualmente por inferência.
+
+IDs determinísticos de anúncio/enquete, segredo da enquete, serialização e fila durável da fase 1 preservados. IDs estáveis reduzem o risco de repetição; não representam garantia transacional entre WhatsApp e banco. Não reconstrói automaticamente brindes historicamente marcados como enviados pelo código antigo.
+
+- **Bot 0.2.12 no disco**; supervisor/filho em execução preservados. Ativação completa das fases 1/2 exige reinício planejado de ambos, sem disputa ativa.
+- Sem migration, alteração de dados reais, backup, mensagem de teste real ou nova consulta periódica. UPDATE confirma na mesma requisição; leitura adicional apenas quando sua resposta falha. Reporter existente limita esse escopo a uma linha local/minuto. Sem nova medição/garantia do consumo do Supabase.
+- **20 testes novos** executam a função real com fronteiras de rede simuladas: falhas de consulta/envio/gravação, zero linhas, confirmação perdida/recuperada, retentativa com os mesmos IDs/segredo, opções inválidas, pausa, socket desconectado e compatibilidade com brindes antigos. Incluídos no `check` do bot/CI.
+- Validação local: **150 testes raiz e 108 testes do bot**, check do bot, typecheck, build e smoke de autenticação aprovados. Dois testes usam o cliente Supabase instalado com transporte local simulado e conferem o retorno da atualização na mesma requisição. Sem alteração de SQL/UI; a CI completa também verifica essas áreas antes de encerrar a fase.
+
+Ao concluir publicação/CI, **parar e pedir autorização para a fase 3**. Fase 4 também requer autorização própria.

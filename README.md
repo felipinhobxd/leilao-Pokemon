@@ -1,5 +1,7 @@
 # Leilão Pokémon
 
+Criação em lote e individual: recusa de validação com ausência confirmada libera a edição; falhas incertas preservam a operação. O identificador e os dados enviados podem ser restaurados na mesma sessão, inclusive após desbloquear a edição. [Revisão em quatro fases](docs/agent/27_PHASED_REVIEW_FIXES.md).
+
 Bot 0.2.13: brindes de filas pausadas não bloqueiam os próximos elegíveis; brindes/quiz só são confirmados após envio e registro. Proteção de votos: fila local persistente, retentativas e revisão de eventos sem confirmação. A ativação exige carregar a versão nova do supervisor e filho. [Fases e operação](docs/agent/27_PHASED_REVIEW_FIXES.md).
 
 Excel com primeiro/último lance por participante e lote, horários de Brasília com segundos/milissegundos e cada troca no formato **valor anterior → novo valor**. Exporte antes da limpeza automática: a planilha inclui somente o histórico ainda disponível. [Detalhes e limites](docs/agent/26_EXCEL_BID_HISTORY.md).

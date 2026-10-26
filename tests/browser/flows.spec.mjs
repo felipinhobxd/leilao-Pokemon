@@ -52,10 +52,83 @@ test('unavailable backup metadata and offline legacy supervisor never show a val
  await expect(card.getByText(/A limpeza aguarda uma nova cópia válida/)).toBeVisible();
 });
 async function addQuiz(page){await page.goto('/auctions/new');await page.getByRole('button',{name:'Adicionar sem imagem',exact:true}).click();await page.getByLabel('Nome',{exact:true}).fill('Pikachu ex');await page.getByLabel('Tipo da carta 1',{exact:true}).selectOption('quiz');await page.getByLabel('Pergunta do quiz',{exact:true}).fill('Qual é a evolução do Pikachu?');await page.getByLabel('Opções da enquete (uma por linha, 2 a 12)',{exact:true}).fill(['Pichu','Raichu','Charizard'].join(String.fromCharCode(10)));await page.getByLabel('Única opção correta',{exact:true}).selectOption('1');}
-async function review(page){await page.getByRole('button',{name:'Continuar para valores →',exact:true}).click();await page.getByRole('button',{name:'Continuar para publicação →',exact:true}).click();await page.getByRole('button',{name:'Revisar fila →',exact:true}).click();}
+async function review(page,publishNow=false){await page.getByRole('button',{name:'Continuar para valores →',exact:true}).click();await page.getByRole('button',{name:'Continuar para publicação →',exact:true}).click();if(publishNow)await page.getByRole('radio',{name:'▶ Agora',exact:true}).check();await page.getByRole('button',{name:'Revisar fila →',exact:true}).click();}
 test('type is explicit and correct answer is private in the review',async({page})=>{await addQuiz(page);await expect(page.getByText('Configuração do quiz',{exact:true})).toBeVisible();await page.getByLabel('Tipo da carta 1',{exact:true}).selectOption('giveaway');await expect(page.getByLabel('Pergunta do quiz',{exact:true})).toHaveCount(0);await expect(page.getByLabel('Única opção correta',{exact:true})).toHaveValue('1');await page.getByLabel('Tipo da carta 1',{exact:true}).selectOption('quiz');await expect(page.getByLabel('Pergunta do quiz',{exact:true})).toHaveValue('Qual é a evolução do Pikachu?');await review(page);await page.getByText('Prévia da enquete no WhatsApp',{exact:true}).click();await expect(page.getByText('Raichu · correta (somente no painel)',{exact:true})).toBeVisible();});
 test('an uncertain creation resends exactly the same event and time',async({page,request})=>{await request.post('/__fixture/config',{data:{batchFailures:1}});await addQuiz(page);await review(page);await page.getByRole('button',{name:'▶ Iniciar fila agora',exact:true}).click();await expect(page.getByText('Confirmação de publicação pendente',{exact:true})).toBeVisible();await page.getByRole('button',{name:'Confirmar envio anterior',exact:true}).click();await expect(page.getByRole('heading',{name:'0 de 1 publicados'})).toBeVisible();const calls=await (await request.get('/__fixture/calls')).json();const posts=calls.filter(x=>x.url==='/api/auctions/batch');expect(posts).toHaveLength(2);expect(posts[0].body).toEqual(posts[1].body);});
 test('a lost response after commit recovers without posting the queue twice',async({page,request})=>{await request.post('/__fixture/config',{data:{batchFailures:1,commitOnFailure:true}});await addQuiz(page);await review(page);await page.getByRole('button',{name:'▶ Iniciar fila agora',exact:true}).click();page.on('dialog',dialog=>dialog.accept());await page.reload();await page.getByRole('button',{name:'Confirmar envio anterior',exact:true}).click();await expect(page.getByRole('heading',{name:'0 de 1 publicados'})).toBeVisible();const calls=await (await request.get('/__fixture/calls')).json();expect(calls.filter(x=>x.url==='/api/auctions/batch')).toHaveLength(1);});
+
+for(const reload of [false,true])test(`rejected batch unlocks preserved quiz for editing, reload=${reload}`,async({page,request})=>{
+ await request.post('/__fixture/config',{data:{batchResponses:[{status:503},{status:400},{status:201}]}});
+ await addQuiz(page);await review(page);await page.getByRole('button',{name:'▶ Iniciar fila agora',exact:true}).click();
+ await expect(page.getByText('Confirmação de publicação pendente',{exact:true})).toBeVisible();
+ if(reload){page.on('dialog',dialog=>dialog.accept());await page.reload();}
+ await page.getByRole('button',{name:'Confirmar envio anterior',exact:true}).click();
+ await expect(page.getByRole('alert')).toContainText('A criação não foi encontrada');
+ await expect(page.getByText('Confirmação de publicação pendente',{exact:true})).toHaveCount(0);
+ if(reload){await page.reload();await expect(page.getByText('Confirmação de publicação pendente',{exact:true})).toHaveCount(0);}
+ if(!reload)await page.getByRole('button',{name:'1. Cartas',exact:true}).click();
+ await expect(page.getByLabel('Nome',{exact:true})).toBeEnabled();
+ await expect(page.getByLabel('Pergunta do quiz',{exact:true})).toHaveValue('Qual é a evolução do Pikachu?');
+ await expect(page.getByLabel('Única opção correta',{exact:true})).toHaveValue('1');
+ await page.getByLabel('Nome',{exact:true}).fill('Pikachu revisado');await review(page,true);
+ await page.getByRole('button',{name:'▶ Iniciar fila agora',exact:true}).click();
+ await expect(page.getByRole('heading',{name:'0 de 1 publicados'})).toBeVisible();
+ const posts=(await(await request.get('/__fixture/calls')).json()).filter(call=>call.url==='/api/auctions/batch');
+ expect(posts).toHaveLength(3);expect(new Set(posts.map(call=>call.body.eventId)).size).toBe(1);
+ expect(posts[2].body.items[0].card.name).toBe('Pikachu revisado');
+});
+
+async function singleReview(page){
+ await page.goto('/auctions/new/single');await page.getByLabel('Nome',{exact:true}).fill('Pikachu');
+ await page.getByLabel('Número da carta',{exact:true}).fill('25');
+ await page.getByRole('button',{name:'Continuar →',exact:true}).click();
+ await page.getByLabel('Lance inicial',{exact:true}).fill('10');await page.getByLabel('Incremento',{exact:true}).fill('2');
+ await page.getByRole('button',{name:'Continuar →',exact:true}).click();
+ await page.getByRole('button',{name:'Continuar →',exact:true}).click();
+}
+for(const reload of [false,true])test(`rejected single auction unlocks preserved fields, reload=${reload}`,async({page,request})=>{
+ await request.post('/__fixture/config',{data:{singleResponses:[{status:503},{status:409},{status:201}]}});
+ await singleReview(page);await page.getByRole('button',{name:'PUBLICAR AGORA',exact:true}).click();
+ await expect(page.getByRole('button',{name:'Confirmar envio anterior',exact:true})).toBeVisible();
+ if(reload){page.on('dialog',dialog=>dialog.accept());await page.reload();}
+ await page.getByRole('button',{name:'Confirmar envio anterior',exact:true}).click();
+ await expect(page.getByRole('alert')).toContainText('A criação não foi encontrada');
+ await expect(page.getByRole('button',{name:'Confirmar envio anterior',exact:true})).toHaveCount(0);
+ if(reload){await page.reload();await expect(page.getByRole('button',{name:'Confirmar envio anterior',exact:true})).toHaveCount(0);}
+ await page.getByRole('button',{name:'← Voltar',exact:true}).click();await page.getByRole('button',{name:'← Voltar',exact:true}).click();
+ await expect(page.getByLabel('Lance inicial',{exact:true})).toHaveValue('10');await expect(page.getByLabel('Incremento',{exact:true})).toHaveValue('2');
+ await page.getByRole('radio',{name:'Agora',exact:true}).check();
+ await page.getByRole('button',{name:'← Voltar',exact:true}).click();
+ await expect(page.getByLabel('Número da carta',{exact:true})).toHaveValue('25');
+ await page.getByLabel('Nome',{exact:true}).fill('Pikachu revisado');
+ for(let n=0;n<3;n++)await page.getByRole('button',{name:'Continuar →',exact:true}).click();
+ await page.getByRole('button',{name:'PUBLICAR AGORA',exact:true}).click();
+ await expect(page.getByRole('heading',{name:'Lote #1 · Pikachu revisado',exact:true})).toBeVisible();
+ const posts=(await(await request.get('/__fixture/calls')).json()).filter(call=>call.url==='/api/auctions/new'&&call.method==='POST');
+ expect(posts).toHaveLength(3);expect(new Set(posts.map(call=>call.body.eventId)).size).toBe(1);
+ expect(posts[2].body.card.name).toBe('Pikachu revisado');
+});
+
+for(const kind of ['batch','single'])test(`${kind} recovery failure keeps the form frozen and does not resend`,async({page,request})=>{
+ await request.post('/__fixture/config',{data:{[kind+'Responses']:[{status:503}],recoveryFailures:1}});
+ if(kind==='batch'){await addQuiz(page);await review(page);await page.getByRole('button',{name:'▶ Iniciar fila agora',exact:true}).click();}
+ else{await singleReview(page);await page.getByRole('button',{name:'PUBLICAR AGORA',exact:true}).click();}
+ await page.getByRole('button',{name:'Confirmar envio anterior',exact:true}).click();
+ await expect(page.getByRole('alert')).toContainText('Confirmação indisponível');
+ await expect(page.getByRole('button',{name:'Confirmar envio anterior',exact:true})).toBeVisible();
+ const endpoint=kind==='batch'?'/api/auctions/batch':'/api/auctions/new';
+ const posts=(await(await request.get('/__fixture/calls')).json()).filter(call=>call.url===endpoint&&call.method==='POST');
+ expect(posts).toHaveLength(1);
+});
+
+test('a lost single creation response recovers after reload without a second POST',async({page,request})=>{
+ await request.post('/__fixture/config',{data:{singleResponses:[{status:503,commit:true}]}});
+ await singleReview(page);await page.getByRole('button',{name:'PUBLICAR AGORA',exact:true}).click();
+ await expect(page.getByRole('button',{name:'Confirmar envio anterior',exact:true})).toBeVisible();
+ page.on('dialog',dialog=>dialog.accept());await page.reload();await page.getByRole('button',{name:'Confirmar envio anterior',exact:true}).click();
+ await expect(page.getByRole('heading',{name:'Lote #1 · Pikachu',exact:true})).toBeVisible();
+ const posts=(await(await request.get('/__fixture/calls')).json()).filter(call=>call.url==='/api/auctions/new'&&call.method==='POST');expect(posts).toHaveLength(1);
+});
 test('saving, adding another detail and reopening preserves both images',async({page,request})=>{await page.goto('/auctions/new');await page.getByRole('button',{name:'Adicionar sem imagem',exact:true}).click();await page.getByLabel('Nome',{exact:true}).fill('Pikachu');await page.locator('.draft-fields-extra input[type=file]').setInputFiles(photo('a.png',[255,0,0]));await page.getByRole('button',{name:'💾 Salvar rascunho',exact:true}).click();await expect(page.getByText('Salvo',{exact:true})).toBeVisible();await page.locator('.draft-fields-extra input[type=file]').setInputFiles(photo('b.png',[0,255,0]));await page.getByRole('button',{name:'💾 Salvar rascunho',exact:true}).click();await expect(page.getByText('Salvo',{exact:true})).toBeVisible();const calls=await (await request.get('/__fixture/calls')).json();const posts=calls.filter(x=>x.url==='/api/auctions/drafts'&&x.method==='POST');expect(posts.at(-1).body.state.cards[0].extraImages).toHaveLength(2);await page.reload();await page.getByRole('button',{name:'Abrir',exact:true}).click();await expect(page.getByRole('img',{name:'Detalhe 1',exact:true})).toHaveCount(1);await expect(page.getByRole('img',{name:'Detalhe 2',exact:true})).toHaveCount(1);});
 test('large lists keep order, paginate and focus the invalid card',async({page})=>{await page.goto('/auctions/new');for(let i=0;i<13;i++)await page.getByRole('button',{name:'Adicionar sem imagem',exact:true}).click();await expect(page.locator('.draft-card')).toHaveCount(12);await page.getByRole('button',{name:'Continuar para valores →',exact:true}).click();await expect(page.locator('[aria-invalid="true"]')).toBeFocused();await page.getByRole('button',{name:'Próxima →',exact:true}).click();await expect(page.locator('.draft-card')).toHaveCount(1);await expect(page.getByLabel('Tipo da carta 13',{exact:true})).toBeVisible();});
 test('dashboard prioritizes operation, filters purchases and passes automated accessibility',async({page})=>{

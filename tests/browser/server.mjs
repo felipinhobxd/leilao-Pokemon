@@ -23,12 +23,18 @@ http.createServer(async(req,res)=>{
  if(path==='/style.css'){res.setHeader('Content-Type','text/css');return res.end(['app/globals.css','app/auctions/new/wizard.css','app/auctions/new/batch-wizard.css'].map(p=>fs.readFileSync(root+'/'+p,'utf8')).join(String.fromCharCode(10)));}
  if(path.startsWith('/api/')){
   const body=req.method==='POST'?await readBody():null;calls.push({url:req.url,method:req.method,body});
-  if(path==='/api/auctions/batch'){
-   const result={queue:{id}};
-   if(config.batchFailures-->0){if(config.commitOnFailure)creations.set(body.eventId,result);return json(res,{error:'Falha simulada ao confirmar publicação'},503);}
+  if(path==='/api/auctions/batch'||path==='/api/auctions/new'&&req.method==='POST'){
+   const result=path==='/api/auctions/batch'?{queue:{id}}:{auction:{id,lot_number:body.auction?.lot_number??1}};
+   const next=config[path==='/api/auctions/batch'?'batchResponses':'singleResponses']?.shift();
+   if(next){if(next.commit||next.status<400)creations.set(body.eventId,result);return json(res,next.status<400?{data:result}:{error:'Recusa simulada da criação'},next.status);}
+   if(path==='/api/auctions/batch'&&config.batchFailures-->0){if(config.commitOnFailure)creations.set(body.eventId,result);return json(res,{error:'Falha simulada ao confirmar publicação'},503);}
    creations.set(body.eventId,result);return json(res,{data:result},201);
   }
-  if(path==='/api/auctions/recover')return json(res,{data:creations.get(url.searchParams.get('eventId'))??null});
+  if(path==='/api/auctions/recover'){
+   if(config.recoveryFailures>0){config.recoveryFailures--;return json(res,{error:'Confirmação indisponível'},503);}
+   return json(res,{data:creations.get(url.searchParams.get('eventId'))??null});
+  }
+  if(path==='/api/auctions/new/status')return json(res,{auction:{id,lotNumber:1,status:'open'},card:{name:'Pikachu',hasImage:false},group:groups[0],dispatch:{status:'sent',announcementSent:true,pollSent:true},bot:{online:true,connected:true}});
   if(path==='/api/auctions/queue')return json(res,url.searchParams.has('latest')?{queue:null}:queue);
   if(path==='/api/auctions/drafts'){
    if(req.method==='POST'){if(config.draftFailures-->0)return json(res,{error:'Falha simulada ao salvar'},503);drafts.set(body.draftId,{id:body.draftId,title:body.title,payload:body.state,updated_at:new Date().toISOString()});return json(res,{draft:{id:body.draftId}});}

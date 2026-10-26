@@ -7,7 +7,7 @@ Autorização de 26/10/2026: **parar ao final de cada fase e pedir autorização
 | 1 | Votos após falha temporária | Código implementado e RPC instalada; ativação completa requer carregar supervisor/filho 0.2.11. Processos reais preservados nesta fase. |
 | 2 | Erro na consulta de grupo não pode virar brinde enviado | Autorizada e implementada em 26/10; bot 0.2.12 no disco, processos preservados. |
 | 3 | Dois brindes pausados não podem bloquear os seguintes | Autorizada e implementada em 26/10; bot 0.2.13 no disco, processos preservados. |
-| 4 | Desbloquear com segurança criação pendente inexistente e recusada | Aguardando autorização. |
+| 4 | Desbloquear com segurança criação pendente inexistente e recusada | Autorizada e implementada em 26/10; alteração no painel, bot 0.2.13 preservado. |
 
 ## Fase 1 — fila local durável
 
@@ -81,4 +81,23 @@ A pausa é observada no snapshot da seleção; esta correção não cria claim d
 - **150 testes raiz, 112 testes do bot**, check do bot, typecheck, build e smoke de autenticação locais aprovados. Conferir CI completa e deployment do commit final antes de encerrar a fase.
 - Sem mensagem real, backup, logs detalhados, consulta periódica adicional ou novo timer. Uma leitura pontual de validação na produção; consumo de Log Ingestion não medido e sem garantia sobre o bot em execução.
 
-Após publicação/CI da fase 3, **parar e pedir autorização para a fase 4**, sobre a criação que permanece pendente após uma recusa definitiva.
+Fase 3 publicada: commit `afaf7371`, [CI 40410780296](https://github.com/felipinhobxd/leilao-Pokemon/actions/runs/40410780296) e deployment aprovados. A fase 4 recebeu autorização explícita depois dessa conclusão.
+
+## Fase 4 — recusa definitiva libera edição com proteção contra duplicação
+
+Os cadastros **em lote e individual** usam `lib/auction-creation.ts` para confirmar a mesma operação. A tentativa incerta mantém ID, payload e horário congelados. Ao confirmar, a recuperação existente é consultada primeiro; se houver criação, ela é exibida sem outro POST. Se estiver ausente, o mesmo POST é repetido.
+
+Respostas 400/409/415/422 só liberam edição depois de **outra recuperação bem-sucedida, após a recusa, retornar `data: null`**. Se essa consulta encontrar um resultado, ele é recuperado. Erros de rede, 5xx, 408/429, sessão/permissão indisponível, JSON inválido, recuperação malformada ou sucesso sem o identificador esperado continuam pendentes. O painel não deduz ausência de uma consulta que falhou nem anuncia sucesso sem ID.
+
+Depois da recusa confirmada, os campos são liberados e a mensagem pede revisar os dados. O ID permanece o mesmo, inclusive após recarregar a página: o registro da sessão passa a `editable: true`, e deixa de representar confirmação pendente. Um novo envio congela novamente o payload sob esse ID; sucesso confirmado remove o registro. A identidade da operação fica limitada ao usuário, modalidade e sessão/aba atuais. Se o navegador bloquear o armazenamento, somente o estado em memória é preservado.
+
+A recuperação de sessão restaura campos a partir do payload salvo: cartas/ordem, URLs já enviadas, valores e valores personalizados, opções/resposta/pergunta do quiz, grupo, intervalo e horários em Brasília. Após recarregar, o agendamento original é mostrado explicitamente; horários vencidos precisam ser revisados ou trocados para Agora depois do desbloqueio. Arquivos locais/blob e metadados que não entravam no payload enviado (como campos extras do brinde) não são reconstruídos. Não é um salvamento automático das edições posteriores à recusa; o rascunho e a proteção de navegação continuam necessários.
+
+A RPC existente `recover_auction_creation` já usa o mesmo advisory lock por evento e confere o operador. Nenhuma alteração de SQL, auth, RLS ou migration nesta fase. Mesmo para uma requisição antiga excepcionalmente atrasada, a nova tentativa no formulário preserva o ID e continua sujeita à idempotência/conflito de payload no banco. Não promete transação entre navegador, requisições e WhatsApp.
+
+- **19 testes novos de unidade/integração local**: recusa inicial e após incerteza, ausência confirmada, commit encontrado antes/depois da recusa, consulta indisponível/malformada, resposta perdida, mesmo ID/payload/horário, restauração de preços/cartas/jogo e sessão editável.
+- **Sete cenários novos de navegador**, executados em desktop e celular: lote/individual com e sem recarregamento, nova recarga após desbloquear, correção e reenvio com o mesmo ID; recuperação indisponível mantém proteção; cadastro individual salvo com resposta perdida é recuperado sem novo POST. Cenário equivalente do lote já existia e permanece.
+- Validação local: **169 testes raiz**, check do bot, typecheck, build e smoke de autenticação aprovados; conferir CI/deployment final. Bot continua **0.2.13**; código e processos reais do bot preservados nesta fase. Não houve mensagem ou criação real para testar.
+- Consultas de recuperação somente por ação explícita: uma antes de repetir operação incerta e uma após recusa de validação. Nenhum timer/polling novo, backup ou leitura de logs de produção. Não mede nem garante o consumo ativo de Log Ingestion.
+
+**As quatro fases de código ficam concluídas após a CI desta publicação.** Parar, apresentar resultados e pendências de ativação. O supervisor/filho das fases anteriores ainda precisam carregar a versão nova em reinício planejado, sem disputa ativa; não iniciar outra fase ou reiniciar processos automaticamente.

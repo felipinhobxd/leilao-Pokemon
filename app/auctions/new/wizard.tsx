@@ -3,6 +3,7 @@
 import {GuardedLink as Link,useNavigationGuard} from "@/app/navigation-guard";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {pendingCreationKey,readPendingCreation,storePendingCreation} from "@/lib/wizard-state";
+import {CreationRejectedError,restoreCreationCard,submitAuctionCreation} from "@/lib/auction-creation";
 import {brasiliaInputToIso,toBrasiliaInput} from "@/lib/brasilia-time";
 import { useRouter } from "next/navigation";
 import {
@@ -37,7 +38,23 @@ export default function NewAuctionWizard(){
   const pending=useRef<Record<string,unknown>|null>(null);
   const [pendingConfirmation,setPendingConfirmation]=useState(false);
   async function authFetch(url:string,init?:RequestInit){const {data}=await db.auth.getSession();if(!data.session)throw new Error("Entre novamente no painel.");return fetch(url,{...init,cache:"no-store",headers:{...init?.headers,Authorization:`Bearer ${data.session.access_token}`}})}
-  useEffect(()=>{void(async()=>{const {data}=await db.auth.getSession();setSession(data.session);setReady(true);if(!data.session)return;const r=await authFetch("/api/auctions/new");const b=await r.json();if(!r.ok)throw new Error(b.error??"Não foi possível preparar o leilão.");setGroups(b.groups??[]);setForm(f=>({...f,lotNumber:String(b.suggestedLotNumber??""),groupId:b.defaultGroupId??b.groups?.[0]?.id??""}));const restored=readPendingCreation(sessionStorage,pendingCreationKey("single",data.session.user.id));if(restored){creationId.current=restored.eventId;pending.current=restored.payload;const card=restored.payload.card as Record<string,unknown>;const auction=restored.payload.auction as Record<string,unknown>;setForm(f=>({...f,name:String(card.name??""),imageUrl:String(card.image_url??""),lotNumber:String(auction.lot_number??""),groupId:String(auction.group_id??""),publication:Date.parse(String(auction.scheduled_at))>Date.now()+30000?"scheduled":"now"}));setStep(4);setPendingConfirmation(true);}})().catch(e=>setError(e instanceof Error?e.message:"Falha ao carregar."))},[db]);
+  useEffect(()=>{void(async()=>{
+    const {data}=await db.auth.getSession();setSession(data.session);setReady(true);if(!data.session)return;
+    const r=await authFetch("/api/auctions/new");const b=await r.json();
+    if(!r.ok)throw new Error(b.error??"Não foi possível preparar o leilão.");
+    setGroups(b.groups??[]);setForm(f=>({...f,lotNumber:String(b.suggestedLotNumber??""),groupId:b.defaultGroupId??b.groups?.[0]?.id??""}));
+    const restored=readPendingCreation(sessionStorage,pendingCreationKey("single",data.session.user.id));
+    if(restored){
+      creationId.current=restored.eventId;pending.current=restored.editable?null:restored.payload;edited.current=true;
+      const card=restoreCreationCard(restored.payload),auction=restored.payload.auction as Record<string,unknown>;
+      setForm(f=>({...f,name:card.name,cardNumber:card.cardNumber,variant:card.variant,condition:card.condition,language:card.language,
+        imageUrl:card.imageUrl,extraImages:card.extraImages,lotNumber:card.lotNumber,groupId:String(auction.group_id??""),
+        startingPrice:card.startingPrice,increment:card.increment,buyout:card.buyout,optionCount:card.optionCount,
+        pricingMode:card.pricingMode,customValues:card.customValues,customBuyoutLast:card.customBuyoutLast,
+        publication:"scheduled",scheduledAt:localInput(String(auction.scheduled_at??"")),endAt:auction.scheduled_end_at?localInput(String(auction.scheduled_end_at)):""}));
+      setStep(4);setPendingConfirmation(!restored.editable);
+    }
+  })().catch(e=>setError(e instanceof Error?e.message:"Falha ao carregar."))},[db]);
   useEffect(()=>{if(!imageFile){setPreviewUrl("");return}const url=URL.createObjectURL(imageFile);setPreviewUrl(url);return()=>URL.revokeObjectURL(url)},[imageFile]);
   const start=Number(form.startingPrice), increment=Number(form.increment), buyout=form.buyout.trim()?Number(form.buyout):null, optionCount=Number(form.optionCount||DEFAULT_POLL_OPTIONS);
   const plan=useMemo(()=>buildPollPlan(start,increment,buyout,optionCount),[start,increment,buyout,optionCount]);
@@ -73,11 +90,14 @@ export default function NewAuctionWizard(){
   async function watchPublication(auctionId:string){setWatching(true);try{for(let i=0;i<20;i++){const r=await authFetch(`/api/auctions/new/status?auctionId=${encodeURIComponent(auctionId)}`);const b=await r.json();if(!r.ok)throw new Error(b.error??"Não foi possível acompanhar o envio.");setProgress(b);if(b.dispatch?.status==="sent"&&b.auction?.status==="open")break;if(!b.bot?.online||b.dispatch?.status==="failed")break;await wait(1000)}}catch(e){setError(e instanceof Error?e.message:"Falha ao acompanhar o envio.")}finally{setWatching(false)}}
   async function publish(){if(!pending.current&&!validate(4))return;setBusy(true);setError("");try{if(!pending.current){const uploaded=await upload();const imageUrl=uploaded.imageUrl;const scheduledAt=form.publication==="now"?new Date().toISOString():brasiliaInputToIso(form.scheduledAt)!;pending.current={eventId:creationId.current,card:{name:form.name,card_number:form.cardNumber,variant:form.variant,condition:form.condition,language:form.language,image_url:imageUrl,extra_images:uploaded.extraImages},auction:{lot_number:form.lotNumber?Number(form.lotNumber):null,starting_price:start,bid_increment:increment,buyout_price:buyout,option_count:optionCount,scheduled_at:scheduledAt,scheduled_end_at:form.endAt?brasiliaInputToIso(form.endAt)!:null,group_id:form.groupId,...(form.pricingMode==="custom"?{pricing_mode:"custom",custom_values:customValues,custom_buyout_last:form.customBuyoutLast}:{pricing_mode:"increment"})}};}
     const previous=pendingConfirmation;setPendingConfirmation(true);if(session&&pending.current)storePendingCreation(sessionStorage,pendingCreationKey("single",session.user.id),{eventId:creationId.current,payload:pending.current});
-    let b:any;
-    if(previous){const response=await authFetch(`/api/auctions/recover?eventId=${creationId.current}`);const recovered=await response.json();if(!response.ok)throw Error(recovered.error??"Não foi possível confirmar o envio.");if(recovered.data)b=recovered;}
-    if(!b){const r=await authFetch("/api/auctions/new",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(pending.current)});b=await r.json();if(!r.ok){if(r.status<500&&!previous){pending.current=null;setPendingConfirmation(false);if(session)storePendingCreation(sessionStorage,pendingCreationKey("single",session.user.id),null);}throw Error(b.error??"Não foi possível confirmar a criação.");}}
+    const data=await submitAuctionCreation({authFetch,kind:"single",operation:{eventId:creationId.current,payload:pending.current!},retry:previous});
     const scheduledAt=String((pending.current?.auction as Record<string,unknown>)?.scheduled_at??"");pending.current=null;setPendingConfirmation(false);if(session)storePendingCreation(sessionStorage,pendingCreationKey("single",session.user.id),null);
-    const auctionId=String(b.data?.auction?.id??"");const nextCreated={auctionId,lot:Number(b.data?.auction?.lot_number??form.lotNumber),name:form.name,publication:form.publication,scheduledAt};setCreated(nextCreated);setBusy(false);if(form.publication==="now"&&auctionId)void watchPublication(auctionId)}catch(e){setError(e instanceof Error?e.message:"Falha ao publicar.");setBusy(false)}}
+    const auctionId=String(data.auction?.id??"");const nextCreated={auctionId,lot:Number(data.auction?.lot_number??form.lotNumber),name:form.name,publication:form.publication,scheduledAt};setCreated(nextCreated);setBusy(false);if(form.publication==="now"&&auctionId)void watchPublication(auctionId)}catch(e){
+      if(e instanceof CreationRejectedError){
+        if(session&&pending.current)storePendingCreation(sessionStorage,pendingCreationKey("single",session.user.id),{eventId:creationId.current,payload:pending.current,editable:true});
+        pending.current=null;setPendingConfirmation(false);
+      }
+      setError(e instanceof Error?e.message:"Falha ao publicar.");setBusy(false)}}
   if(!ready)return <main id="main-content" tabIndex={-1} className="shell"><p>Carregando…</p></main>;
   if(!session)return <main id="main-content" tabIndex={-1} className="shell"><section className="panel"><h1>Novo leilão</h1><p className="muted">Entre primeiro no painel.</p><Link href="/">Voltar</Link></section></main>;
   if(created){const done=progress?.dispatch.status==="sent"&&progress?.auction.status==="open";const offline=progress&&!progress.bot.online;return <main id="main-content" tabIndex={-1} className="shell"><section className="panel wizard-success"><p className="eyebrow">PUBLICAÇÃO</p><h1>Lote #{created.lot} · {created.name}</h1><div className="publish-progress"><p>✅ Lote #{created.lot} salvo</p>{created.publication==="scheduled"?<p>🕒 Envio agendado para {new Date(created.scheduledAt).toLocaleString("pt-BR",{timeZone:"America/Sao_Paulo"})}</p>:<>{!progress&&watching&&<p>⏳ Aguardando o bot…</p>}{offline&&<><p>🔴 Bot offline</p><p className="muted">O dispatch continua salvo e será retomado automaticamente quando o bot voltar.</p></>}{progress&&!offline&&<><p>{progress.dispatch.announcementSent?"✅":"⏳"} {progress.card.hasImage?"Imagem enviada":"Anúncio enviado"}</p><p>{progress.dispatch.pollSent?"✅":"⏳"} Enquete enviada</p><p>{progress.auction.status==="open"?"✅":"⏳"} Leilão aberto</p></>}{progress?.dispatch.status==="failed"&&<p className="alert">Falha no envio: {progress.dispatch.lastError??"o bot tentará conforme a política de retry."}</p>}{done&&<p className="notice">Tudo certo. O leilão já está ao vivo no WhatsApp e no painel.</p>}</>}</div><div className="actions"><button onClick={()=>router.push("/")}>Voltar ao painel</button><button onClick={()=>router.push("/whatsapp")}>Central WhatsApp</button></div></section></main>}

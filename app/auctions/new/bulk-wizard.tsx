@@ -7,6 +7,7 @@ import DraftToolbar from "./draft-toolbar";
 import SelectionEditor from "./selection-editor";
 import {applyDraftBulkEdit,undoDraftBulkEdit,type BulkEditAction,type BulkEditChange} from "@/lib/draft-bulk-edit";
 import {mergeImageUrls,removeUploadedFile,queuePollingDelay,pendingCreationKey,readPendingCreation,storePendingCreation} from "@/lib/wizard-state";
+import {CreationRejectedError,restoreBatchCreation,submitAuctionCreation} from "@/lib/auction-creation";
 import {parsePollGame} from "@/lib/poll-game";
 import { defaultCommonEndInput, validateCommonDeadline } from "@/lib/common-deadline";
 import { useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
@@ -185,7 +186,15 @@ export default function BulkAuctionWizard() {
       setSuggestedLot(lot); setFirstLot(String(lot)); setGroups(body.groups ?? []);
       setGroupId(body.defaultGroupId ?? body.groups?.[0]?.id ?? "");
       const pending=readPendingCreation(sessionStorage,pendingCreationKey("batch",data.session.user.id));
-      if(pending){submission.current=pending;creationId.current=pending.eventId;setPendingConfirmation(true);return;}
+      if(pending){
+        submission.current=pending.editable?null:pending;creationId.current=pending.eventId;setPendingConfirmation(!pending.editable);
+        const state=restoreBatchCreation(pending.payload);
+        setCards(state.cards.map((card,index)=>({...draftFor(null,"",Number(card.lotNumber)||index+1,index===0),...card,
+          giveawayKind:card.giveawayKind??"giveaway",giveawayCorrectIndex:card.giveawayCorrectIndex??"",giveawayQuestion:card.giveawayQuestion??""})));
+        setFirstLot(state.firstLot);setGroupId(state.groupId);setIntervalValue(state.intervalValue);setIntervalUnit(state.intervalUnit);
+        setPublication(state.publication);setScheduledInput(state.scheduledInput);setEndMode(state.endMode??"duration");setCommonEndInput(state.commonEndInput??"");
+        return;
+      }
       // Rascunhos carregam ANTES do possível redirecionamento para a fila —
       // o painel "Rascunhos salvos" precisa existir mesmo com fila ativa (o
       // botão "Novo leilão" da tela da fila volta para este wizard).
@@ -663,14 +672,18 @@ export default function BulkAuctionWizard() {
     const pending=submission.current;if(!pending)return;
     setPendingConfirmation(true);
     if(session)storePendingCreation(sessionStorage,pendingCreationKey("batch",session.user.id),pending);
-    let body:any;
-    if(retry){const response=await authFetch(`/api/auctions/recover?eventId=${encodeURIComponent(pending.eventId)}`);const recovered=await response.json();if(!response.ok)throw Error(recovered.error??"Não foi possível confirmar a tentativa anterior.");if(recovered.data)body=recovered;}
-    if(!body){
-      const response=await authFetch("/api/auctions/batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({eventId:pending.eventId,...pending.payload})});
-      body=await response.json();
-      if(!response.ok){if(response.status<500 && !retry){submission.current=null;setPendingConfirmation(false);if(session)storePendingCreation(sessionStorage,pendingCreationKey("batch",session.user.id),null);}throw Error(body.error??"Não foi possível confirmar a criação. Repita a mesma operação.");}
+    let data;
+    try{data=await submitAuctionCreation({authFetch,kind:"batch",operation:pending,retry});}
+    catch(error){
+      if(error instanceof CreationRejectedError){
+        // Keep creationId: even an unusually delayed old request must share
+        // the same DB idempotency lock after the operator edits the form.
+        submission.current=null;setPendingConfirmation(false);
+        if(session)storePendingCreation(sessionStorage,pendingCreationKey("batch",session.user.id),{...pending,editable:true});
+      }
+      throw error;
     }
-      const id = String(body.data?.queue?.id ?? ""); if (!id) throw new Error("Fila criada sem identificador.");
+      const id = String(data.queue?.id ?? ""); if (!id) throw new Error("Fila criada sem identificador.");
       setQueueId(id); setUploadProgress(""); window.history.replaceState(null, "", `/auctions/new?queue=${encodeURIComponent(id)}`);
       // Publicou = o rascunho virou leilão de verdade: apaga sozinho
       // (decisão do operador). Fire-and-forget — falha só deixa um rascunho

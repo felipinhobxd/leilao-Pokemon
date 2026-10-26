@@ -106,6 +106,9 @@ declare
   -- ADDITION (P-17, 2026-10-08): contadores do prune.
   n_audit_events bigint:=0; n_commands bigint:=0;
 begin
+  if current_setting('transaction_isolation')<>'read committed' then
+    return public.cleanup_backup_blocked(cutoff,'unsupported_cleanup_isolation');
+  end if;
   -- Freeze writes only during this short check/delete transaction. Never
   -- wait behind business writes: contention defers maintenance immediately.
   begin

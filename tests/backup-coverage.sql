@@ -69,4 +69,11 @@ begin
 end $$;
 reset role;
 rollback;
+begin isolation level repeatable read;
+do $$ begin
+ if public.cleanup_old_auctions()->>'reason'<>'unsupported_cleanup_isolation' then
+  raise exception 'stale_transaction_snapshot_not_rejected';
+ end if;
+end $$;
+rollback;
 select 'BACKUP_COVERAGE_OK' as result;

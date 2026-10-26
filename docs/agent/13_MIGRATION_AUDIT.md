@@ -1,5 +1,7 @@
 # 13_MIGRATION_AUDIT — Conferência de produção
 
+> Etapa atual: [23_BACKUP_PROTECTION_PANEL.md](23_BACKUP_PROTECTION_PANEL.md). Confirmação de backup e resultado histórico da limpeza no diagnóstico manual. Migration 20261026033328 instalada (71 locais/79 remotos). Sem iniciar/reiniciar bot; supervisor sem sinal recente.
+
 > Atualização posterior: P-19 implementado em [22_BACKUP_COVERAGE_BEFORE_CLEANUP.md](22_BACKUP_COVERAGE_BEFORE_CLEANUP.md). Recibo confirmado da nuvem e cobertura das linhas antes da limpeza. Código do backup/supervisor alterado, sem reiniciar processos. Migration 20261026014353 instalada, 70 locais/78 remotos. Detalhes/limites no documento 22; trechos anteriores são históricos.
 
 > Estado atual consolidado: [19_SETTLEMENT_PROTECTION_AND_RECOVERY.md](19_SETTLEMENT_PROTECTION_AND_RECOVERY.md) e [18_RELIABILITY_AND_UI_REVIEW.md](18_RELIABILITY_AND_UI_REVIEW.md), bot 0.2.10, Next.js 16.4.3. Seções de versões anteriores abaixo são histórico; não reaplicar migrations ou instruções antigas automaticamente.

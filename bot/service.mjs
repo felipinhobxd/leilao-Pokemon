@@ -573,6 +573,7 @@ async function cleanupOldAuctions() {  if (cleanupBusy || shuttingDown) return;
   cleanupBusy = true;
   try {
     if (!(await ensureCloudBackupForCleanup(new Date(now)))) {
+      operationHealth.cleanup('blocked','backup_unavailable');
       console.warn("Limpeza de leilões antigos adiada: não foi possível confirmar o backup na nuvem do dia.");
       return;
     }
@@ -583,15 +584,18 @@ async function cleanupOldAuctions() {  if (cleanupBusy || shuttingDown) return;
     const { data, error } = await db.rpc("cleanup_old_auctions", { p_hours: hours });
     if (error) {
       console.warn("Limpeza de leilões antigos falhou:", describeError(error));
+      operationHealth.cleanup('failed','cleanup_failed');
       return;
     }
     const deleted = data?.deleted ?? {};
     const total = Object.values(deleted).reduce((sum, count) => sum + Number(count ?? 0), 0);
+    operationHealth.cleanup(data?.blocked ? 'blocked' : 'completed',data?.reason,total);
     if (total > 0) {
       console.log(`Limpeza de leilões antigos (${data?.cutoff ?? "12h"}): ${total} registro(s) removido(s) —`, JSON.stringify(deleted));
     }
   } catch (error) {
     console.warn("Limpeza de leilões antigos falhou:", error?.message || error);
+    operationHealth.cleanup('failed','cleanup_failed');
   } finally {
     cleanupBusy = false;
   }

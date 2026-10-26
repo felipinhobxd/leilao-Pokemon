@@ -50,7 +50,10 @@ http.createServer(async(req,res)=>{
    const operations={bot:{online:true,connected:true,version:'0.2.10'},group:groups[0],dispatches:{sent:1,failed:0,pending:0,successRate:1}};
    return json(res,url.searchParams.get('scope')==='operations'?{role:'admin',operations}:{data,role:'admin',liveAuction:{auction,card,winner:null,bids:[bid],participantCount:1,purchases:data.purchases},operations});
   }
-  if(path==='/api/operations')return json(res,{checkedAt:new Date().toISOString(),worker:null,backups:[],backupReadFailed:false,notices:[],failures:[],sectionsUnavailable:[]});
+  if(path==='/api/operations'){
+   const now=new Date().toISOString();
+   return json(res,{checkedAt:now,worker:{online:true,status:'connected',heartbeat:now,version:'0.2.10',protectionVersion:1,issue:'',database:{},backup:{},cleanup:{status:'blocked',at:now,reason:'backup_coverage_incomplete',deleted:0}},backupProtection:{state:'confirmed',latestSnapshotAt:now,latestConfirmedAt:now,validSnapshotAt:now,validConfirmedAt:now,validUntil:new Date(Date.now()+48*3600000).toISOString()},backupReadFailed:false,notices:[],failures:[],sectionsUnavailable:[],...(config.operationResponse??{})});
+  }
   if(path==='/api/quick-polls')return json(res,{data:[]});
   return json(res,{});
  }

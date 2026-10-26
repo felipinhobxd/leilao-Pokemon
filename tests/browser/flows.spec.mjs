@@ -3,6 +3,40 @@ import {deflateSync} from 'node:zlib';
 function png(color){const crc=buf=>{let n=0xffffffff;for(const x of buf){n^=x;for(let i=0;i<8;i++)n=n&1?0xedb88320^(n>>>1):n>>>1;}return (n^0xffffffff)>>>0;};const chunk=(kind,bytes)=>{const type=Buffer.from(kind);const length=Buffer.alloc(4);length.writeUInt32BE(bytes.length);const hash=Buffer.alloc(4);hash.writeUInt32BE(crc(Buffer.concat([type,bytes])));return Buffer.concat([length,type,bytes,hash]);};const header=Buffer.alloc(13);header.writeUInt32BE(2,0);header.writeUInt32BE(2,4);header[8]=8;header[9]=2;const row=Buffer.from([0,...color,...color]);return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk('IHDR',header),chunk('IDAT',deflateSync(Buffer.concat([row,row]))),chunk('IEND',Buffer.alloc(0))]);}
 const photo=(name,color)=>({name,mimeType:'image/png',buffer:png(color)});
 test.beforeEach(async({request})=>{await request.post('/__fixture/reset');});
+
+test('backup confirmation and deferred cleanup are distinct, accessible and fetched only on demand',async({page,request})=>{
+ await page.goto('/');await page.getByText('Diagnóstico e recuperação da operação',{exact:true}).click();
+ let calls=(await (await request.get('/__fixture/calls')).json()).filter(c=>c.url==='/api/operations');
+ expect(calls).toHaveLength(0);
+ await page.getByRole('button',{name:'Verificar agora',exact:true}).click();
+ const card=page.getByRole('article',{name:'Backup e limpeza automática'});
+ await expect(card.getByText('Cópia confirmada na nuvem',{exact:true})).toBeVisible();
+ await expect(card.getByText('Limpeza adiada',{exact:true})).toBeVisible();
+ await expect(card.getByText(/Há registros novos ou alterados depois da cópia/)).toBeVisible();
+ await expect(card.getByText(/não confirma a cobertura dos dados atuais/)).toBeVisible();
+ await expect(card.getByText('Válida até',{exact:true})).toBeVisible();
+ await page.getByRole('button',{name:'Auditar acessibilidade local',exact:true}).press('Enter');
+ await expect(page.locator('#audit-result')).toHaveText('[]',{timeout:15000});
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBeTruthy();
+ calls=(await (await request.get('/__fixture/calls')).json()).filter(c=>c.url==='/api/operations');
+ expect(calls).toHaveLength(1);
+});
+
+test('unavailable backup metadata and offline legacy supervisor never show a valid copy or current cleanup',async({page,request})=>{
+ await request.post('/__fixture/config',{data:{operationResponse:{backupProtection:null,backupReadFailed:true,worker:{online:false,status:'starting',heartbeat:'2026-10-24T03:00:00Z',version:'0.2.8',protectionVersion:0,backup:{},database:{},cleanup:null},sectionsUnavailable:['Proteção do backup']}}});
+ await page.goto('/');await page.getByText('Diagnóstico e recuperação da operação',{exact:true}).click();
+ await page.getByRole('button',{name:'Verificar agora',exact:true}).click();
+ const card=page.getByRole('article',{name:'Backup e limpeza automática'});
+ await expect(card.getByText('Confirmação indisponível',{exact:true})).toBeVisible();
+ await expect(card.getByText('Ainda não informada',{exact:true})).toBeVisible();
+ await expect(card.getByText(/Supervisor sem sinal recente/)).toBeVisible();
+ await expect(card.getByText(/próxima manutenção planejada/)).toBeVisible();
+ await expect(card.getByText('Cópia confirmada na nuvem',{exact:true})).toHaveCount(0);
+ await request.post('/__fixture/config',{data:{operationResponse:{backupProtection:{state:'expired',latestConfirmedAt:'2026-10-23T03:00:00Z',validSnapshotAt:null,validConfirmedAt:null,validUntil:null},backupReadFailed:false,sectionsUnavailable:[]}}});
+ await page.getByRole('button',{name:'Atualizar diagnóstico',exact:true}).click();
+ await expect(card.getByText('Cópia confirmada vencida',{exact:true})).toBeVisible();
+ await expect(card.getByText(/A limpeza aguarda uma nova cópia válida/)).toBeVisible();
+});
 async function addQuiz(page){await page.goto('/auctions/new');await page.getByRole('button',{name:'Adicionar sem imagem',exact:true}).click();await page.getByLabel('Nome',{exact:true}).fill('Pikachu ex');await page.getByLabel('Tipo da carta 1',{exact:true}).selectOption('quiz');await page.getByLabel('Pergunta do quiz',{exact:true}).fill('Qual é a evolução do Pikachu?');await page.getByLabel('Opções da enquete (uma por linha, 2 a 12)',{exact:true}).fill(['Pichu','Raichu','Charizard'].join(String.fromCharCode(10)));await page.getByLabel('Única opção correta',{exact:true}).selectOption('1');}
 async function review(page){await page.getByRole('button',{name:'Continuar para valores →',exact:true}).click();await page.getByRole('button',{name:'Continuar para publicação →',exact:true}).click();await page.getByRole('button',{name:'Revisar fila →',exact:true}).click();}
 test('type is explicit and correct answer is private in the review',async({page})=>{await addQuiz(page);await expect(page.getByText('Configuração do quiz',{exact:true})).toBeVisible();await page.getByLabel('Tipo da carta 1',{exact:true}).selectOption('giveaway');await expect(page.getByLabel('Pergunta do quiz',{exact:true})).toHaveCount(0);await expect(page.getByLabel('Única opção correta',{exact:true})).toHaveValue('1');await page.getByLabel('Tipo da carta 1',{exact:true}).selectOption('quiz');await expect(page.getByLabel('Pergunta do quiz',{exact:true})).toHaveValue('Qual é a evolução do Pikachu?');await review(page);await page.getByText('Prévia da enquete no WhatsApp',{exact:true}).click();await expect(page.getByText('Raichu · correta (somente no painel)',{exact:true})).toBeVisible();});

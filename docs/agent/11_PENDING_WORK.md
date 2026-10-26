@@ -96,3 +96,7 @@ P-18: resolvido conservadoramente na limpeza automática e no botão de encerrad
 ## P-19 — Cobertura confirmada antes da limpeza
 
 [22_BACKUP_COVERAGE_BEFORE_CLEANUP.md](22_BACKUP_COVERAGE_BEFORE_CLEANUP.md): implementado com recibo privado, confirmação após upload, proteção contra mudanças posteriores e comparação atômica. Sem novos backups por tentativa ou reinício do bot. Esta autorização substitui a pendência histórica acima.
+
+## Diagnóstico de backup/limpeza — concluído
+
+[23_BACKUP_PROTECTION_PANEL.md](23_BACKUP_PROTECTION_PANEL.md): confirmação do objeto e validade separadas do resultado histórico da limpeza, sem polling novo. Retomada controlada do supervisor e primeira confirmação real são a próxima fase proposta; não executadas por inferência do backlog.

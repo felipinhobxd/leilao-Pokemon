@@ -1,5 +1,5 @@
 import { authorize, failure, HttpError } from '@/lib/backend';
-import { readableIssue } from '@/lib/operation-health';
+import { readableIssue, readCleanupReport } from '@/lib/operation-health';
 
 export const runtime = 'nodejs';
 const headers = { 'Cache-Control': 'private, no-store' };
@@ -13,13 +13,13 @@ export async function GET(request: Request) {
       db.from('whatsapp_bot_workers').select('status,heartbeat_at,version,last_error,operational_health').order('heartbeat_at', { ascending: false, nullsFirst: false }).limit(1).maybeSingle(),
       db.from('whatsapp_auction_notices').select('id,kind,attempts,next_attempt_at,last_error,locked_at').is('sent_at', null).order('created_at').limit(50),
       db.from('whatsapp_dispatches').select('id,auction_id,last_error,attempts,updated_at,auction:auctions(lot_number,card:cards(name))').eq('status', 'failed').order('updated_at', { ascending: false }).limit(30),
-      db.storage.from('business-backups').list('backups', { limit: 3, sortBy: { column: 'name', order: 'desc' } }),
+      db.rpc('get_operation_backup_status'),
     ]);
     const health = worker.data?.operational_health ?? {};
     return Response.json({
       checkedAt: new Date().toISOString(),
-      worker: worker.data ? { status: worker.data.status, online: Date.now() - Date.parse(worker.data.heartbeat_at) <= 35_000, heartbeat: worker.data.heartbeat_at, version: worker.data.version, issue: readableIssue(worker.data.last_error), mention: {at: health.mention?.at, issue: readableIssue(health.mention?.issue)}, backup: { status: health.backup?.status, at: health.backup?.at, error: readableIssue(health.backup?.error), cloud: health.backup?.cloud }, database: { failedAt: health.database?.failedAt, recoveredAt: health.database?.recoveredAt } } : null,
-      backups: (backups.data ?? []).filter(row => /^backup-\d{8}-\d{4}\.json(?:\.gz)?$/.test(row.name)).map(row => ({ name: row.name, at: row.updated_at || row.created_at })),
+      worker: worker.data ? { status: worker.data.status, online: Date.now() - Date.parse(worker.data.heartbeat_at) <= 35_000, heartbeat: worker.data.heartbeat_at, version: worker.data.version, issue: readableIssue(worker.data.last_error), protectionVersion: health.protectionVersion === 1 ? 1 : 0, cleanup: readCleanupReport(health.cleanup), mention: {at: health.mention?.at, issue: readableIssue(health.mention?.issue)}, backup: { status: health.backup?.status, at: health.backup?.at, error: readableIssue(health.backup?.error), cloud: health.backup?.cloud }, database: { failedAt: health.database?.failedAt, recoveredAt: health.database?.recoveredAt } } : null,
+      backupProtection: backups.error ? null : backups.data,
       backupReadFailed: Boolean(backups.error),
       notices: (notices.data ?? []).map(row => ({ id: row.id, kind: row.kind, attempts: row.attempts, nextAttempt: row.next_attempt_at, issue: readableIssue(row.last_error), locked: Boolean(row.locked_at), retryable: row.attempts > 0 && !row.locked_at })),
       failures: (dispatches.data ?? []).map(row => {
@@ -27,7 +27,7 @@ export async function GET(request: Request) {
         const card = Array.isArray(auction?.card) ? auction.card[0] : auction?.card;
         return { id: row.id, auctionId: row.auction_id, lot: auction?.lot_number, cardName: card?.name, issue: readableIssue(row.last_error), attempts: row.attempts, at: row.updated_at };
       }),
-      sectionsUnavailable: [worker.error && 'Conexão do bot', notices.error && 'Avisos de encerramento', dispatches.error && 'Publicações'].filter(Boolean),
+      sectionsUnavailable: [worker.error && 'Conexão do bot', notices.error && 'Avisos de encerramento', dispatches.error && 'Publicações', backups.error && 'Proteção do backup'].filter(Boolean),
     }, { headers });
   } catch (error) { return failure(error); }
 }

@@ -4,6 +4,8 @@ Limpeza automática agora exige backup da nuvem confirmado com cobertura dos reg
 
 Painel administrativo para leilões de cartas Pokémon com Supabase como fonte oficial da verdade, Next.js na Vercel e um worker local Node.js/Baileys para a integração com WhatsApp.
 
+No diagnóstico manual, o cartão **Backup e limpeza automática** mostra confirmação/validade da cópia e a última limpeza com seu motivo. [Detalhes](docs/agent/23_BACKUP_PROTECTION_PANEL.md).
+
 ## Arquitetura
 
 ```text

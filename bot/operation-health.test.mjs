@@ -14,3 +14,16 @@ test('bounded telemetry keeps backup failures until the next attempt and survive
   for(let i=0;i<10000;i++)next.database(false);
   assert.ok(JSON.stringify(next.state).length<1000);
 });
+
+test('cleanup telemetry is bounded, records deferred maintenance, and restores without claiming a new attempt',()=>{
+ const health=createOperationHealth(()=> '2026-10-26T03:00:00Z');
+ health.cleanup('blocked','backup_coverage_incomplete');
+ assert.equal(health.state.protectionVersion,1);
+ assert.deepEqual(health.state.cleanup,{status:'blocked',at:'2026-10-26T03:00:00Z',reason:'backup_coverage_incomplete',deleted:0});
+ const restored=createOperationHealth(()=> '2026-10-26T04:00:00Z');restored.restore(health.state);
+ assert.equal(restored.state.cleanup.at,'2026-10-26T03:00:00Z');
+ restored.cleanup('completed','',5);assert.equal(restored.state.cleanup.deleted,5);
+ restored.cleanup('failed','https://secret.invalid/?token=secret',Infinity);
+ assert.equal(restored.state.cleanup.reason,'');assert.equal(restored.state.cleanup.deleted,0);
+ assert.ok(JSON.stringify(restored.state).length<1000);
+});

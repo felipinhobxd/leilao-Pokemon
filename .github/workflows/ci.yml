@@ -71,6 +71,7 @@ jobs:
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/auction-queue-scale.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/common-deadline.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/partial-queue-notice.sql
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/bot-work-discovery.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/withdrawal-minute.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/pending-vote-finalization.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/operation-health.sql

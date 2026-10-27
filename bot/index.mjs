@@ -1,5 +1,6 @@
 import "./session-guard.mjs";
 import { createSerialCycle } from "./serial-cycle.mjs";
+import { createWorkDiscovery } from "./work-discovery.mjs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createVoteInbox, VoteNotReadyError, VoteReviewError } from "./vote-inbox.mjs";
@@ -50,6 +51,8 @@ const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
   global: {fetch:createSupabaseFetch()},
 });
+
+const hasPendingWork = createWorkDiscovery({ db, onError: error => reportServiceError('Descoberta de trabalho', error) });
 
 // 2026-10-08: o filho NÃO tinha handlers de rejeição — na queda do Supabase
 // (Cloudflare 520/521/525) um erro cru (throw do finalizeDueAuctions, que era
@@ -1183,7 +1186,6 @@ async function finalizeDueAuctions() {
     });
     if(error)throw error;
     if(data>0)auctionNoticeDrain.wake();
-    await auctionNoticeDrain.tick();
   } catch(error){reportServiceError("Falha ao finalizar leilões vencidos",error);}
   finally{finalizeBusy=false;}
 }
@@ -1243,10 +1245,21 @@ async function connect() {
 // paralelo nao garante a ordem no grupo — o encadeamento espera as regras
 // chegarem antes de soltar a figurinha + @all.
 const schedulerCycle = createSerialCycle(async () => {
-        await sendOpeningSequence();
+        const active = await hasPendingWork();
+        if (active) await sendOpeningSequence();
         voteQueue = voteQueue.catch(error => reportServiceError('Fila de votos', error)).then(() => voteInbox.drain());
         await voteQueue;
-        await Promise.all([runScheduler(), finalizeDueAuctions(), adminNotificationDrain.tick(), sendDueQuickPolls(), paymentReminderDrain.tick()]);
+        await Promise.all([
+          active ? runScheduler() : Promise.resolve(),
+          (async () => {
+            if (active) await finalizeDueAuctions();
+            // Notices can outlive their queue/auction; retain their own backoff.
+            await auctionNoticeDrain.tick();
+          })(),
+          adminNotificationDrain.tick(),
+          active ? sendDueQuickPolls() : Promise.resolve(),
+          paymentReminderDrain.tick(),
+        ]);
       });
 schedulerTimer = setInterval(() => {
         // A sequência de abertura (regras + figurinha + @all) precisa TERMINAR

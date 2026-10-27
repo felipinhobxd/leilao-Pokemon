@@ -648,7 +648,8 @@ async function runScheduler() {
 }
 
 async function auditLateVote(auctionId, participantId, type, eventId, payload) {
-  await db.from("auction_events").insert({ auction_id: auctionId, participant_id: participantId, admin_user_id: ADMIN_USER_ID, event_type: type, external_event_id: eventId, payload });
+  const { error } = await db.from("auction_events").insert({ auction_id: auctionId, participant_id: participantId, admin_user_id: ADMIN_USER_ID, event_type: type, external_event_id: eventId, payload });
+  if (error) throw new Error(error.message);
 }
 
 async function findVoteState(auctionId, participantId) {
@@ -753,13 +754,24 @@ async function handlePollVote(dispatch, pollUpdate, originalMessageOverride, del
     const eventId = `wa-withdraw:${stablePart}`.slice(0, 200);
     if (previous.is_buyout) {
       await auditLateVote(dispatch.auction_id, participant.id, "BUYOUT_WITHDRAW_ATTEMPT", eventId, { voter_jid: voterJid, phone_e164: participant.phone_e164, display_name: participant.display_name, event_at: occurredAt });
+      return; // The immutable buyout and its accepted vote were not withdrawn.
     } else {
       try {
         await processCommand({ type: "BID_WITHDRAWN", eventId, auctionId: dispatch.auction_id, participantId: participant.id, occurredAt });
       } catch (error) {
-        if (String(error?.message || error).includes("auction_not_open")) {
-          await auditLateVote(dispatch.auction_id, participant.id, "BID_WITHDRAWN_AFTER_CLOSE", eventId, { voter_jid: voterJid, phone_e164: participant.phone_e164, display_name: participant.display_name, event_at: occurredAt });
-          if (delivery.attempts > 0) return { review: true, reason: 'auction_not_open_after_retry' };
+        const reason = String(error?.message || error);
+        if (reason.includes("auction_not_open") || reason.includes("deadline_expired")) {
+          const { data: auction, error: readError } = await db.from("auctions").select("scheduled_end_at").eq("id", dispatch.auction_id).maybeSingle();
+          if (readError) throw new Error(readError.message);
+          await auditLateVote(dispatch.auction_id, participant.id, "BID_WITHDRAWN_AFTER_CLOSE", eventId, { voter_jid: voterJid, phone_e164: participant.phone_e164, display_name: participant.display_name, event_at: occurredAt, reason });
+          const deadline = Date.parse(auction?.scheduled_end_at ?? "");
+          const provablyLate = Number.isFinite(deadline) && Date.parse(occurredAt) >= deadline;
+          // A source timestamp already past the deadline cannot withdraw a
+          // valid bid. Record the refusal and release this terminal event.
+          // A possibly timely event with an uncertain retry still needs review.
+          if (delivery.attempts > 0 && !provablyLate) return { review: true, reason: 'withdrawal_rejected_after_retry' };
+          console.log(`⚠️ Retirada recusada após encerramento: lote ${dispatch.poll_title ?? dispatch.auction_id}`);
+          return; // Do not overwrite the accepted vote state with a fake removal.
         } else throw error;
       }
     }
@@ -820,7 +832,8 @@ async function handlePollVote(dispatch, pollUpdate, originalMessageOverride, del
       const rejectedType = isBuyout && message.includes("auction_not_open") ? "BUYOUT_LOST_RACE" : "WHATSAPP_VOTE_REJECTED";
       const { data: closedAuction } = isBuyout ? await db.from("auctions").select("winner_participant_id,final_price,status").eq("id", dispatch.auction_id).maybeSingle() : { data: null };
       await auditLateVote(dispatch.auction_id, participant.id, rejectedType, eventId, { voter_jid: voterJid, phone_e164: participant.phone_e164, display_name: participant.display_name, option: selected.label, amount, reason: message.slice(0, 300), winner_participant_id: closedAuction?.winner_participant_id ?? null, final_price: closedAuction?.final_price ?? null, event_at: occurredAt });
-      console.log(`${isBuyout ? "🥈 ARREMATE posterior" : "⚠️ Voto rejeitado"}: ${participant.display_name}${participant.phone_e164 ? ` (${participant.phone_e164})` : ""} → ${selected.label}`);
+      const label = isBuyout ? message.includes("auction_not_open") ? "🥈 ARREMATE posterior" : "⚠️ ARREMATE recusado" : "⚠️ Voto rejeitado";
+      console.log(`${label}: ${participant.display_name}${participant.phone_e164 ? ` (${participant.phone_e164})` : ""} → ${selected.label} · ${message.slice(0, 100)}`);
       if (delivery.attempts > 0) return { review: true, reason: message.slice(0, 200) };
       return;
     }

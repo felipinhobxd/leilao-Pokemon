@@ -1,5 +1,8 @@
 # 00_INDEX — Memória persistente do projeto
 
+> Revisão real posterior: [28_LIVE_END_TO_END_AUDIT.md](28_LIVE_END_TO_END_AUDIT.md). Bot 0.2.14 ativado e conectado; testes reais de publicação, votos, quiz/brinde, encerramento, arremate, backup e Excel concluídos. Correção de retirada vencida, 169 testes raiz/118 bot/31 SQL. As instruções anteriores de preservar processos/aguardar ativação são histórico; ver limites de relógio e quota no documento 28.
+
+
 > Fase atual: [27_PHASED_REVIEW_FIXES.md](27_PHASED_REVIEW_FIXES.md). Fases 1–4 implementadas: votos persistentes, publicação confirmada, pausa sem bloquear os próximos e edição liberada após recusa/ausência confirmada. 169 testes raiz locais. Bot 0.2.13 no disco; processos ativos preservados. Fase 4 altera somente o painel e seus testes, sem migration. **Parar após CI e apresentar resultado; não reiniciar o bot automaticamente**.
 
 > Excel atualizado: [26_EXCEL_BID_HISTORY.md](26_EXCEL_BID_HISTORY.md). Primeiro/último lance por participante e leilão, mudanças de valor e horários em Brasília. 148 testes raiz locais aprovados. Sem migration, chamadas extras ao Supabase ou alterações no bot.

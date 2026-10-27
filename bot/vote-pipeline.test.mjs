@@ -113,3 +113,59 @@ test('real bid handler sends an expired retry to review instead of accepting it 
   assert.equal(context.voteInbox.status().review, 1); assert.equal(audits.length, 1);
   assert.ok(calls.every(command => command.type === 'BID_PLACED'), 'never opens/finalizes an auction to bypass its deadline');
 });
+
+function withdrawalFixture(t, { networkFirst = false, deadline = '2026-10-26T03:59:59Z', buyout = false, readError = false } = {}) {
+  const calls = [], audits = [], saves = []; let failed = false;
+  const f = fixture(t, {
+    loadDispatchForPoll: async () => ({ dispatch: { auction_id: 'auction', poll_message_id: 'poll', poll_message_json: {} }, cached: { message: {} } }),
+    resolveVoterIdentity: async () => ({ voterJid: 'person@lid' }), ensureParticipant: async () => ({ id: 'person', display_name: 'Pessoa' }),
+    logResolvedParticipant() {}, getAggregateVotesInPollMessage: () => [],
+    findVoteState: async () => ({ active: true, is_buyout: buyout, amount: 2 }),
+    saveVoteState: async (...args) => saves.push(args), logCurrentLeader: async () => {}, brl: String,
+    processCommand: async command => { calls.push(command); if (networkFirst && !failed) { failed = true; throw Error('network'); } throw Error('deadline_expired'); },
+    auditLateVote: async (...args) => audits.push(args), console: { log() {}, warn() {}, error() {} },
+    db: { from: () => ({ select() { return this; }, eq() { return this; }, maybeSingle: async () => readError ? { error: { message: 'read unavailable' } } : { data: { scheduled_end_at: deadline } } }) },
+  });
+  vm.runInContext(source.slice(source.indexOf('async function handlePollVote('), source.indexOf('async function loadDispatchForPoll(')), f.context);
+  return { ...f, calls, audits, saves };
+}
+
+test('expired withdrawal is audited without pretending the accepted bid was removed', async t => {
+  const f = withdrawalFixture(t); await f.context.processIncomingPollMessage(f.message('withdraw'));
+  assert.equal(f.audits[0][2], 'BID_WITHDRAWN_AFTER_CLOSE'); assert.equal(f.saves.length, 0);
+  assert.equal(f.context.voteInbox.status().pending, 0); assert.equal(f.context.voteInbox.status().review, 0);
+});
+
+test('provably late withdrawal retry releases finalization without accepting the withdrawal', async t => {
+  const f = withdrawalFixture(t, { networkFirst: true });
+  await f.context.processIncomingPollMessage(f.message('withdraw')); assert.equal(f.context.voteInbox.finalizationGuard().pollIds.length, 1);
+  f.advance(); await f.context.voteInbox.drain();
+  assert.equal(f.calls.length, 2); assert.deepEqual(f.calls[0], f.calls[1]); assert.equal(f.saves.length, 0);
+  assert.equal(f.context.voteInbox.status().pending, 0); assert.equal(f.context.voteInbox.status().review, 0);
+  assert.deepEqual(f.context.voteInbox.finalizationGuard().pollIds, []);
+});
+
+test('possibly timely withdrawal with failed delivery still requires review', async t => {
+  const f = withdrawalFixture(t, { networkFirst: true, deadline: '2026-10-26T04:00:01Z' });
+  await f.context.processIncomingPollMessage(f.message('withdraw')); f.advance(); await f.context.voteInbox.drain();
+  assert.equal(f.context.voteInbox.status().review, 1); assert.equal(f.context.voteInbox.finalizationGuard().pollIds.length, 1);
+  assert.equal(f.saves.length, 0);
+});
+
+test('unavailable deadline lookup cannot acknowledge a rejected withdrawal', async t => {
+  const f = withdrawalFixture(t, { readError: true }); await f.context.processIncomingPollMessage(f.message('withdraw'));
+  assert.equal(f.context.voteInbox.status().pending, 1); assert.equal(f.audits.length, 0); assert.equal(f.saves.length, 0);
+});
+
+test('attempt to remove an immutable buyout never clears the accepted vote state', async t => {
+  const f = withdrawalFixture(t, { buyout: true }); await f.context.processIncomingPollMessage(f.message('withdraw'));
+  assert.equal(f.calls.length, 0); assert.equal(f.saves.length, 0); assert.equal(f.audits[0][2], 'BUYOUT_WITHDRAW_ATTEMPT');
+  assert.equal(f.context.voteInbox.status().pending, 0);
+});
+
+test('rejection audit must be acknowledged before a durable vote can be removed', async () => {
+  const code = source.slice(source.indexOf('async function auditLateVote('), source.indexOf('async function ', source.indexOf('async function auditLateVote(') + 1));
+  const context = { ADMIN_USER_ID: 'admin', db: { from: () => ({ insert: async () => ({ error: { message: 'audit offline' } }) }) } };
+  vm.createContext(context); vm.runInContext(code, context);
+  await assert.rejects(context.auditLateVote('auction', 'person', 'rejected', 'event', {}), /audit offline/);
+});

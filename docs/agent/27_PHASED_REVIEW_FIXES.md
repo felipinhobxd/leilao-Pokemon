@@ -1,5 +1,8 @@
 # 27 — Correções da revisão em quatro fases
 
+> Revisão real posterior: [28_LIVE_END_TO_END_AUDIT.md](28_LIVE_END_TO_END_AUDIT.md). Bot 0.2.14 ativado e conectado; testes reais de publicação, votos, quiz/brinde, encerramento, arremate, backup e Excel concluídos. Correção de retirada vencida, 169 testes raiz/118 bot/31 SQL. As instruções anteriores de preservar processos/aguardar ativação são histórico; ver limites de relógio e quota no documento 28.
+
+
 Autorização de 26/10/2026: **parar ao final de cada fase e pedir autorização antes da próxima**. Não iniciar fases seguintes por inferência deste documento.
 
 | Fase | Escopo | Estado |

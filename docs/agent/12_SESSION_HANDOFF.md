@@ -1,5 +1,8 @@
 # 12 — Handoff atual
 
+> Revisão real posterior: [28_LIVE_END_TO_END_AUDIT.md](28_LIVE_END_TO_END_AUDIT.md). Bot 0.2.14 ativado e conectado; testes reais de publicação, votos, quiz/brinde, encerramento, arremate, backup e Excel concluídos. Correção de retirada vencida, 169 testes raiz/118 bot/31 SQL. As instruções anteriores de preservar processos/aguardar ativação são histórico; ver limites de relógio e quota no documento 28.
+
+
 > Fase 4: [27_PHASED_REVIEW_FIXES.md](27_PHASED_REVIEW_FIXES.md). Lote/individual liberam edição só após recusa de validação e recuperação com ausência confirmada. Mesmo ID preservado inclusive na sessão editável após reload; dados do payload restaurados. 169 testes raiz/check do bot/typecheck/build/smoke locais aprovados; conferir CI/deployment final. Sete cenários de navegador novos em desktop/celular. Sem migration ou alteração/reinício do bot (disco 0.2.13). **Quatro fases de código concluídas: PARAR e informar a pendência de carregar supervisor/filho em reinício planejado, sem executar automaticamente**.
 
 > Excel atualizado: [26_EXCEL_BID_HISTORY.md](26_EXCEL_BID_HISTORY.md). Nova aba por participante/leilão e alterações com valor anterior → novo, primeiro/último horário e vínculo anterior quando identificável. 148 testes raiz, typecheck e build locais aprovados; conferir CI/deploy do commit final. Sem migration, consultas ao Supabase ou alterações/reinício do bot. Exportar antes da limpeza de 12h; dados excluídos não reaparecem no Excel.

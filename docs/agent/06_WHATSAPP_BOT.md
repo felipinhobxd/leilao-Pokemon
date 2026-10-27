@@ -1,5 +1,8 @@
 # 06_WHATSAPP_BOT — Worker Baileys (bot/)
 
+> Revisão real posterior: [28_LIVE_END_TO_END_AUDIT.md](28_LIVE_END_TO_END_AUDIT.md). Bot 0.2.14 ativado e conectado; testes reais de publicação, votos, quiz/brinde, encerramento, arremate, backup e Excel concluídos. Correção de retirada vencida, 169 testes raiz/118 bot/31 SQL. As instruções anteriores de preservar processos/aguardar ativação são histórico; ver limites de relógio e quota no documento 28.
+
+
 > Fases 1–3: [27_PHASED_REVIEW_FIXES.md](27_PHASED_REVIEW_FIXES.md). Bot 0.2.13 no disco: votos persistentes, confirmação real de publicação e filas pausadas excluídas no servidor antes do limite de dois. Brindes avulsos preservados, sem nova consulta periódica. Supervisor/filho ativos preservados; ativação completa exige recarregar ambos. Pedir autorização antes da fase 4.
 
 > Estado atual consolidado: [19_SETTLEMENT_PROTECTION_AND_RECOVERY.md](19_SETTLEMENT_PROTECTION_AND_RECOVERY.md) e [18_RELIABILITY_AND_UI_REVIEW.md](18_RELIABILITY_AND_UI_REVIEW.md), bot 0.2.10, Next.js 16.4.3. Seções de versões anteriores abaixo são histórico; não reaplicar migrations ou instruções antigas automaticamente.

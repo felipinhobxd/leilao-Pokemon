@@ -1,6 +1,6 @@
 # Fase 7 — controle do supervisor em uma consulta
 
-Autorização do operador: “sim” à unificação da leitura de logout e busca de comandos, preservando o intervalo de cinco segundos. Implementação em 27/10/2026, bot **0.2.21 no disco**, inicialmente aguardando CI antes de ativar. As entradas anteriores dos MDs são histórico.
+Autorização do operador: “sim” à unificação da leitura de logout e busca de comandos, preservando o intervalo de cinco segundos. Implementação em 27/10/2026, bot **0.2.21 ativado após CI aprovada**. As entradas anteriores dos MDs são histórico.
 
 ## Comportamento
 
@@ -29,6 +29,14 @@ Preflight: 0 filas ativas, dispatches pendentes/em envio, leilões abertos, jogo
 
 Advisor de segurança antes da aplicação: quatro INFO de RLS sem policy em tabelas intencionalmente privadas e WARN preexistente de proteção contra senhas vazadas desativada. Não alterados nesta fase. Referências: [tabelas privadas sem policy](https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy), [proteção de senhas](https://supabase.com/docs/guides/auth/password-security#password-strength-and-leaked-password-protection).
 
-## Encerramento pendente
+## Ativação
 
-Conferir CI/deploy antes do reinício controlado e verificar conexão/saúde após a ativação. Não gerar logout real, enviar mensagens de teste ou apagar sessão da conta conectada. Parar e perguntar ao operador antes de outra fase.
+Código enviado em `42327881`; [CI aprovada](https://github.com/felipinhobxd/leilao-Pokemon/actions/runs/40562286996), inclusive 171 testes raiz, 154 bot, 60 navegador, PostgreSQL 17, oito claims concorrentes, restauração, build, scripts Windows e guards. Deploy Vercel aprovado. Advisor após a migration manteve apenas os avisos preexistentes citados acima.
+
+Antes de reiniciar, nova conferência confirmou `has_work=false`, logout falso, zero comandos pendentes/running e votos pending/review zero. Encerrado apenas o processo pertencente a esta sessão; `npm run start` voltou com supervisor 0.2.21 e WhatsApp conectado, reutilizando o backup do dia sem exportação pesada. Sessão do terminal desta rodada: 56311. Nenhum logout real, mensagem de teste ou remoção de sessão foi executado.
+
+Às **15:46:14 BRT**, worker 0.2.21 conectado, heartbeat das 15:46:10, logout falso e votos pending/review zero. Nenhum novo evento de queda inesperada desde a partida das 15:44:45; console sem novos erros na janela observada. É uma observação curta, não garantia de estabilidade futura.
+
+Uma consulta agregada e limitada aos caminhos de controle, janela **15:45–15:46 BRT**: **12 POST claim_whatsapp_bot_control, zero POST claim_whatsapp_bot_command e zero GET whatsapp_bot_workers**. O heartbeat manteve **5 POST whatsapp_bot_workers** nessa janela. Isso confirma a troca de duas leituras por uma no tráfego real, sem reduzir a cadência de controle. Não houve polling de logs nem medição nova do saldo de Log Ingestion.
+
+O commit posterior registra apenas README/MDs e estas evidências; não altera o runtime já aprovado pela CI. Fase concluída. Parar e perguntar ao operador antes de outra fase.

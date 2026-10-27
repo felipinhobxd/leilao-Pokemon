@@ -1,6 +1,6 @@
 # Leilão Pokémon
 
-Bot **0.2.20 ativado** em 27/10/2026: descoberta de trabalho reduz consultas ociosas, mantendo o ciclo de cinco segundos e votos/avisos independentes. **148 testes do bot** aprovados. [Funcionamento, validação e limites de consumo](docs/agent/37_PHASE5_IDLE_DATABASE_REQUESTS.md). Regras de lance, quiz/brinde e conclusão parcial foram exercitadas na [fase 4](docs/agent/36_GLM_AUDIT_PHASE4_LIVE_VALIDATION.md). O estado de conexão é histórico desta rodada, não monitoramento permanente.
+Bot **0.2.21 ativado** em 27/10/2026: descoberta de trabalho e controle do supervisor reduzem consultas ociosas, mantendo o ciclo de cinco segundos, prioridade de logout e votos/avisos independentes. **154 testes do bot** aprovados. [Controle do supervisor e validação](docs/agent/38_PHASE7_SUPERVISOR_CONTROL.md), [descoberta de trabalho e limites de consumo](docs/agent/37_PHASE5_IDLE_DATABASE_REQUESTS.md). Regras de lance, quiz/brinde e conclusão parcial foram exercitadas na [fase 4](docs/agent/36_GLM_AUDIT_PHASE4_LIVE_VALIDATION.md). O estado de conexão é histórico desta rodada, não monitoramento permanente.
 
 Histórico da versão 0.2.15: histórico de desconexões no diagnóstico manual, com duração e contagem em 24h; detalhes ficam no computador e só o resumo usa o heartbeat existente. [Operação e limites](docs/agent/29_CONNECTION_DIAGNOSTICS.md).
 

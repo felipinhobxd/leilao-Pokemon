@@ -38,3 +38,11 @@ A fila para de consultar automaticamente após concluir a publicação. Vencedor
 - Mensagens históricas de enquetes já excluídas chegaram na sincronização e foram diagnosticadas como desconhecidas; isso não é queda do socket nem confirmação de votos novos. Os testes acima têm IDs próprios e auditoria no banco.
 
 Nenhuma migration nova nesta fase. Bot **0.2.19 ativo**, painel local no ar, sessão preservada. Conferir CI/deploy do commit da correção antes de declarar aprovação remota. Depois, apresentar os resultados e parar; qualquer próxima fase depende de nova autorização.
+
+## Conferência final — 14h24
+
+O prazo não foi alterado. O banco encerrou o lote às **14:24:07.522**, apurando o lance de teste de **R$ 1** por maior lance; criou exatamente uma compra de simulação vinculada à carta identificada como “sem venda real”. O resultado individual foi entregue às **14:24:08.452**, uma tentativa, sem erro. Não é venda/pagamento efetivo. Esse registro de teste foi preservado para a trilha de validação e segue a política de limpeza automática com backup; não houve exclusão manual nem baixa de pagamento fictícia.
+
+Às **14:24:45**, worker **0.2.19 conectado**, backup confirmado, votos **pending=0/review=0**, sem nova queda inesperada desde a partida corrigida (aproximadamente 22 minutos). Isso é a janela observada, não certificação de estabilidade futura.
+
+CI da correção `702a2482` aprovada: [execução 590](https://github.com/felipinhobxd/leilao-Pokemon/actions/runs/40548647069). **171 testes raiz, 144 bot, 60 navegador**, PostgreSQL 17, restauração, concorrência, build, scripts Windows e guards aprovados; deploy Vercel aprovado. A instalação do Chromium na CI demorou mais nesta execução, mas concluiu sem alteração de produto. O commit posterior registra apenas esta evidência em Markdown; não altera o runtime já validado.

@@ -1,5 +1,8 @@
 # 12 — Handoff atual
 
+> Fase 2: [31_PHASE2_REAL_BACKUP_RESTORE.md](31_PHASE2_REAL_BACKUP_RESTORE.md). Snapshot real restaurado em PGlite local: 22 tabelas, 29.927 registros, 35 FKs válidas, comparação de todos os campos e staging privado. Zero acesso ao Supabase; fotos não incluídas (179 referências). Teste de CI fortalecido, sem runtime/migration. **Parar e pedir autorização para fase 3**. Bot não iniciado/reiniciado; sem processo ativo na leitura inicial.
+
+
 > Testes em fases: [30_PHASED_RESILIENCE_TESTS.md](30_PHASED_RESILIENCE_TESTS.md). Fase 1: filho encerrado durante fila, reconexão automática em 7,163s e 3/3 enviados sem reenvio observado. Journal validado entre dois processos isolados após commit simulado sem confirmação. 124 testes bot. **Parar e pedir autorização para fase 2 (restauração isolada)**.
 
 

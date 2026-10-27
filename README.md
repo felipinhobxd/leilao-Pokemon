@@ -1,6 +1,8 @@
 # Leilão Pokémon
 
-Bot 0.2.15 conectado: histórico de desconexões no diagnóstico manual, com duração e contagem em 24h; detalhes ficam no computador e só o resumo usa o heartbeat existente. [Operação e limites](docs/agent/29_CONNECTION_DIAGNOSTICS.md).
+Bot **0.2.16 no disco**, sem ativação nesta fase. Correções da auditoria independente: destinatários privados, suíte completa na CI, replay verificado da auditoria e tratamento de falhas ao sincronizar IDs da publicação. [Resultados e limites da fase 1](docs/agent/33_GLM_AUDIT_PHASE1_FIXES.md). As versões e resultados anteriores abaixo são registros históricos.
+
+Histórico da versão 0.2.15: histórico de desconexões no diagnóstico manual, com duração e contagem em 24h; detalhes ficam no computador e só o resumo usa o heartbeat existente. [Operação e limites](docs/agent/29_CONNECTION_DIAGNOSTICS.md).
 
 
 Revisão real concluída no grupo de testes: publicação, lances, quiz/brinde, prazo comum, arremate, backup e Excel. Corrigida retirada de lance vencida que retinha a apuração. [Evidências e limites](docs/agent/28_LIVE_END_TO_END_AUDIT.md).
@@ -60,7 +62,7 @@ SUPABASE_SECRET_KEY=CHAVE_PRIVADA_APENAS_NO_SERVIDOR
 
 Na Vercel, a integração do Supabase fornece `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` e `SUPABASE_SECRET_KEY`. Para instalações locais/self-hosted, `SUPABASE_SERVICE_ROLE_KEY` continua aceito como fallback. Nunca use uma chave secreta em variável `NEXT_PUBLIC_*`, no navegador, no GitHub ou em mensagens.
 
-O banco de produção é `PokemonLeilao`. Estado de 2026-10-25: **68 migrations locais / 76 registros remotos**; existem divergências históricas de versão já mapeadas. A migration nova `20261025181640_dashboard_auction_detail.sql` foi instalada pelo conector e tem a mesma versão local/remota. Consulte [a auditoria](docs/agent/13_MIGRATION_AUDIT.md) antes de aplicar SQL; não executar `db push`/`repair` geral.
+O banco de produção é `PokemonLeilao`. Contagem local em 2026-10-27: **75 migrations**. A última conferência remota registrada, em 2026-10-26, encontrou **83 registros**; não houve nova consulta de produção nesta fase. Existem divergências históricas de versão já mapeadas. Consulte [a auditoria](docs/agent/13_MIGRATION_AUDIT.md) antes de aplicar SQL; não executar `db push`/`repair` geral.
 
 ## Instalação do bot no Windows
 
@@ -219,7 +221,7 @@ Na etapa Publicação do cadastro em lote, escolha **Mesmo horário para todas a
 
 Após a última carta/brinde ser publicada com sucesso, o bot envia @all nativo e “LEILÃO FINALIZADO! LANCES VÁLIDOS ATÉ [horário escolhido]!”. Os lances encerram juntos; os resultados são entregues com intervalo mínimo de 15s por grupo. Avisos pendentes ficam no banco para nova tentativa após falhas/reinício. @all exige permissão de administrador em grupos com mais de 32 membros.
 
-**Baixar backup** gera uma cópia consistente, transfere blocos menores e entrega um link privado com validade de dois minutos. O arquivo é JSON compactado (.json.gz); extraia-o para ler o JSON. Mantém-se uma cópia manual por administrador. O bot também envia cópias compactadas para a nuvem e mantém JSON normal no PC. Backups v2 incluem todos os rascunhos/quick polls e todas as colunas de jogos/lembretes. Auditoria sem leilão sobrevivente e cache têm janela de sete dias; imagens/sessão não estão no JSON. Detalhes em docs/agent/15_DEADLINE_BACKUP_AND_RECOVERY.md.
+**Baixar backup** gera uma cópia consistente, transfere blocos menores e entrega um link privado com validade de dois minutos. O arquivo é JSON compactado (.json.gz); extraia-o para ler o JSON. Mantém-se uma cópia manual por administrador. O bot também envia cópias compactadas para a nuvem e mantém JSON normal no PC. Backups v2 incluem todos os rascunhos/quick polls e todas as colunas de jogos/lembretes. O export v2 atual inclui toda a auditoria existente no snapshot (`complete_audit: true`, `audit_window_days: null`); o cache de eventos mantém janela de sete dias. Imagens/sessão não estão no JSON. O manifesto do pacote local informa a cobertura declarada pelo arquivo de origem; backups antigos sem metadados ficam com cobertura desconhecida. Detalhes em docs/agent/15_DEADLINE_BACKUP_AND_RECOVERY.md.
 
 Os erros 521/522 indicam indisponibilidade do endereço Supabase. O código usa timeout real, pausa progressiva em consultas de fundo e logs resumidos; isso não garante disponibilidade do provedor. Comandos reais de lance/participante mantêm sua própria tentativa, sem replay automático de escritas.
 
@@ -242,7 +244,7 @@ Dependências atualizadas, Next.js 16.4.3 e auditorias npm sem alertas nesta rod
 
 ## Proteção financeira e pacote de recuperação — 2026-10-25
 
-A limpeza automática de 12h e o botão **Excluir leilões encerrados** preservam todo leilão com compra vinculada, mesmo já paga, mantendo pagamentos, entregas e lembretes. O botão informa quantos foram preservados. Exclusão individual e Excluir TUDO continuam ações destrutivas explícitas.
+A limpeza automática inclui leilões encerrados vendidos/arrematados e seus dados financeiros após 12h do envio, desde que exista backup confirmado com cobertura integral das linhas; alterações posteriores bloqueiam a limpeza inteira. O botão manual **Excluir leilões encerrados** preserva compras vinculadas, mesmo pagas, e informa quantos foram preservados. Exclusão individual e Excluir TUDO continuam ações destrutivas explícitas. [Política efetiva e condições](docs/agent/25_AUTOMATIC_CLEANUP_ALL_OUTCOMES.md).
 
 `npm run backup:pack -- --file D:\Backups\backup.json.gz --output D:\Backups\pacote-novo` cria um pacote local de um backup v2 já baixado, com manifesto SHA-256 e SQL para ensaio em schema privado descartável. Imagens são opcionais com `--images --source-origin https://gsyuoggymjdzxibfujyv.supabase.co`, baixadas sequencialmente; falhas e URLs não suportadas são sinalizadas. Não executa SQL nem inicia o bot. Use `--verify --output D:\Backups\pacote-novo` para conferir a integridade. Não é restauração automática de produção/Auth/sessão.
 

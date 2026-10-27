@@ -11,6 +11,22 @@ const image=origin+'/storage/v1/object/public/card-images/carta.png';
 const fixture=()=>({format_version:2,exported_at:'2026-10-25T20:00:00Z',tables:Object.fromEntries(RECOVERY_TABLES.map(t=>[t,[]]))});
 async function temp(t){const dir=await mkdtemp(join(tmpdir(),'leilao-recovery-'));t.after(()=>rm(dir,{recursive:true,force:true}));return dir;}
 
+test('manifest copies audit coverage from the snapshot and keeps unknown legacy coverage explicit',async t=>{
+  const dir=await temp(t);
+  const cases=[
+    {metadata:{audit_window_days:null,complete_audit:true},days:null,complete:true},
+    {metadata:{audit_window_days:7},days:7,complete:false},
+    {metadata:{},days:null,complete:null},
+  ];
+  for(const [index,item] of cases.entries()) {
+    const file=join(dir,`source-${index}.json`),output=join(dir,`package-${index}`);
+    await writeFile(file,JSON.stringify({...fixture(),...item.metadata}));
+    await createRecoveryPackage({file,output});
+    const manifest=await verifyRecoveryPackage(output);
+    assert.equal(manifest.audit_window_days,item.days);assert.equal(manifest.complete_audit,item.complete);
+  }
+});
+
 test('recovery rejects legacy/incomplete downloads rather than claiming full coverage',()=>{
   assert.throws(()=>parseRecoveryBackup(Buffer.from(JSON.stringify({tables:{cards:[]}}))),/backup_v2_required/);
   const data=fixture();delete data.tables.auction_drafts;

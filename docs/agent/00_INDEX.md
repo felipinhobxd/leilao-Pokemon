@@ -1,5 +1,8 @@
 # 00_INDEX — Memória persistente do projeto
 
+> Auditoria GLM — fase 1 (2026-10-27): [33_GLM_AUDIT_PHASE1_FIXES.md](33_GLM_AUDIT_PHASE1_FIXES.md). Bot **0.2.16 no disco, não ativado**. Contatos removidos da árvore atual e configurados em `.env` privado; CI executa todos os testes do bot; replay da auditoria exige leitura/identidade; falha de projeção dos IDs é tratada sem falhar publicação entregue; manifesto/README corrigidos. 171 testes raiz, 130 bot e typecheck locais aprovados. Sem acesso ao Supabase/WhatsApp nesta fase. **Parar após CI e perguntar antes da fase 2.** As entradas anteriores abaixo são histórico, não diagnóstico do processo atual.
+
+
 > Fase 3: [32_PHASE3_BACKUP_GUARDED_CLEANUP.md](32_PHASE3_BACKUP_GUARDED_CLEANUP.md). Limpeza protegida validada em isolamento: 32 cenários SQL, limite de envio, vendas/arremates, bloqueio total por alteração após backup e preservação de avisos/ativos. Concorrência ampliada para pagamentos/lembretes na CI. Zero chamada ao Supabase ou limpeza real. **Três fases concluídas; apresentar resultados e parar.**
 
 

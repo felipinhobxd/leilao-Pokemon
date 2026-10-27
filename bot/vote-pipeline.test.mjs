@@ -152,6 +152,62 @@ test('possibly timely withdrawal with failed delivery still requires review', as
   assert.equal(f.saves.length, 0);
 });
 
+function installActualAudit(context, { existing, readError, loseFirstResponse = false } = {}) {
+  let stored = existing, inserts = 0, reads = 0;
+  context.ADMIN_USER_ID = 'admin';
+  context.db = {from(table) {
+    if (table === 'auctions') return {select(){return this;},eq(){return this;},maybeSingle:async()=>({data:{scheduled_end_at:'2026-10-26T03:59:59Z'}})};
+    assert.equal(table, 'auction_events');
+    return {
+      async insert(row) {
+        inserts++;
+        if (stored) return {error:{code:'23505',message:'duplicate'}};
+        stored = structuredClone(row);
+        return loseFirstResponse ? {error:{message:'response lost after commit'}} : {};
+      },
+      select(){return this;},eq(key,value){assert.equal(key,'external_event_id');assert.equal(value,stored?.external_event_id ?? value);return this;},
+      async maybeSingle(){reads++;return {data:stored,error:readError};},
+    };
+  }};
+  const start=source.indexOf('async function auditLateVote(');
+  vm.runInContext(source.slice(start,source.indexOf('async function ',start+1)),context);
+  return {get stored(){return stored;},get inserts(){return inserts;},get reads(){return reads;}};
+}
+
+test('lost audit acknowledgement replays through durable inbox without review or duplicate event', async t => {
+  const f=withdrawalFixture(t);
+  const audit=installActualAudit(f.context,{loseFirstResponse:true});
+  await f.context.processIncomingPollMessage(f.message('audit-response-lost'));
+  assert.equal(f.context.voteInbox.status().pending,1);
+  f.advance();await f.context.voteInbox.drain();
+  assert.equal(audit.inserts,2);assert.equal(audit.reads,1);
+  assert.equal(f.context.voteInbox.status().pending,0);assert.equal(f.context.voteInbox.status().review,0);
+  assert.equal(f.saves.length,0);assert.deepEqual(f.context.voteInbox.finalizationGuard().pollIds,[]);
+});
+
+test('audit collision requires matching event identity and vote; failed read cannot acknowledge', async()=>{
+  const payload={voter_jid:'voter',phone_e164:'10000000001',event_at:'2026-10-27T03:00:00Z',option:'R$ 2',amount:2};
+  const row={auction_id:'auction',participant_id:'person',admin_user_id:'admin',event_type:'WHATSAPP_VOTE_REJECTED',external_event_id:'event',payload};
+  const invoke=context=>context.auditLateVote('auction','person','WHATSAPP_VOTE_REJECTED','event',payload);
+  for(const key of ['auction_id','participant_id','admin_user_id','event_type']) {
+    const context=vm.createContext({});installActualAudit(context,{existing:{...row,[key]:'different'}});
+    await assert.rejects(invoke(context),/audit_replay_conflict/);
+  }
+  for(const key of ['voter_jid','phone_e164','event_at','option','amount']) {
+    const context=vm.createContext({});installActualAudit(context,{existing:{...row,payload:{...payload,[key]:'different'}}});
+    await assert.rejects(invoke(context),/audit_replay_conflict/);
+  }
+  const offline=vm.createContext({});installActualAudit(offline,{existing:row,readError:{message:'read unavailable'}});
+  await assert.rejects(invoke(offline),/read unavailable/);
+  const missing=vm.createContext({ADMIN_USER_ID:'admin',db:{from:()=>({insert:async()=>({error:{code:'23505'}}),select(){return this;},eq(){return this;},maybeSingle:async()=>({data:null})})}});
+  const start=source.indexOf('async function auditLateVote(');
+  vm.runInContext(source.slice(start,source.indexOf('async function ',start+1)),missing);
+  await assert.rejects(invoke(missing),/audit_replay_conflict/);
+  const compatible=vm.createContext({});
+  installActualAudit(compatible,{existing:{...row,payload:{...payload,display_name:'enriched',reason:'auction_not_open',winner_participant_id:'winner',final_price:3}}});
+  await invoke(compatible);
+});
+
 test('unavailable deadline lookup cannot acknowledge a rejected withdrawal', async t => {
   const f = withdrawalFixture(t, { readError: true }); await f.context.processIncomingPollMessage(f.message('withdraw'));
   assert.equal(f.context.voteInbox.status().pending, 1); assert.equal(f.audits.length, 0); assert.equal(f.saves.length, 0);

@@ -6,7 +6,7 @@ Revisão de 26/10/2026 (Brasília), autorizada pelo operador, incluindo iniciar 
 
 Uma retirada recebida após o prazo retornava `deadline_expired`, mas o tratamento reconhecia apenas `auction_not_open`. O evento persistente ficava em retentativa e retinha a finalização daquela enquete. A recusa também podia apagar indevidamente o estado local do lance aceito. Uma tentativa de retirar arremate tinha o mesmo problema de estado.
 
-O bot agora registra a recusa antes de confirmar o processamento e preserva o lance aceito. Na retirada recusada, consulta o prazo e libera o evento comprovadamente posterior ao corte, inclusive após retentativa. Evento possivelmente tempestivo e incerto continua bloqueado para revisão. Falhas na leitura do prazo ou gravação da auditoria continuam pendentes; o prazo não é ampliado e lances vencidos não são aceitos. Logs distinguem arremate recusado de disputa já encerrada.
+O bot agora registra a recusa antes de confirmar o processamento e preserva o lance aceito. Na retirada recusada, consulta o prazo e libera o evento comprovadamente posterior ao corte, inclusive após retentativa. Evento possivelmente tempestivo cuja entrega anterior falhou e ficou incerta continua bloqueado para revisão; uma recusa definitiva sem tentativa anterior incerta é auditada e confirmada. Falhas na leitura do prazo ou gravação da auditoria continuam pendentes; o prazo não é ampliado e lances vencidos não são aceitos. Logs distinguem arremate recusado de disputa já encerrada.
 
 Seis testes adicionais cobrem esses caminhos. Após reiniciar somente a árvore de processos iniciada nesta revisão, os eventos reais pendentes foram processados sem editar o journal manualmente. Telemetria confirmou **pending=0/review=0** e a apuração terminou.
 

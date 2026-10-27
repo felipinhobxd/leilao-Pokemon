@@ -1,5 +1,7 @@
 # 06_WHATSAPP_BOT — Worker Baileys (bot/)
 
+> 0.2.16: `BOT_ADMIN_WA_JIDS` é obrigatório no `bot/.env`, sem números padrão no código; formato numérico com DDI e sufixo `@s.whatsapp.net`. Valores vazios/inválidos impedem iniciar o filho, com erro de configuração. A instalação local foi configurada privadamente; nenhuma ativação/reconexão nesta fase. Ver [auditoria fase 1](33_GLM_AUDIT_PHASE1_FIXES.md).
+
 > Atualização: [29_CONNECTION_DIAGNOSTICS.md](29_CONNECTION_DIAGNOSTICS.md). Bot 0.2.15 ativado: histórico local limitado de desconexões, duração, reinício inesperado e contagem de 24h no diagnóstico manual. Resumo no heartbeat existente, sem migration ou polling extra. 170 testes raiz/123 bot; monitoramento iniciado às 21h48 de 26/10/2026.
 
 
@@ -69,7 +71,7 @@
 - O RPC grava avisos por **redução** de lance e, com 3 exatos, insere `admin_notifications` (idempotente).
 - **O PARTICIPANTE NÃO RECEBE DM** (decisão do operador, re-confirmada 2026-09-24): a redução apenas CONTA no avisômetro global — sem punição, sem mensagem direta à pessoa.
 - **Terminal em tempo real (2026-09-24)**: no processamento do voto o bot loga `🔄 Voto alterado: {nome} (fone) → R$ X → R$ Y · lote N · ⚠️ redução: aviso global registrado` — quem trocou, em qual enquete/lote e os preços, na hora.
-- O filho drena no ciclo de 5s: formata a DM (`formatWarningNotification`: usuário, total global, última ocorrência com carta/lote/valores/horário, histórico dos anteriores) e envia para `BOT_ADMIN_WA_JIDS` (default 554197285978 e 5519989759121).
+- O filho drena no ciclo de 5s: formata a DM (`formatWarningNotification`: usuário, total global, última ocorrência com carta/lote/valores/horário, histórico dos anteriores) e envia para `BOT_ADMIN_WA_JIDS` (configuração privada obrigatória, sem destinatários padrão).
 - `sent_at` só após TODOS os admins; `payload.sent_to` faz retry parcial reenviar só ao destinatário ainda não registrado. Reduz duplicação, sujeito à janela entre envio e persistência. No 3º aviso o terminal loga o resumo (quem/lote/valores/quantos admins).
 - O DASHBOARD mostra a lista ao vivo (painel "Avisos de alteração de valores" — migration 20260924180000, snapshot com `participant_warnings` + `value_change_log`).
 - Migration de avisos registrada em produção com versão remota `20260923163815`; não há pendência de aplicação desse item (conferência 2026-10-25).

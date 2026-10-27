@@ -25,6 +25,7 @@ const reportServiceError = createErrorReporter();
 import { isLidJid, isPhoneJid, normalizeUserJid } from "./poll-identities.mjs";
 import { decryptIncomingPollVote, unwrapMessageContent } from "./poll-votes.mjs";
 import { createAdminNotificationDrain, parseAdminJids } from "./warning-notify.mjs";
+import { syncPublicationProjection } from "./publication-projection.mjs";
 import { resolveParticipantJid, mentionMessage } from "./participant-contact.mjs";
 import { createPaymentReminderDrain } from "./payment-reminder.mjs";
 import { ANNOUNCE_GRACE_MINUTES, ANNOUNCE_MINUTES_BEFORE, ANNOUNCE_RULES_MINUTES_BEFORE, sendOpeningMention, loadAnnouncedQueueIds, loadAnnouncementSticker, loadRulesAnnouncedQueueIds, loadRulesMessage, markQueueAnnounced, markQueueRulesAnnounced, saveAnnouncementSticker } from "./announce-sticker.mjs";
@@ -99,10 +100,7 @@ let voteQueue = Promise.resolve();
 const adminNotificationDrain = createAdminNotificationDrain({
   db,
   getSocket: () => (socketReady ? sock : null),
-  adminJids: (() => {
-    const jids = parseAdminJids();
-    return jids.length ? jids : undefined;
-  })(),
+  adminJids: parseAdminJids(),
 });
 // Lembretes de pagamento: DM a cada 7 dias (BOT_PAYMENT_REMINDER_DAYS) para
 // arrematantes sem baixa de pagamento; sem aviso/punição; para quando o
@@ -585,12 +583,12 @@ async function sendDispatchInternal(claimedDispatch) {
   if (auction.status === "draft") {
     await processCommand({ type: "AUCTION_OPEN", eventId: `wa-open:${dispatch.id}`, auctionId: auction.id });
   }
-  await db.from("auctions").update({
+  await syncPublicationProjection({ db, auctionId: auction.id, reportError: reportServiceError, values: {
     whatsapp_group_id: group.group_jid,
     poll_id: dispatch.poll_remote_message_id || dispatch.poll_message_id,
     message_id: dispatch.announcement_remote_message_id || dispatch.announcement_message_id,
     updated_at: new Date().toISOString(),
-  }).eq("id", auction.id);
+  } });
 
   const now = new Date().toISOString();
   const { data: sentDispatch, error } = await db.from("whatsapp_dispatches").update({
@@ -648,8 +646,26 @@ async function runScheduler() {
 }
 
 async function auditLateVote(auctionId, participantId, type, eventId, payload) {
-  const { error } = await db.from("auction_events").insert({ auction_id: auctionId, participant_id: participantId, admin_user_id: ADMIN_USER_ID, event_type: type, external_event_id: eventId, payload });
-  if (error) throw new Error(error.message);
+  const expected = { auction_id: auctionId, participant_id: participantId, admin_user_id: ADMIN_USER_ID, event_type: type, external_event_id: eventId, payload };
+  const { error } = await db.from("auction_events").insert(expected);
+  if (!error) return;
+  if (error.code !== "23505") throw new Error(error.message);
+  // A committed insert can lose its HTTP acknowledgement. Read back the
+  // immutable audit before accepting a replay; another unique collision or
+  // another event must remain a failure for the durable inbox to handle.
+  const { data: existing, error: readError } = await db.from("auction_events")
+    .select("auction_id,participant_id,admin_user_id,event_type,external_event_id,payload")
+    .eq("external_event_id", eventId).maybeSingle();
+  if (readError) throw new Error(readError.message);
+  const identity = ["auction_id", "participant_id", "admin_user_id", "event_type", "external_event_id"];
+  // Names, rejection wording and winner snapshots can change after delivery.
+  // The voter, event time and submitted choice must still identify this vote.
+  const vote = ["voter_jid", "phone_e164", "event_at", "option", "amount"];
+  if (!existing || !payload.event_at || !payload.voter_jid ||
+      identity.some(key => existing[key] !== expected[key]) ||
+      vote.some(key => (existing.payload?.[key] ?? null) !== (payload[key] ?? null))) {
+    throw new Error("audit_replay_conflict");
+  }
 }
 
 async function findVoteState(auctionId, participantId) {

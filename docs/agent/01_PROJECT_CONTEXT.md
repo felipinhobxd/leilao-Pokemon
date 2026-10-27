@@ -51,7 +51,7 @@ Operar leilões recorrentes em grupos de WhatsApp com o mínimo de trabalho manu
 ## Ambiente de execução / variáveis críticas
 
 - **Raiz `.env.local`**: chaves Supabase (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`, com fallback `SUPABASE_SERVICE_ROLE_KEY`).
-- **`bot/.env`**: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `BOT_ADMIN_USER_ID`, `BOT_ADMIN_WA_JIDS` (DMs de aviso; default: 554197285978, 5519989759121), retenção fixa de limpeza (12h), `BOT_NIGHT_RESTART_HOUR` (4).
+- **`bot/.env`**: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `BOT_ADMIN_USER_ID`, `BOT_ADMIN_WA_JIDS` (DMs de aviso; configuração privada obrigatória, sem destinatários padrão), retenção fixa de limpeza (12h), `BOT_NIGHT_RESTART_HOUR` (4).
 - Máquina-alvo do operador: Windows, Node 24.
 
 ## Fonte da verdade dos dados

@@ -9,19 +9,17 @@ const reportServiceError=createErrorReporter();
 // (também idempotente). Este módulo apenas ENTREGA a mensagem via WhatsApp:
 // - marca sent_at só depois de enviar para TODOS os administradores;
 // - rastreia payload.sent_to para um retry não reenviar a quem já recebeu
-//   (falha parcial nunca gera DM duplicado);
+//   (reduz reenvios após falhas parciais confirmadas);
 // - in-flight guard + intervalo mínimo para não bombardear o banco.
-import { createClient } from "@supabase/supabase-js";
 
 export function parseAdminJids(raw) {
   const value = String(raw ?? process.env.BOT_ADMIN_WA_JIDS ?? "");
-  return value.split(/[,\s]+/).map(item => item.trim()).filter(Boolean);
+  const jids = [...new Set(value.split(/[,\s]+/).map(item => item.trim()).filter(Boolean))];
+  if (jids.some(jid => !/^\d{8,15}@s\.whatsapp\.net$/.test(jid))) {
+    throw new Error("BOT_ADMIN_WA_JIDS inválido: use números com DDI@s.whatsapp.net separados por vírgula.");
+  }
+  return jids;
 }
-
-export const DEFAULT_ADMIN_JIDS = [
-  "554197285978@s.whatsapp.net",
-  "5519989759121@s.whatsapp.net",
-];
 
 const brl = value => new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" })
   .format(Number(value ?? 0))
@@ -82,7 +80,8 @@ export function formatAdminNotification(notification) {
   return formatWarningNotification(notification.payload);
 }
 
-export function createAdminNotificationDrain({ db, getSocket, adminJids = DEFAULT_ADMIN_JIDS, intervalMs = 15_000 }) {
+export function createAdminNotificationDrain({ db, getSocket, adminJids = parseAdminJids(), intervalMs = 15_000 }) {
+  if (!adminJids.length) throw new Error("Configure BOT_ADMIN_WA_JIDS no bot/.env antes de iniciar o bot.");
   let inFlight = false;
   let lastTick = 0;
   return {
@@ -114,7 +113,7 @@ export function createAdminNotificationDrain({ db, getSocket, adminJids = DEFAUL
             }
           }
           // Persiste progressivamente: um retry reenvia APENAS para quem não
-          // recebeu (falha parcial nunca duplica DM).
+          // recebeu com confirmação persistida. Resposta perdida ainda pode duplicar DM.
           const sentTo = [...alreadySent, ...sentNow];
           const everyone = adminJids.every(jid => sentTo.includes(jid));
           const { error: updateError } = await db.from("admin_notifications")

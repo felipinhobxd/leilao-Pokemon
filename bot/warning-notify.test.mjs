@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_ADMIN_JIDS, createAdminNotificationDrain, formatAdminNotification, formatDispatchFailedNotification, formatWarningNotification, parseAdminJids } from "./warning-notify.mjs";
+import { createAdminNotificationDrain, formatAdminNotification, formatDispatchFailedNotification, formatWarningNotification, parseAdminJids } from "./warning-notify.mjs";
 
 const PAYLOAD = {
   participant_name: "Exemplo",
@@ -47,9 +47,8 @@ test("formatWarningNotification: valores formatados em BRL", () => {
 });
 
 test("parseAdminJids: env e normalização", () => {
-  assert.deepEqual(parseAdminJids("a@s.whatsapp.net, b@s.whatsapp.net"), ["a@s.whatsapp.net", "b@s.whatsapp.net"]);
+  assert.deepEqual(parseAdminJids("10000000001@s.whatsapp.net, 10000000002@s.whatsapp.net"), ["10000000001@s.whatsapp.net", "10000000002@s.whatsapp.net"]);
   assert.deepEqual(parseAdminJids("  "), []);
-  assert.deepEqual(DEFAULT_ADMIN_JIDS, ["554197285978@s.whatsapp.net", "5519989759121@s.whatsapp.net"]);
 });
 
 function fakeDb(rows) {
@@ -80,13 +79,13 @@ test("drain: entrega para todos os admins e marca sent_at (idempotente)", async 
   const drain = createAdminNotificationDrain({
     db,
     getSocket: () => ({ sendMessage: async jid => { sent.push(jid); } }),
-    adminJids: ["a@s.whatsapp.net", "b@s.whatsapp.net"],
+    adminJids: ["10000000001@s.whatsapp.net", "10000000002@s.whatsapp.net"],
     intervalMs: 0,
   });
   assert.equal(await drain.tick(1000), 1);
-  assert.deepEqual(sent.sort(), ["a@s.whatsapp.net", "b@s.whatsapp.net"].sort());
+  assert.deepEqual(sent.sort(), ["10000000001@s.whatsapp.net", "10000000002@s.whatsapp.net"].sort());
   assert.equal(db.state.rows[0].sent_at != null, true);
-  assert.deepEqual(db.state.rows[0].payload.sent_to.sort(), ["a@s.whatsapp.net", "b@s.whatsapp.net"].sort());
+  assert.deepEqual(db.state.rows[0].payload.sent_to.sort(), ["10000000001@s.whatsapp.net", "10000000002@s.whatsapp.net"].sort());
   // segunda passada: nada pendente, nada reenviado
   assert.equal(await drain.tick(9999), 0);
   assert.equal(sent.length, 2);
@@ -95,7 +94,7 @@ test("drain: entrega para todos os admins e marca sent_at (idempotente)", async 
 test("drain: falha parcial reenvia APENAS para o admin que não recebeu", async () => {
   const db = fakeDb([{ id: "n1", payload: { ...PAYLOAD }, external_event_id: "e1" }]);
   const sent = [];
-  let failFor = "b@s.whatsapp.net";
+  let failFor = "10000000002@s.whatsapp.net";
   const drain = createAdminNotificationDrain({
     db,
     getSocket: () => ({
@@ -104,23 +103,23 @@ test("drain: falha parcial reenvia APENAS para o admin que não recebeu", async 
         sent.push(jid);
       },
     }),
-    adminJids: ["a@s.whatsapp.net", "b@s.whatsapp.net"],
+    adminJids: ["10000000001@s.whatsapp.net", "10000000002@s.whatsapp.net"],
     intervalMs: 0,
   });
   // 1ª tentativa: "a" recebe, "b" falha -> segue pendente, sent_to só com "a"
   await drain.tick(1000);
-  assert.deepEqual(sent, ["a@s.whatsapp.net"]);
+  assert.deepEqual(sent, ["10000000001@s.whatsapp.net"]);
   assert.equal(db.state.rows[0].sent_at, null);
-  assert.deepEqual(db.state.rows[0].payload.sent_to, ["a@s.whatsapp.net"]);
+  assert.deepEqual(db.state.rows[0].payload.sent_to, ["10000000001@s.whatsapp.net"]);
   // 2ª tentativa: só "b" falta; sem reenvio para "a"
   failFor = null;
   assert.equal(await drain.tick(9999), 1);
-  assert.deepEqual(sent.sort(), ["a@s.whatsapp.net", "b@s.whatsapp.net"].sort());
+  assert.deepEqual(sent.sort(), ["10000000001@s.whatsapp.net", "10000000002@s.whatsapp.net"].sort());
 });
 
 test("drain: sem socket não faz nada", async () => {
   const db = fakeDb([{ id: "n1", payload: {}, external_event_id: "e1" }]);
-  const drain = createAdminNotificationDrain({ db, getSocket: () => null, adminJids: ["a@s.whatsapp.net"], intervalMs: 0 });
+  const drain = createAdminNotificationDrain({ db, getSocket: () => null, adminJids: ["10000000001@s.whatsapp.net"], intervalMs: 0 });
   assert.equal(await drain.tick(1000), 0);
 });
 
@@ -139,4 +138,10 @@ test("formatAdminNotification: despacha por kind (WARNING_THRESHOLD vs DISPATCH_
   assert.ok(failed.includes("PUBLICAÇÃO DE LOTE FALHOU"));
   const warning = formatAdminNotification({ kind: "WARNING_THRESHOLD", payload: PAYLOAD });
   assert.ok(warning.includes("USUÁRIO ATINGIU 3 AVISOS"));
+});
+
+test("admin notification configuration refuses missing or invalid recipients", () => {
+  assert.throws(() => createAdminNotificationDrain({db:{},getSocket:()=>null,adminJids:[]}), /BOT_ADMIN_WA_JIDS/);
+  assert.throws(() => parseAdminJids("invalid@g.us"), /BOT_ADMIN_WA_JIDS/);
+  assert.deepEqual(parseAdminJids("10000000001@s.whatsapp.net,10000000001@s.whatsapp.net"), ["10000000001@s.whatsapp.net"]);
 });

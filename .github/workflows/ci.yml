@@ -72,6 +72,7 @@ jobs:
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/common-deadline.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/partial-queue-notice.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/bot-work-discovery.sql
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/bot-supervisor-control.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/withdrawal-minute.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/pending-vote-finalization.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/operation-health.sql
@@ -96,6 +97,7 @@ jobs:
         run: |
           python3 tests/concurrency.py
           python3 tests/concurrency-quiz.py
+          python3 tests/concurrency-bot-control.py
           python3 tests/concurrency-cleanup.py
       - name: Install browser runtime
         timeout-minutes: 15

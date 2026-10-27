@@ -320,10 +320,13 @@ async function stopChild() {
   if (child === activeChild) child = null;
 }
 
-async function claimBotCommand() {
-  const { data, error } = await db.rpc("claim_whatsapp_bot_command", { p_worker_id: WORKER_ID });
+async function claimBotControl() {
+  const { data, error } = await db.rpc("claim_whatsapp_bot_control", { p_worker_id: WORKER_ID });
   if (error) throw new Error(error.message);
-  return Array.isArray(data) ? data[0] ?? null : data ?? null;
+  if (!data || typeof data.logout_requested !== 'boolean' ||
+      !(data.command === null || typeof data.command === 'object' && data.command?.id && data.command.worker_id === WORKER_ID) ||
+      data.logout_requested && data.command !== null) throw new Error('invalid_bot_control_response');
+  return data;
 }
 
 async function finishBotCommand(command, error = null) {
@@ -460,13 +463,8 @@ async function executeBotCommand(command) {
   throw new Error(`Comando desconhecido: ${command.command}`);
 }
 
-async function processPendingLogout() {
-  const { data, error } = await db.from("whatsapp_bot_workers")
-    .select("logout_requested")
-    .eq("worker_id", WORKER_ID)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!data?.logout_requested) return false;
+async function processPendingLogout(logoutRequested) {
+  if (!logoutRequested) return false;
 
   desiredRunning = false;
   clearTimeout(restartTimer);
@@ -478,9 +476,10 @@ async function processPendingLogout() {
   runtime.qrExpiresAt = null;
   runtime.accountJid = null;
   runtime.connectedAt = null;
-  await db.from("whatsapp_bot_workers")
+  const { error } = await db.from("whatsapp_bot_workers")
     .update({ logout_requested: false })
     .eq("worker_id", WORKER_ID);
+  if (error) throw new Error(error.message);
   await publishState({ status: "disconnected", lastError: null, sessionActive: false, accountJid: null });
   console.log("🔐 Logout completo solicitado pelo painel: sessão WhatsApp apagada.");
   return true;
@@ -626,8 +625,9 @@ async function cleanupOldAuctions() {  if (cleanupBusy || shuttingDown) return;
 async function pollBotCommands() {  if (commandBusy || shuttingDown) return;
   commandBusy = true;
   try {
-    if (await processPendingLogout()) return;
-    const command = await claimBotCommand();
+    const control = await claimBotControl();
+    if (await processPendingLogout(control.logout_requested)) return;
+    const command = control.command;
     if (!command) return;
     try {
       await executeBotCommand(command);

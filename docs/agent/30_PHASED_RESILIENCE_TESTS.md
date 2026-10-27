@@ -6,7 +6,7 @@ Em 26/10/2026, o operador autorizou executar em fases, com apresentação do res
 |---|---|---|
 | 1 | Reinício durante fila e votos pendentes entre processos | Executada; evidência abaixo |
 | 2 | Restauração de backup em banco isolado | Autorizada em 27/10 e executada: 22 tabelas, 29.927 registros, 35 FKs válidas; ver [fase 2](31_PHASE2_REAL_BACKUP_RESTORE.md) |
-| 3 | Limpeza de 12h condicionada à cobertura do backup | Aguardar conclusão da fase 2 e autorização |
+| 3 | Limpeza de 12h condicionada à cobertura do backup | Autorizada em 27/10 e validada em isolamento; 32 cenários SQL locais; ver [fase 3](32_PHASE3_BACKUP_GUARDED_CLEANUP.md) |
 
 ## Fase 1 — fila real e recuperação do filho
 
@@ -46,4 +46,4 @@ Isso comprova preservação e replay entre processos do journal real. A idempot�
 
 Captura local da fila: `outputs/restart-queue-phase1-20261026.png`, na pasta de trabalho da sessão e fora do Git. Consumo de produção limitado à pequena fila autorizada e consultas pontuais; sem teste de carga, backup grande adicional ou sondagem extra no Supabase. Não foi medido delta de Log Ingestion.
 
-Fase 2 autorizada posteriormente e descrita no [documento 31](31_PHASE2_REAL_BACKUP_RESTORE.md). **Parar após apresentar a fase 2 e pedir autorização para a fase 3.** Não executar exclusão de dados apenas com base neste documento.
+Fases 2 e 3 autorizadas posteriormente e descritas nos documentos [31](31_PHASE2_REAL_BACKUP_RESTORE.md) e [32](32_PHASE3_BACKUP_GUARDED_CLEANUP.md). **Três fases concluídas; parar e apresentar os resultados.** Não executar novas exclusões ou tarefas antigas apenas com base neste documento.

@@ -83,6 +83,7 @@ jobs:
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/dashboard-auction.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/cleanup-retention.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/cleanup-publication-policy.sql
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/cleanup-boundaries-and-atomicity.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/settlement-protection.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/participants-panel.sql
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f tests/withdraw-rebid-warning.sql

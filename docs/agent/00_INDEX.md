@@ -1,5 +1,8 @@
 # 00_INDEX — Memória persistente do projeto
 
+> Fase 3: [32_PHASE3_BACKUP_GUARDED_CLEANUP.md](32_PHASE3_BACKUP_GUARDED_CLEANUP.md). Limpeza protegida validada em isolamento: 32 cenários SQL, limite de envio, vendas/arremates, bloqueio total por alteração após backup e preservação de avisos/ativos. Concorrência ampliada para pagamentos/lembretes na CI. Zero chamada ao Supabase ou limpeza real. **Três fases concluídas; apresentar resultados e parar.**
+
+
 > Fase 2: [31_PHASE2_REAL_BACKUP_RESTORE.md](31_PHASE2_REAL_BACKUP_RESTORE.md). Snapshot real restaurado em PGlite local: 22 tabelas, 29.927 registros, 35 FKs válidas, comparação de todos os campos e staging privado. Zero acesso ao Supabase; fotos não incluídas (179 referências). Teste de CI fortalecido, sem runtime/migration. **Parar e pedir autorização para fase 3**. Bot não iniciado/reiniciado; sem processo ativo na leitura inicial.
 
 

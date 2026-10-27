@@ -41,4 +41,4 @@ Como o snapshot real tem pagamentos e lembretes vazios, esses casos são coberto
 
 O pacote referencia **179 URLs de imagens**, mas não inclui os bytes: `images_complete: false` é esperado e a CLI sinaliza incompletude. Os dados/URLs foram restaurados; não foi testada reposição ou disponibilidade das fotos. Auth/senhas, chaves, sessão do WhatsApp, worker e infraestrutura continuam fora do backup de negócio. Este resultado não é uma recuperação integral da instalação nem garante o conteúdo que já estava ausente do snapshot.
 
-**Fase 2 concluída para os dados do snapshot. Parar, apresentar resultado e pedir autorização para a fase 3: verificar a limpeza de 12h com cobertura de backup, começando em ambiente isolado.**
+**Fase 2 concluída para os dados do snapshot. A fase 3 foi autorizada posteriormente e está documentada em [32_PHASE3_BACKUP_GUARDED_CLEANUP.md](32_PHASE3_BACKUP_GUARDED_CLEANUP.md). Não executar novas fases ou exclusões automaticamente.**

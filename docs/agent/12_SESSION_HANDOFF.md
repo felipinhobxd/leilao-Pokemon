@@ -1,5 +1,8 @@
 # 12 — Handoff atual
 
+> Testes em fases: [30_PHASED_RESILIENCE_TESTS.md](30_PHASED_RESILIENCE_TESTS.md). Fase 1: filho encerrado durante fila, reconexão automática em 7,163s e 3/3 enviados sem reenvio observado. Journal validado entre dois processos isolados após commit simulado sem confirmação. 124 testes bot. **Parar e pedir autorização para fase 2 (restauração isolada)**.
+
+
 > Atualização: [29_CONNECTION_DIAGNOSTICS.md](29_CONNECTION_DIAGNOSTICS.md). Bot 0.2.15 ativado: histórico local limitado de desconexões, duração, reinício inesperado e contagem de 24h no diagnóstico manual. Resumo no heartbeat existente, sem migration ou polling extra. 170 testes raiz/123 bot; monitoramento iniciado às 21h48 de 26/10/2026.
 
 

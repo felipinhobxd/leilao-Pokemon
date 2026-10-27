@@ -1,6 +1,6 @@
 # Leilão Pokémon
 
-Bot **0.2.18 no disco**, sem ativação nesta fase. Regras alinhadas com as escolhas do operador: primeiro acerto de brinde/quiz sem compra obrigatória, retirada de lance comum em até um minuto e aviso do prazo mesmo quando algumas cartas não são publicadas. [Fase 3: contratos e testes](docs/agent/35_GLM_AUDIT_PHASE3_RULES.md). As [correções da fase 1](docs/agent/33_GLM_AUDIT_PHASE1_FIXES.md) e o [fallback de @all da fase 2](docs/agent/34_GLM_AUDIT_PHASE2_NOTICES.md) estão incluídos. Versões e resultados anteriores abaixo são históricos.
+Bot **0.2.19 ativado** na validação de 27/10/2026: retirada em até um minuto, quiz/brinde sem compra e conclusão parcial exercitados no grupo de testes. Corrigida concorrência entre backup e limpeza na partida, com 144 testes do bot. [Evidências, horários e limites da fase 4](docs/agent/36_GLM_AUDIT_PHASE4_LIVE_VALIDATION.md). O estado de conexão é histórico desta rodada, não monitoramento permanente.
 
 Histórico da versão 0.2.15: histórico de desconexões no diagnóstico manual, com duração e contagem em 24h; detalhes ficam no computador e só o resumo usa o heartbeat existente. [Operação e limites](docs/agent/29_CONNECTION_DIAGNOSTICS.md).
 

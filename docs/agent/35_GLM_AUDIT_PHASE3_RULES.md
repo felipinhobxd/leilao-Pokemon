@@ -44,3 +44,5 @@ Bot **0.2.18 no disco, não ativado**. Não havia processo local do bot em execu
 - Novos arquivos SQL incluídos na CI. Conferir banco, concorrência, restauração, navegador, build e deploy do commit final antes de anunciar aprovação remota.
 
 **Parar e perguntar antes de outra fase.** Conflitos de identidade e redução do piso de polling continuam separados; nenhuma fusão automática ou alteração nesses fluxos foi feita aqui.
+
+CI da fase 3 confirmada no commit `dcf74123`: [execução aprovada](https://github.com/felipinhobxd/leilao-Pokemon/actions/runs/40542791736), PostgreSQL 17, restore, concorrência, build e 60 testes de navegador aprovados; deploy Vercel aprovado. A ativação posterior está no documento 36.

@@ -1,5 +1,7 @@
 # 06_WHATSAPP_BOT — Worker Baileys (bot/)
 
+> 0.2.19 ativado: rechecagem do slot de backup após await impede a corrida diária × limpeza na partida. Conexão e novas regras validadas no grupo de testes; não exige migration. [Fase 4](36_GLM_AUDIT_PHASE4_LIVE_VALIDATION.md).
+
 > 0.2.18: brinde/quiz pelo primeiro acerto sem exigir compra; retirada de lance comum em até 60s, validada no banco e auditada se recusada, sem apagar o lance aceito. Conclusão parcial informa cartas não publicadas mantendo o prazo comum e o fallback de @all. Migration instalada; bot no disco sem ativação. [Fase 3](35_GLM_AUDIT_PHASE3_RULES.md).
 
 > 0.2.17: conclusão sem @all apenas com falta de privilégio confirmada e participação do bot conhecida; decisão persistida e alerta administrativo único. Avisos com dez tentativas sem entrega confirmada geram alerta adicional, continuando pendentes. Sem migration/ativação nesta fase. [Contrato e testes](34_GLM_AUDIT_PHASE2_NOTICES.md).

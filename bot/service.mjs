@@ -522,6 +522,9 @@ async function dailyBackup() {
   if (!Number.isFinite(hour) || hour < 0) return;
   const now = new Date();
   const today = await getTodayKey(now);
+  // Cleanup may acquire the shared backup slot while getTodayKey yields.
+  // Recheck before starting another cloud check/export on startup or a tick.
+  if (backupBusy || shuttingDown) return;
   if (lastBackupDay === today) return;
   if (now.getHours() + now.getMinutes() / 60 < hour) return;
   if (backupRetryBlocked()) return;

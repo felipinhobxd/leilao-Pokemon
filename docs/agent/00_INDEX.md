@@ -1,5 +1,8 @@
 # 00_INDEX — Memória persistente do projeto
 
+> Auditoria GLM — fase 4 (2026-10-27): [36_GLM_AUDIT_PHASE4_LIVE_VALIDATION.md](36_GLM_AUDIT_PHASE4_LIVE_VALIDATION.md). Bot **0.2.19 ativado e conectado**, painel local no ar. Corrigida corrida no backup da partida (reproduzida: duas exportações; agora uma). Validação real no grupo de testes: retirada em 12,907s aceita; retirada em 96,293s recusada preservando lance, pending/review zero; quiz/brinde sem compra; resumo parcial entregue com 3 publicados/1 falha simulada. Prazo comum mantido em 14h24. 144 testes bot e build locais aprovados. Sem migration nova. **Parar após CI/deploy e apresentar resultados.** Entradas anteriores são histórico.
+
+
 > Auditoria GLM — fase 3 (2026-10-27): [35_GLM_AUDIT_PHASE3_RULES.md](35_GLM_AUDIT_PHASE3_RULES.md). Operador escolheu primeiro acerto sem compra para quiz/brinde, retirada de lance comum em até 60s e conclusão parcial com aviso das cartas não publicadas. Bot **0.2.18 no disco, não ativado**; sem processo local ativo na conferência. Migration `20261027163530` instalada/verificada, **76 arquivos locais / 84 registros remotos**, sem reparação de histórico. 141 testes bot, 171 raiz, typecheck e 34 suítes SQL locais aprovados. **Parar após CI/deploy e perguntar antes da próxima fase.** Entradas anteriores são histórico.
 
 

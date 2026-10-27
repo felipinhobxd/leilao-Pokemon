@@ -27,4 +27,10 @@ Antes da ativação: zero filas scheduled/running, dispatches scheduled/sending,
 
 O consumo atual de Log Ingestion não foi medido nesta fase. Não se pode converter essa redução em garantia de ficar abaixo de 1 GB: tráfego real, outros serviços e logs do Supabase também contam. Consultas administrativas foram pontuais; não houve exportação ou teste de carga em produção. Não repetir os testes reais da fase 4 sem necessidade.
 
-Conferir CI/deploy e saúde final antes do encerramento. Após esta fase, parar e perguntar ao operador antes de qualquer nova etapa.
+## Encerramento
+
+Código enviado ao GitHub em `c7f58523`. [CI aprovada](https://github.com/felipinhobxd/leilao-Pokemon/actions/runs/40559459906): 171 testes raiz, 148 bot e 60 navegador, PostgreSQL 17, restauração, concorrência, scripts Windows, build e proteção de rotas. Deploy Vercel aprovado.
+
+Às **15:27:51 BRT**, 0.2.20 conectado, votos pending/review zero e descoberta ociosa retornando `false`; nenhum novo evento de queda inesperada desde a partida das **15:21:48**, aproximadamente seis minutos de observação. Essa janela não é garantia de estabilidade futura. Site e bot ficam ativos via `npm run start` (sessão desta rodada 64544). Não foram criados leilões novos nem repetidos os testes reais da fase 4.
+
+O commit posterior altera apenas a documentação com esta evidência. Fase concluída; parar e perguntar ao operador antes de qualquer nova etapa.

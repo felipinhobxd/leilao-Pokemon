@@ -4,6 +4,35 @@ function png(color){const crc=buf=>{let n=0xffffffff;for(const x of buf){n^=x;fo
 const photo=(name,color)=>({name,mimeType:'image/png',buffer:png(color)});
 test.beforeEach(async({request})=>{await request.post('/__fixture/reset');});
 
+test('connection history distinguishes recovered timeout and process restart without automatic diagnostics requests',async({page,request})=>{
+ const now=new Date().toISOString();
+ const connection={version:1,monitoredSince:now,count24h:2,processRestarts24h:1,ongoing:false,last:{at:now,cause:'timeout',code:408,recoveredAt:now,durationMs:7000,estimated:false,processExited:false,processRestart:false,exitCode:null}};
+ await request.post('/__fixture/config',{data:{operationResponse:{worker:{online:true,status:'connected',heartbeat:now,version:'0.2.15',backup:{},database:{},connection}}}});
+ await page.goto('/');await page.getByText('Diagnóstico e recuperação da operação',{exact:true}).click();
+ expect((await (await request.get('/__fixture/calls')).json()).filter(c=>c.url==='/api/operations')).toHaveLength(0);
+ await page.getByRole('button',{name:'Verificar agora',exact:true}).click();
+ const card=page.getByRole('article',{name:'Histórico de conexão',exact:true});
+ await expect(card.getByText('2 interrupção(ões)',{exact:true})).toBeVisible();
+ await expect(card.getByText(/Perda de conexão ou timeout · código 408/)).toBeVisible();
+ await expect(card.getByText(/Duração: 7 s/)).toBeVisible();
+ await expect(card.getByText(/Sem encerramento inesperado do processo/)).toBeVisible();
+ await page.getByRole('button',{name:'Auditar acessibilidade local',exact:true}).press('Enter');
+ await expect(page.locator('#audit-result')).toHaveText('[]',{timeout:15000});
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBeTruthy();
+ expect((await (await request.get('/__fixture/calls')).json()).filter(c=>c.url==='/api/operations')).toHaveLength(1);
+});
+
+test('connection history warns when stale and local storage failed without inventing recovery',async({page,request})=>{
+ const now=new Date().toISOString();
+ await request.post('/__fixture/config',{data:{operationResponse:{worker:{online:false,status:'reconnecting',heartbeat:now,version:'0.2.15',backup:{},database:{},connection:{version:1,monitoredSince:now,count24h:1,processRestarts24h:0,countLimited:true,storageIssue:true,ongoing:true,last:{at:now,cause:'process_exit',code:null,exitCode:1,recoveredAt:null,durationMs:null,processExited:true,processRestart:false}}}}}});
+ await page.goto('/');await page.getByText('Diagnóstico e recuperação da operação',{exact:true}).click();await page.getByRole('button',{name:'Verificar agora',exact:true}).click();
+ const card=page.getByRole('article',{name:'Histórico de conexão',exact:true});
+ await expect(card.getByText('Recuperação pendente',{exact:true})).toBeVisible();
+ await expect(card.getByText(/Falha no arquivo local/)).toBeVisible();await expect(card.getByText(/este histórico não confirma a conexão atual/)).toBeVisible();
+ await expect(card.getByText(/Processo encerrado; reinício ainda não confirmado/)).toBeVisible();
+ await expect(card.getByText(/Aguardando confirmação de reconexão/)).toBeVisible();
+});
+
 test('vote protection diagnostics show pending/review counts only on demand and remain accessible',async({page,request})=>{
  await request.post('/__fixture/config',{data:{operationResponse:{worker:{online:true,status:'connected',heartbeat:new Date().toISOString(),version:'0.2.11',protectionVersion:1,backup:{},database:{},votes:{pending:2,review:1,issue:'review',at:new Date().toISOString()}}}}});
  await page.goto('/');await page.getByText('Diagnóstico e recuperação da operação',{exact:true}).click();

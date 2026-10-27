@@ -1245,6 +1245,8 @@ schedulerTimer = setInterval(() => {
       socketReady = false;
       clearInterval(schedulerTimer);
       const code = lastDisconnect?.error?.output?.statusCode ?? lastDisconnect?.error?.data?.reason;
+      const cause = code === 408 ? 'timeout' : code === 440 ? 'session_replaced' : code === 401 ? 'logged_out' : 'connection_closed';
+      console.log(`__LEILAO_CONNECTION__${JSON.stringify({ code: Number.isInteger(code) ? code : null, cause })}`);
       console.log(`Conexão encerrada (${code ?? "desconhecido"}).`);
       if (code === DisconnectReason.loggedOut) {
         console.error("A sessão foi desconectada pelo WhatsApp. Faça login novamente.");

@@ -1,5 +1,8 @@
 # Leilão Pokémon
 
+Bot 0.2.15 conectado: histórico de desconexões no diagnóstico manual, com duração e contagem em 24h; detalhes ficam no computador e só o resumo usa o heartbeat existente. [Operação e limites](docs/agent/29_CONNECTION_DIAGNOSTICS.md).
+
+
 Revisão real concluída no grupo de testes: publicação, lances, quiz/brinde, prazo comum, arremate, backup e Excel. Corrigida retirada de lance vencida que retinha a apuração. [Evidências e limites](docs/agent/28_LIVE_END_TO_END_AUDIT.md).
 
 

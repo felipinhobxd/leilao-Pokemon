@@ -12,6 +12,7 @@ const reportServiceError=createErrorReporter();
 import { WebSocket } from "ws";
 import { runBusinessBackup } from "./backup.mjs";
 import { createOperationHealth } from "./operation-health.mjs";
+import { createConnectionHistory } from "./connection-history.mjs";
 const operationHealth = createOperationHealth();
 
 const required = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"];
@@ -25,6 +26,8 @@ for (const key of required) {
 const here = path.dirname(fileURLToPath(import.meta.url));
 const WORKER_ID = process.env.BOT_WORKER_ID || `bot-${process.pid}`;
 const SESSION_DIR = path.resolve(here, process.env.WHATSAPP_SESSION_DIR || "./sessao");
+const connectionHistory = createConnectionHistory({ directory: path.resolve(here, process.env.BOT_DATA_DIR || './data') });
+const plannedStops = new WeakSet();
 const HEARTBEAT_MS = Math.min(15_000, Math.max(10_000, Number(process.env.BOT_HEARTBEAT_SECONDS || 12) * 1000));
 const QR_TTL_MS = Math.min(180_000, Math.max(45_000, Number(process.env.BOT_QR_TTL_SECONDS || 90) * 1000));
 // Janela de "grupos frescos" para o sync AUTOMÁTICO (2026-09-30: era 5 min —
@@ -125,7 +128,7 @@ async function publishState(patch = {}) {
     runtime.sessionActive = session.sessionActive;
     if (session.accountJid) runtime.accountJid = session.accountJid;
     const now = new Date().toISOString();
-    const healthJson = JSON.stringify(operationHealth.state);
+    const healthJson = JSON.stringify({ ...operationHealth.state, connection: connectionHistory.summary() });
     // Cancel the actual HTTP request after 10s; do not leave timed-out writes in flight.
     const { error } = await db.from("whatsapp_bot_workers").upsert({
       worker_id: WORKER_ID,
@@ -192,6 +195,13 @@ function groupsSyncIsFresh() {
 function handleChildLine(line, isError = false) {
   if (!line) return;
   if (!isError && decodeQrMarker(line)) return;
+  if (!isError && line.startsWith('__LEILAO_CONNECTION__')) {
+    try {
+      const value = JSON.parse(line.slice('__LEILAO_CONNECTION__'.length));
+      if (desiredRunning && !shuttingDown && !plannedStops.has(child)) connectionHistory.disconnect(value);
+    } catch { /* A malformed diagnostic must not interrupt the bot. */ }
+    return;
+  }
   if (!isError && line.startsWith('__LEILAO_MENTION__')) {
     try { operationHealth.mention(JSON.parse(line.slice('__LEILAO_MENTION__'.length)).issue); } catch {}
     return;
@@ -202,6 +212,7 @@ function handleChildLine(line, isError = false) {
   }
 
   if (line.includes("✅ WhatsApp conectado")) {
+    connectionHistory.connected();
     runtime.status = "connected";
     runtime.connectedAt = new Date().toISOString();
     runtime.lastError = null;
@@ -259,6 +270,7 @@ async function startChild() {
     stdio: ["ignore", "pipe", "pipe"],
   });
   child = activeChild;
+  activeChild.once('spawn', () => connectionHistory.processStarted());
   attachChildLogs(activeChild);
 
   activeChild.on("error", error => {
@@ -268,6 +280,7 @@ async function startChild() {
 
   activeChild.on("exit", (code, signal) => {
     if (child === activeChild) child = null;
+    if (!plannedStops.has(activeChild) && desiredRunning && !shuttingDown) connectionHistory.processExit(code);
     if (shuttingDown) return;
     if (!desiredRunning) {
       void publishState({ status: "disconnected" });
@@ -290,6 +303,8 @@ async function startChild() {
 async function stopChild() {
   if (!child) return;
   const activeChild = child;
+  plannedStops.add(activeChild);
+  connectionHistory.plannedStop();
   await new Promise(resolve => {
     let done = false;
     const finish = () => { if (!done) { done = true; resolve(); } };
@@ -665,6 +680,8 @@ function scheduleNightRestart() {
   nightRestartTimer = setTimeout(() => {
     if (child && desiredRunning && !shuttingDown) {
       console.log(`[service] restart noturno (${String(NIGHT_RESTART_HOUR).padStart(2, "0")}h05) — devolvendo memoria ao sistema`);
+      plannedStops.add(child);
+      connectionHistory.plannedStop();
       child.kill();
     }
     scheduleNightRestart();

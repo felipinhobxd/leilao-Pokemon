@@ -1,5 +1,5 @@
 import { authorize, failure, HttpError } from '@/lib/backend';
-import { readableIssue, readCleanupReport, readVoteHealth } from '@/lib/operation-health';
+import { readableIssue, readCleanupReport, readVoteHealth, readConnectionHealth } from '@/lib/operation-health';
 
 export const runtime = 'nodejs';
 const headers = { 'Cache-Control': 'private, no-store' };
@@ -18,7 +18,7 @@ export async function GET(request: Request) {
     const health = worker.data?.operational_health ?? {};
     return Response.json({
       checkedAt: new Date().toISOString(),
-      worker: worker.data ? { status: worker.data.status, online: Date.now() - Date.parse(worker.data.heartbeat_at) <= 35_000, heartbeat: worker.data.heartbeat_at, version: worker.data.version, issue: readableIssue(worker.data.last_error), protectionVersion: health.protectionVersion === 1 ? 1 : 0, cleanup: readCleanupReport(health.cleanup), votes: readVoteHealth(health.votes), mention: {at: health.mention?.at, issue: readableIssue(health.mention?.issue)}, backup: { status: health.backup?.status, at: health.backup?.at, error: readableIssue(health.backup?.error), cloud: health.backup?.cloud }, database: { failedAt: health.database?.failedAt, recoveredAt: health.database?.recoveredAt } } : null,
+      worker: worker.data ? { status: worker.data.status, online: Date.now() - Date.parse(worker.data.heartbeat_at) <= 35_000, heartbeat: worker.data.heartbeat_at, version: worker.data.version, issue: readableIssue(worker.data.last_error), protectionVersion: health.protectionVersion === 1 ? 1 : 0, cleanup: readCleanupReport(health.cleanup), votes: readVoteHealth(health.votes), connection: readConnectionHealth(health.connection), mention: {at: health.mention?.at, issue: readableIssue(health.mention?.issue)}, backup: { status: health.backup?.status, at: health.backup?.at, error: readableIssue(health.backup?.error), cloud: health.backup?.cloud }, database: { failedAt: health.database?.failedAt, recoveredAt: health.database?.recoveredAt } } : null,
       backupProtection: backups.error ? null : backups.data,
       backupReadFailed: Boolean(backups.error),
       notices: (notices.data ?? []).map(row => ({ id: row.id, kind: row.kind, attempts: row.attempts, nextAttempt: row.next_attempt_at, issue: readableIssue(row.last_error), locked: Boolean(row.locked_at), retryable: row.attempts > 0 && !row.locked_at })),

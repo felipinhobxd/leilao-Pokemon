@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readableIssue,cleanupReason,readCleanupReport,readVoteHealth} from '../lib/operation-health.ts';
+import {readableIssue,cleanupReason,readCleanupReport,readVoteHealth,readConnectionHealth} from '../lib/operation-health.ts';
+
+test('connection summary exposes bounded diagnostics without arbitrary provider data', () => {
+ assert.equal(readConnectionHealth(null),null);
+ assert.equal(readConnectionHealth({version:1,monitoredSince:'bad'}),null);
+ const value=readConnectionHealth({version:1,monitoredSince:'2026-10-27T00:00:00Z',count24h:9000,processRestarts24h:-1,storageIssue:true,last:{at:'2026-10-27T00:01:00Z',cause:'Bearer secret',code:'private',durationMs:-1,exitCode:'private',message:'token=secret'}});
+ assert.equal(value.count24h,2048); assert.equal(value.processRestarts24h,0);
+ assert.equal(value.last.cause,'connection_closed'); assert.equal(value.last.code,null); assert.equal(value.last.durationMs,null);
+ assert.ok(!JSON.stringify(value).includes('secret')); assert.equal(value.storageIssue,true);
+});
 test('vote diagnostics allow only counts, a valid timestamp and known issues', () => {
  assert.equal(readVoteHealth(null),null);
  assert.deepEqual(readVoteHealth({at:'invalid',pending:Infinity,review:-1,issue:'secret',message:'private'}),{at:null,pending:0,review:0,issue:''});

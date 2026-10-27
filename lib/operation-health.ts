@@ -39,9 +39,26 @@ export function readVoteHealth(value: unknown): VoteHealth | null {
     issue: ['storage_error', 'capacity', 'corrupt', 'review', 'retrying'].includes(String(row.issue)) ? String(row.issue) : '' };
 }
 
+export type ConnectionHealth = {
+  version: 1; monitoredSince: string; supervisorStartedAt: string | null;
+  count24h: number; processRestarts24h: number; countLimited: boolean; storageIssue: boolean; ongoing: boolean;
+  last: { at: string; cause: string; code: number | null; recoveredAt: string | null; durationMs: number | null; estimated: boolean; processExited: boolean; processRestart: boolean; exitCode: number | null } | null;
+};
+export const connectionCause: Record<string, string> = { timeout: 'Perda de conexão ou timeout', session_replaced: 'Sessão substituída por outra conexão', logged_out: 'Sessão desconectada pelo WhatsApp', connection_closed: 'Conexão encerrada', process_exit: 'Processo do bot encerrou inesperadamente' };
+export function readConnectionHealth(value: unknown): ConnectionHealth | null {
+  if (!value || typeof value !== 'object') return null;
+  const row = value as Record<string, unknown>;
+  const date = (v: unknown) => typeof v === 'string' && v.length <= 40 && Number.isFinite(Date.parse(v)) ? v : null;
+  if (row.version !== 1 || !date(row.monitoredSince)) return null;
+  const count = (v: unknown) => Number.isSafeInteger(v) && Number(v) >= 0 ? Math.min(2048, Number(v)) : 0;
+  const last = row.last && typeof row.last === 'object' ? row.last as Record<string, unknown> : null;
+  return { version: 1, monitoredSince: date(row.monitoredSince)!, supervisorStartedAt: date(row.supervisorStartedAt), count24h: count(row.count24h), processRestarts24h: count(row.processRestarts24h), countLimited: row.countLimited === true, storageIssue: row.storageIssue === true, ongoing: row.ongoing === true,
+    last: last && date(last.at) ? { at: date(last.at)!, cause: typeof last.cause === 'string' && Object.hasOwn(connectionCause, last.cause) ? last.cause : 'connection_closed', code: Number.isInteger(last.code) && Number(last.code) >= 100 && Number(last.code) <= 999 ? Number(last.code) : null, recoveredAt: date(last.recoveredAt), durationMs: Number.isSafeInteger(last.durationMs) && Number(last.durationMs) >= 0 ? Number(last.durationMs) : null, estimated: last.estimated === true, processExited: last.processExited === true, processRestart: last.processRestart === true, exitCode: Number.isInteger(last.exitCode) && Number(last.exitCode) >= 0 && Number(last.exitCode) <= 255 ? Number(last.exitCode) : null } : null };
+}
+
 export type OperationHealth = {
   checkedAt: string;
-  worker: { status: string; online: boolean; heartbeat: string | null; version: string | null; issue: string; protectionVersion?: number; cleanup?: CleanupReport | null; votes?: VoteHealth | null; mention?: { at?: string; issue?: string }; backup: { status?: string; at?: string; error?: string; cloud?: boolean }; database: { failedAt?: string; recoveredAt?: string } } | null;
+  worker: { status: string; online: boolean; heartbeat: string | null; version: string | null; issue: string; protectionVersion?: number; cleanup?: CleanupReport | null; votes?: VoteHealth | null; connection?: ConnectionHealth | null; mention?: { at?: string; issue?: string }; backup: { status?: string; at?: string; error?: string; cloud?: boolean }; database: { failedAt?: string; recoveredAt?: string } } | null;
   backupProtection?: BackupProtection | null;
   backupReadFailed: boolean;
   notices: { id: string; kind: string; attempts: number; nextAttempt: string; issue: string; retryable: boolean; locked: boolean }[];

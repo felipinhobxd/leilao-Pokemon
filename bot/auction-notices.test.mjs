@@ -7,6 +7,19 @@ test('summary uses the selected Brasilia deadline and @all at beginning',()=>{
   assert.match(finishedQueueText('2026-10-26T02:30:00Z'),/23H30!/);
   assert.match(finishedQueueText('2026-10-26T04:00:00Z',true,Date.parse('2026-10-26T05:00:00Z')),/PRAZO DOS LANCES ENCERRADO/);
 });
+
+test('partial queue summary keeps deadline, explicitly limits it to published cards and handles native mention fallback',async()=>{
+  for(const count of [1,2]) {
+    const text=finishedQueueText('2026-10-26T04:00:00Z',false,null,count);
+    assert.match(text,new RegExp(`${count} carta`));assert.match(text,/prazo vale apenas para as cartas publicadas/);
+    assert.match(text,/LANCES VÁLIDOS ATÉ 1H/);assert.doesNotMatch(text,/@all/);
+  }
+  const f=operationalFixture();f.state.row.payload.not_published_count=2;
+  assert.equal(await f.create().tick(),1);
+  assert.match(f.state.sends[0].payload.text,/2 cartas não foram publicadas/);
+  assert.equal(f.state.sends[0].payload.mentionAll,false);
+  assert.doesNotMatch(finishedQueueText('2026-10-26T04:00:00Z',true,null,-1),/não foram publicadas/);
+});
 test('result notices are serialized and 15 seconds apart; summary preserves native mentionAll',async()=>{
   let now=0;const sends=[],acks=[],timers=[];
   const rows=[{id:'summary',kind:'queue_finished',group_jid:'g@g.us',payload:{ends_at:'2026-10-26T04:00:00Z'}},...['a','b'].map(id=>({id,kind:'auction_closed',group_jid:'g@g.us',payload:{card_name:id,lot_number:1}}))];

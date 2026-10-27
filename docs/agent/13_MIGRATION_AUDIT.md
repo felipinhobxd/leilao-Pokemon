@@ -1,5 +1,7 @@
 # 13_MIGRATION_AUDIT — Conferência de produção
 
+> 27/10, auditoria GLM fase 3: `20261027163530_auction_withdrawal_minute_and_partial_queue_notice.sql` criada pela CLI e renomeada para a versão registrada pelo conector. **76 arquivos locais / 84 registros remotos**. Regras de retirada de 60s e resumo parcial instaladas; funções continuam SECURITY INVOKER, search_path vazio e EXECUTE só service_role, verificados por catálogo. Sem replay de filas antigas ou comandos reais de leilão. [Detalhes](35_GLM_AUDIT_PHASE3_RULES.md). Não executar `db push`/`repair` geral.
+
 > 26/10, fase 1: `20261026165459_guard_finalization_for_pending_votes.sql` instalada no projeto correto, criada pela CLI e renomeada para a versão registrada. 75 arquivos locais/83 registros remotos. RPC de três argumentos, SECURITY INVOKER, search_path vazio e EXECUTE somente para service_role confirmados por catálogo. Nenhuma finalização real chamada. [Contrato e limites](27_PHASED_REVIEW_FIXES.md); não reparar diferenças históricas automaticamente.
 
 > Política atual autorizada: [25_AUTOMATIC_CLEANUP_ALL_OUTCOMES.md](25_AUTOMATIC_CLEANUP_ALL_OUTCOMES.md). Limpeza automática inclui vendidos/arremates e dados financeiros após 12h do envio, condicionada à cobertura do backup. Substitui a preservação automática de compras descrita historicamente abaixo. Migration 20261026041119 instalada (74 locais/82 remotos).

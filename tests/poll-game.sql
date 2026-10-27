@@ -25,6 +25,13 @@ begin
  perform public.claim_quick_poll_prize(pid,'00000000-0000-0000-0000-000000000083',0,'correct',clock_timestamp());
  perform pg_temp.game_check((select count(*)=1 from public.whatsapp_auction_notices where quick_poll_id=pid),'one durable announcement');
  perform pg_temp.game_check((select winner_name='Maria' from public.whatsapp_quick_polls where id=pid),'winner persists');
+ perform pg_temp.game_check(not exists(select 1 from public.purchases where participant_id='00000000-0000-0000-0000-000000000083'),'quiz winner did not need any purchase');
+ payload:=jsonb_build_object('eventId','free-giveaway-test','groupId','00000000-0000-0000-0000-000000000082','kind','giveaway','title','Brinde livre','prizeName','Pikachu brinde','options',jsonb_build_array('SIM','NÃO'),'correctIndex',0,'scheduledAt',clock_timestamp());
+ result:=public.create_quick_poll_game(payload,'00000000-0000-0000-0000-000000000081');pid:=(result->>'id')::uuid;
+ update public.whatsapp_quick_polls set sent_at=clock_timestamp(),poll_message_id='free-giveaway-poll',poll_message_json='{}' where id=pid;
+ perform pg_temp.game_check((public.claim_quick_poll_prize(pid,'00000000-0000-0000-0000-000000000084',0,'giveaway-correct',clock_timestamp())->>'won')::boolean,'giveaway first correct wins without purchase');
+ perform pg_temp.game_check((public.claim_quick_poll_prize(pid,'00000000-0000-0000-0000-000000000083',0,'giveaway-later',clock_timestamp())->>'won')::boolean=false,'later giveaway correct cannot replace winner');
+ perform pg_temp.game_check(not exists(select 1 from public.purchases where participant_id='00000000-0000-0000-0000-000000000084'),'giveaway neither requires nor creates purchase');
  -- Mixed queue: quiz consumes a publication slot, never a lot/auction/purchase.
  payload:=jsonb_build_object('eventId','mixed-game-queue','queue',jsonb_build_object('group_id','00000000-0000-0000-0000-000000000082','starts_at',clock_timestamp()+interval '10 minutes','interval_seconds',30),'items',jsonb_build_array(jsonb_build_object('card',jsonb_build_object('name','Eevee'),'giveaway',jsonb_build_object('kind','quiz','question','Quantas evoluções?','options',jsonb_build_array('8','2'),'correctIndex',0)),jsonb_build_object('card',jsonb_build_object('name','Normal card'),'auction',jsonb_build_object('starting_price',5,'bid_increment',1,'duration_seconds',120,'poll_options',jsonb_build_array(jsonb_build_object('label','5','amount',5))))));
  result:=public.create_auction_queue_with_games(payload,'00000000-0000-0000-0000-000000000081');qid:=(result->'queue'->>'id')::uuid;

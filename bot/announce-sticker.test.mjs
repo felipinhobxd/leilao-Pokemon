@@ -121,6 +121,9 @@ test("regras: mensagem padrao da operadora carrega integra", () => {
   assert.ok(text.includes("FAMILIA DE FOCAS") || text.includes("FAMÍLIA DE FOCAS"));
   assert.ok(text.includes("ARREMATE"));
   assert.ok(text.includes("1 minuto"));
+  assert.ok(text.includes("Não é necessário comprar ou arrematar"));
+  assert.ok(text.includes("ARREMATE é definitivo e não pode ser retirado"));
+  assert.ok(!text.includes("é obrigatório ter arrematado"));
   assert.ok(text.includes("LANCE/ARREMATE E COMPROMISSO") || text.includes("LANCE/ARREMATE É COMPROMISSO"));
 });
 

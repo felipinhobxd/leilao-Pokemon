@@ -776,6 +776,10 @@ async function handlePollVote(dispatch, pollUpdate, originalMessageOverride, del
         await processCommand({ type: "BID_WITHDRAWN", eventId, auctionId: dispatch.auction_id, participantId: participant.id, occurredAt });
       } catch (error) {
         const reason = String(error?.message || error);
+        if (reason.includes("withdrawal_window_expired")) {
+          await auditLateVote(dispatch.auction_id, participant.id, "BID_WITHDRAWN_AFTER_WINDOW", eventId, { voter_jid: voterJid, phone_e164: participant.phone_e164, display_name: participant.display_name, event_at: occurredAt, reason: "withdrawal_window_expired" });
+          return; // The database kept the accepted bid; do not clear its state.
+        }
         if (reason.includes("auction_not_open") || reason.includes("deadline_expired")) {
           const { data: auction, error: readError } = await db.from("auctions").select("scheduled_end_at").eq("id", dispatch.auction_id).maybeSingle();
           if (readError) throw new Error(readError.message);

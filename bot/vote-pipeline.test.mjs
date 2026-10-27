@@ -136,6 +136,25 @@ test('expired withdrawal is audited without pretending the accepted bid was remo
   assert.equal(f.context.voteInbox.status().pending, 0); assert.equal(f.context.voteInbox.status().review, 0);
 });
 
+test('withdrawal after one minute preserves the accepted bid and releases the durable event only after audit',async t=>{
+  const f=withdrawalFixture(t);
+  f.context.processCommand=async()=>{throw Error('withdrawal_window_expired');};
+  await f.context.processIncomingPollMessage(f.message('withdraw-after-minute'));
+  assert.equal(f.audits[0][2],'BID_WITHDRAWN_AFTER_WINDOW');assert.equal(f.saves.length,0);
+  assert.equal(f.context.voteInbox.status().pending,0);assert.equal(f.context.voteInbox.status().review,0);
+});
+
+test('one-minute refusal with lost audit acknowledgement retries without a duplicate or clearing the accepted bid',async t=>{
+  const f=withdrawalFixture(t);
+  f.context.processCommand=async()=>{throw Error('withdrawal_window_expired');};
+  const audit=installActualAudit(f.context,{loseFirstResponse:true});
+  await f.context.processIncomingPollMessage(f.message('withdraw-minute-audit-lost'));
+  assert.equal(f.context.voteInbox.status().pending,1);
+  f.advance();await f.context.voteInbox.drain();
+  assert.equal(audit.inserts,2);assert.equal(audit.reads,1);assert.equal(f.saves.length,0);
+  assert.equal(f.context.voteInbox.status().pending,0);assert.equal(f.context.voteInbox.status().review,0);
+});
+
 test('provably late withdrawal retry releases finalization without accepting the withdrawal', async t => {
   const f = withdrawalFixture(t, { networkFirst: true });
   await f.context.processIncomingPollMessage(f.message('withdraw')); assert.equal(f.context.voteInbox.finalizationGuard().pollIds.length, 1);

@@ -41,7 +41,7 @@ export const ANNOUNCE_GRACE_MINUTES = Number(process.env.BOT_ANNOUNCE_GRACE_MINU
 // bot/data/rules-message.json {"text": "..."} sem tocar no código.
 export const ANNOUNCE_RULES_MINUTES_BEFORE = Number(process.env.BOT_RULES_MINUTES_BEFORE ?? 2);
 
-// Texto padrão das regras (pedido do operador 2026-09-25, verbatim).
+// Texto padrão original de 2026-09-25, atualizado pelas decisões de 2026-10-27.
 export const DEFAULT_RULES_MESSAGE = `ㅤ𓈒ㅤ📘 REGRAS DO LEILÃO 🗯️ ♡ ┈─╯
 
 OLÁ, MINHA FAMÍLIA DE FOCAS! 🦭
@@ -58,7 +58,7 @@ Estamos testando um bot para facilitar a dinâmica dos nossos leilões! Ele regi
 
 ♡ 4. Os lances valem até o horário de encerramento anunciado para a fila. No dia seguinte, enviamos os relatórios no privado de cada um.
 
-♡ 5. Os brindes vão para quem clicar primeiro, mas é obrigatório ter arrematado pelo menos uma carta no leilão. Caso contrário, o brinde passa para o próximo.
+♡ 5. No brinde e no quiz, ganha quem marcar primeiro a única resposta correta, conforme o registro confirmado pelo bot. Não é necessário comprar ou arrematar uma carta para participar.
 
 ╭── 💳 . ࣪ PAGAMENTOS ୭ ࣪♡
 
@@ -80,7 +80,7 @@ Obrigada por fazerem parte da nossa família de focas e acompanharem essa novida
 
 ⚠️ LANCE/ARREMATE É COMPROMISSO!
 
-Dê lances apenas se tiver CERTEZA de que poderá pagar. Você tem até 1 minuto para cancelar: depois disso, não é permitido retirar o lance ou arremate! O bot registra tudo automaticamente, e desistências fora do prazo prejudicam nossa organização e os outros membros que também queriam a carta. ⚠️`;
+Dê lances apenas se tiver CERTEZA de que poderá pagar. Você tem até 1 minuto após seu último lance comum aceito para retirá-lo, desde que o leilão ainda esteja aberto e dentro do horário anunciado. Depois desse minuto, a retirada não é permitida. ARREMATE é definitivo e não pode ser retirado! O bot registra tudo automaticamente, e desistências fora do prazo prejudicam nossa organização e os outros membros que também queriam a carta. ⚠️`;
 
 /** Texto das regras: arquivo em bot/data/rules-message.json vence o default
  * (a operadora pode editar sem redeploy); ausente/corrompido = default. */

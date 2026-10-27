@@ -1,5 +1,8 @@
 # 12 — Handoff atual
 
+> Auditoria GLM — fase 3 (2026-10-27): [35_GLM_AUDIT_PHASE3_RULES.md](35_GLM_AUDIT_PHASE3_RULES.md). Operador escolheu primeiro acerto sem compra para quiz/brinde, retirada de lance comum em até 60s e conclusão parcial com aviso das cartas não publicadas. Bot **0.2.18 no disco, não ativado**; sem processo local ativo na conferência. Migration `20261027163530` instalada/verificada, **76 arquivos locais / 84 registros remotos**, sem reparação de histórico. 141 testes bot, 171 raiz, typecheck e 34 suítes SQL locais aprovados. **Parar após CI/deploy e perguntar antes da próxima fase.** Entradas anteriores são histórico.
+
+
 > Auditoria GLM — fase 2 (2026-10-27): [34_GLM_AUDIT_PHASE2_NOTICES.md](34_GLM_AUDIT_PHASE2_NOTICES.md). Bot **0.2.17 no disco, não ativado**. Operador autorizou conclusão sem @all quando a falta de permissão for confirmada, com alerta administrativo idempotente e decisão persistida. Falha de entrega por dez tentativas também escala aos admins, sem descartar a mensagem. 138 testes bot, 171 raiz e typecheck aprovados localmente; SQL ampliado na CI. Sem migration, produção ou polling novo. **Parar após CI e pedir autorização para fase 3.** Entradas anteriores são histórico.
 
 

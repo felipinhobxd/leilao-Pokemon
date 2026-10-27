@@ -33,3 +33,5 @@ Sem transação distribuída com WhatsApp: IDs estáveis e registros reduzem ree
 Bot **0.2.17 no disco**, sem ativação, reinício ou mensagens reais nesta fase. Não se aplicou migration, não se limpou produção, não se gerou backup real e não se baixaram imagens. O push atualiza o código no GitHub e o site pelo fluxo existente, mas não ativa automaticamente o bot local.
 
 Restam decisões de negócio da auditoria: elegibilidade de brindes, texto/janela de um minuto para retirada e aviso de conclusão de fila parcialmente falha. A resolução assistida de identidades e a redução do piso de polling são trabalhos separados. **Parar após CI/deploy e perguntar antes de iniciar a fase 3; não presumir essas decisões.**
+
+CI da fase 2 confirmada no commit `76a8d0e8`: [CI](https://github.com/felipinhobxd/leilao-Pokemon/actions/runs/40504084172), banco/restore/concorrência/build e 60 testes de navegador aprovados; deploy Vercel aprovado.

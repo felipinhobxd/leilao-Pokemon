@@ -5,12 +5,14 @@ import { createErrorReporter } from './supabase-resilience.mjs';
 import { describeError } from './error-log.mjs';
 import { prizeWinnerText } from './poll-game.mjs';
 
-export function finishedQueueText(endsAt, collective=true, now=null) {
+export function finishedQueueText(endsAt, collective=true, now=null, notPublishedCount=0) {
   const parts=new Intl.DateTimeFormat('pt-BR',{timeZone:'America/Sao_Paulo',hour:'numeric',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(endsAt));
   const hour=Number(parts.find(p=>p.type==='hour')?.value), minute=parts.find(p=>p.type==='minute')?.value;
   const deadline=`${hour}H${minute==='00'?'':minute}${hour<6?' DA MANHÃ':''}`;
   const line=now!=null && new Date(endsAt).getTime()<=now ? `PRAZO DOS LANCES ENCERRADO ÀS ${deadline}!` : `LANCES VÁLIDOS ATÉ ${deadline}!`;
-  return `${collective?'@all\n\n':''}LEILÃO FINALIZADO!\n\n${line}`;
+  const missing=Number.isSafeInteger(notPublishedCount)&&notPublishedCount>0 ? notPublishedCount : 0;
+  const warning=missing ? `\n\n⚠️ ${missing} ${missing===1?'carta não foi publicada':'cartas não foram publicadas'}. O prazo vale apenas para as cartas publicadas.` : '';
+  return `${collective?'@all\n\n':''}LEILÃO FINALIZADO!\n\n${line}${warning}`;
 }
 
 export function createAuctionNoticeDrain({db,getSocket,workerId,resolveJid,now=Date.now,schedule=setTimeout,report=createErrorReporter()}) {
@@ -63,7 +65,7 @@ export function createAuctionNoticeDrain({db,getSocket,workerId,resolveJid,now=D
             }
           }
           const collective=!notice.payload.mention_denied;
-          payload={text:finishedQueueText(notice.payload.ends_at,collective,now()),mentionAll:collective};
+          payload={text:finishedQueueText(notice.payload.ends_at,collective,now(),notice.payload.not_published_count),mentionAll:collective};
         }else if(notice.kind==='quick_poll_winner'){
           const row=notice.payload;
           const jid=await resolveJid(row.winner_participant_id);

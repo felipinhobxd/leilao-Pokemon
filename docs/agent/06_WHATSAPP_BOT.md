@@ -1,5 +1,7 @@
 # 06_WHATSAPP_BOT — Worker Baileys (bot/)
 
+> 0.2.17: conclusão sem @all apenas com falta de privilégio confirmada e participação do bot conhecida; decisão persistida e alerta administrativo único. Avisos com dez tentativas sem entrega confirmada geram alerta adicional, continuando pendentes. Sem migration/ativação nesta fase. [Contrato e testes](34_GLM_AUDIT_PHASE2_NOTICES.md).
+
 > 0.2.16: `BOT_ADMIN_WA_JIDS` é obrigatório no `bot/.env`, sem números padrão no código; formato numérico com DDI e sufixo `@s.whatsapp.net`. Valores vazios/inválidos impedem iniciar o filho, com erro de configuração. A instalação local foi configurada privadamente; nenhuma ativação/reconexão nesta fase. Ver [auditoria fase 1](33_GLM_AUDIT_PHASE1_FIXES.md).
 
 > Atualização: [29_CONNECTION_DIAGNOSTICS.md](29_CONNECTION_DIAGNOSTICS.md). Bot 0.2.15 ativado: histórico local limitado de desconexões, duração, reinício inesperado e contagem de 24h no diagnóstico manual. Resumo no heartbeat existente, sem migration ou polling extra. 170 testes raiz/123 bot; monitoramento iniciado às 21h48 de 26/10/2026.

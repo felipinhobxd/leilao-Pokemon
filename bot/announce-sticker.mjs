@@ -157,7 +157,7 @@ export function buildOpeningMessage(mentionAll = true) {
 
 export function openingMentionPermission(metadata, user) {
   if (!Array.isArray(metadata?.participants) || !metadata.participants.length) {
-    return { allowed: false, reason: "Não foi possível confirmar os participantes do grupo." };
+    return { allowed: false, code: "metadata_unavailable", reason: "Não foi possível confirmar os participantes do grupo." };
   }
   const count = Math.max(Number(metadata.size) || 0, metadata.participants.length);
   if (count <= 32) return { allowed: true, reason: null };
@@ -167,7 +167,7 @@ export function openingMentionPermission(metadata, user) {
   const isAdmin = self?.admin === "admin" || self?.admin === "superadmin" || own.has(normalizeUserJid(metadata.owner));
   return isAdmin
     ? { allowed: true, reason: null }
-    : { allowed: false, reason: "O bot precisa ser administrador para usar @all em grupos com mais de 32 participantes." };
+    : { allowed: false, code: self ? "mention_denied" : "membership_unconfirmed", reason: "O bot precisa ser administrador para usar @all em grupos com mais de 32 participantes." };
 }
 
 /** Used by the real opening sequence and tested without a WhatsApp socket. */

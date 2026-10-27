@@ -145,3 +145,13 @@ test("admin notification configuration refuses missing or invalid recipients", (
   assert.throws(() => parseAdminJids("invalid@g.us"), /BOT_ADMIN_WA_JIDS/);
   assert.deepEqual(parseAdminJids("10000000001@s.whatsapp.net,10000000001@s.whatsapp.net"), ["10000000001@s.whatsapp.net"]);
 });
+
+test("operational notice alerts identify missing mention permission or pending delivery without claiming sale warnings", () => {
+  for(const kind of ['NOTICE_MENTION_DENIED','NOTICE_DELIVERY_DELAYED']) {
+    const text=formatAdminNotification({kind,payload:{group_jid:'fixture@g.us',notice_id:'notice',ends_at:'2026-10-26T04:00:00Z'}});
+    assert.match(text,/fixture@g.us/);assert.match(text,/notice/);assert.match(text,/01:00:00/);
+    assert.doesNotMatch(text,/USUÁRIO ATINGIU|Total de avisos/);
+    if(kind==='NOTICE_MENTION_DENIED'){assert.match(text,/sem @all/);assert.match(text,/confirme a entrega/);}
+    else assert.match(text,/permanece na fila/);
+  }
+});

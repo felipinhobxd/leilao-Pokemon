@@ -20,7 +20,7 @@ Autorizada em 27/10/2026, após a segunda auditoria corrigir conclusões da prim
 - Recuperação: manifesto de auditoria completa, janela histórica de sete dias e cobertura desconhecida; hashes/SQL/imagens simuladas preservados.
 - Contatos antigos ausentes dos arquivos rastreados atuais; `bot/.env` privado válido e ignorado. Isso não é remoção do histórico nem de cópias externas.
 
-CI remota e deploy devem ser conferidos no commit desta fase antes de informar aprovação remota. Os testes de navegador/SQL completos já fazem parte da CI; não usam produção.
+CI remota do commit `08b908db` aprovada: [run 587](https://github.com/felipinhobxd/leilao-Pokemon/actions/runs/40474742287), incluindo 60 testes de navegador, banco, restauração, concorrência e build; deploy Vercel aprovado. Os testes de navegador/SQL completos já fazem parte da CI; não usam produção.
 
 ## Operação e limites
 

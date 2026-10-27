@@ -1,5 +1,8 @@
 # 12 — Handoff atual
 
+> Auditoria GLM — fase 2 (2026-10-27): [34_GLM_AUDIT_PHASE2_NOTICES.md](34_GLM_AUDIT_PHASE2_NOTICES.md). Bot **0.2.17 no disco, não ativado**. Operador autorizou conclusão sem @all quando a falta de permissão for confirmada, com alerta administrativo idempotente e decisão persistida. Falha de entrega por dez tentativas também escala aos admins, sem descartar a mensagem. 138 testes bot, 171 raiz e typecheck aprovados localmente; SQL ampliado na CI. Sem migration, produção ou polling novo. **Parar após CI e pedir autorização para fase 3.** Entradas anteriores são histórico.
+
+
 > Auditoria GLM — fase 1 (2026-10-27): [33_GLM_AUDIT_PHASE1_FIXES.md](33_GLM_AUDIT_PHASE1_FIXES.md). Bot **0.2.16 no disco, não ativado**. Contatos removidos da árvore atual e configurados em `.env` privado; CI executa todos os testes do bot; replay da auditoria exige leitura/identidade; falha de projeção dos IDs é tratada sem falhar publicação entregue; manifesto/README corrigidos. 171 testes raiz, 130 bot e typecheck locais aprovados. Sem acesso ao Supabase/WhatsApp nesta fase. **Parar após CI e perguntar antes da fase 2.** As entradas anteriores abaixo são histórico, não diagnóstico do processo atual.
 
 

@@ -77,6 +77,17 @@ export function formatDispatchFailedNotification(payload) {
 export function formatAdminNotification(notification) {
   const kind = String(notification?.kind ?? "");
   if (kind === "DISPATCH_FAILED") return formatDispatchFailedNotification(notification.payload);
+  if (kind === "NOTICE_MENTION_DENIED" || kind === "NOTICE_DELIVERY_DELAYED") {
+    const data=notification.payload??{};
+    const lines=[kind === "NOTICE_MENTION_DENIED" ? "⚠️ AVISO DE ENCERRAMENTO SEM @all" : "🚨 AVISO DE LEILÃO AINDA PENDENTE",
+      "",`Grupo: ${String(data.group_jid??"—")}`,`Aviso: ${String(data.notice_id??"—")}`,
+      kind === "NOTICE_MENTION_DENIED"
+        ? "O bot não tem permissão para marcar todos. A conclusão será enviada sem @all; confirme a entrega no grupo."
+        : "A entrega não foi confirmada após pelo menos dez tentativas. O aviso permanece na fila; confira a conexão e a permissão de envio no grupo.",
+      data.ends_at ? `Prazo dos lances: ${dateTime(data.ends_at)} (Brasília)` : null,
+      "Confira Saúde da operação no painel. Não é necessário republicar as cartas."];
+    return lines.filter(line=>line!==null).join("\n");
+  }
   return formatWarningNotification(notification.payload);
 }
 
@@ -124,7 +135,11 @@ export function createAdminNotificationDrain({ db, getSocket, adminJids = parseA
             delivered += 1;
             // Terminal: QUEM, em qual enquete/lote e quais valores — o operador
             // acompanha ao vivo sem abrir o painel.
-            console.log(`⚠️ 3 AVISOS: ${String(payload.participant_name ?? "Participante")} — última redução no lote ${payload.lot_number ?? "—"} (${payload.card_name ?? "Carta"}): ${brl(payload.previous_amount)} → ${brl(payload.new_amount)} · DM enviada a ${sentTo.length} admin(s).`);
+            if (notification.kind === "NOTICE_MENTION_DENIED" || notification.kind === "NOTICE_DELIVERY_DELAYED") {
+              console.log(`Aviso operacional ${notification.kind}: DM enviada a ${sentTo.length} admin(s).`);
+            } else {
+              console.log(`⚠️ 3 AVISOS: ${String(payload.participant_name ?? "Participante")} — última redução no lote ${payload.lot_number ?? "—"} (${payload.card_name ?? "Carta"}): ${brl(payload.previous_amount)} → ${brl(payload.new_amount)} · DM enviada a ${sentTo.length} admin(s).`);
+            }
           }
         }
         return delivered;

@@ -126,7 +126,9 @@ async function publishState(patch = {}) {
   publishBusy = true;
   try {
     const session = await readSessionInfo();
-    runtime.sessionActive = session.sessionActive;
+    // Some migrated Baileys sessions retain registered=false even while the
+    // socket is authenticated. A live connection is authoritative for the UI.
+    runtime.sessionActive = runtime.status === "connected" || session.sessionActive;
     if (session.accountJid) runtime.accountJid = session.accountJid;
     const now = new Date().toISOString();
     const healthJson = JSON.stringify({ ...operationHealth.state, connection: connectionHistory.summary() });

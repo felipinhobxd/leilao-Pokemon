@@ -1,6 +1,6 @@
 # 01_PROJECT_CONTEXT — Contexto geral do sistema
 
-> Estado atual: [00_INDEX.md](00_INDEX.md) e [41_FULL_REVIEW_PHASE2_REQUESTS.md](41_FULL_REVIEW_PHASE2_REQUESTS.md). Bot **0.2.23 em disco**, migration/ativação pendentes; não confundir com versão em execução. Next.js 16.4.3. Seções anteriores são histórico; não reaplicar migrations automaticamente.
+> Estado atual: [00_INDEX.md](00_INDEX.md) e [42_FULL_REVIEW_PHASE3_ACTIVATION.md](42_FULL_REVIEW_PHASE3_ACTIVATION.md). Bot **0.2.24 ativado/conectado**, revisão 2 do banco instalada e testada. Next.js 16.4.3. Seções anteriores são histórico; não reaplicar migrations automaticamente.
 
 
 > Área: Projeto inteiro

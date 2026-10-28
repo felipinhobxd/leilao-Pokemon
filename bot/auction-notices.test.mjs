@@ -100,6 +100,23 @@ function operationalFixture({attempts=0,kind='queue_finished'}={}) {
   return {state,create,advance(){clock+=30_000;}};
 }
 
+test('buyout delivery survives a send failure and restart with the same ID and immutable result',async()=>{
+  const f=operationalFixture({kind:'buyout_confirmed'});
+  f.state.row.payload={winner_participant_id:'person',winner_name:'Winner',card_name:'Card',lot_number:7,final_price:3,win_type:'buyout'};
+  f.state.failSend=true;
+  assert.equal(await f.create().tick(),0);
+  assert.deepEqual(f.state.acks,[false]);
+  f.state.failSend=false;f.advance();
+  assert.equal(await f.create().tick(),1);
+  assert.match(f.state.sends[1].payload.text,/ARREMATADO/);
+  assert.match(f.state.sends[1].payload.text,/Lote 7/);
+  assert.match(f.state.sends[1].payload.text,/Winner/);
+  assert.match(f.state.sends[1].payload.text,/3,00/);
+  assert.equal(f.state.sends[0].options.messageId,f.state.sends[1].options.messageId);
+  assert.deepEqual(f.state.acks,[false,true]);
+  assert.equal(await f.create().tick(),0);
+});
+
 test('confirmed non-admin membership sends deadline without collective mention and queues one admin alert',async()=>{
   const f=operationalFixture();assert.equal(await f.create().tick(),1);
   const {state}=f;

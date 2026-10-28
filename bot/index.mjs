@@ -1,3 +1,6 @@
+import { finiteNumber } from './numeric-config.mjs';
+import { createStickerCapture } from './sticker-capture.mjs';
+import { assertDeliverySchema } from './delivery-schema.mjs';
 import "./session-guard.mjs";
 import { createSerialCycle } from "./serial-cycle.mjs";
 import { createWorkDiscovery } from "./work-discovery.mjs";
@@ -27,7 +30,7 @@ import { isLidJid, isPhoneJid, normalizeUserJid } from "./poll-identities.mjs";
 import { decryptIncomingPollVote, unwrapMessageContent } from "./poll-votes.mjs";
 import { createAdminNotificationDrain, parseAdminJids } from "./warning-notify.mjs";
 import { syncPublicationProjection } from "./publication-projection.mjs";
-import { resolveParticipantJid, mentionMessage } from "./participant-contact.mjs";
+import { resolveParticipantJid } from "./participant-contact.mjs";
 import { createPaymentReminderDrain } from "./payment-reminder.mjs";
 import { ANNOUNCE_GRACE_MINUTES, ANNOUNCE_MINUTES_BEFORE, ANNOUNCE_RULES_MINUTES_BEFORE, sendOpeningMention, loadAnnouncedQueueIds, loadAnnouncementSticker, loadRulesAnnouncedQueueIds, loadRulesMessage, markQueueAnnounced, markQueueRulesAnnounced, saveAnnouncementSticker } from "./announce-sticker.mjs";
 import { queueEnabled, startQueueWorker } from "./queue-worker.mjs";
@@ -53,6 +56,13 @@ const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 });
 
 const hasPendingWork = createWorkDiscovery({ db, onError: error => reportServiceError('Descoberta de trabalho', error) });
+
+// Check once before connecting WhatsApp: never sell using an uninstalled outbox.
+try { await assertDeliverySchema(db); }
+catch (error) {
+  console.error(describeError(error));
+  process.exit(error.code === 'delivery_schema_missing' ? 3 : 1);
+}
 
 // 2026-10-08: o filho NÃO tinha handlers de rejeição — na queda do Supabase
 // (Cloudflare 520/521/525) um erro cru (throw do finalizeDueAuctions, que era
@@ -100,10 +110,12 @@ let dispatchQueue = null;
 let voteQueue = Promise.resolve();
 // Avisos globais: entrega as notificações de 3 avisos aos administradores
 // (linha criada de forma idempotente pelo RPC process_auction_command).
+const adminJids = parseAdminJids();
 const adminNotificationDrain = createAdminNotificationDrain({
   db,
   getSocket: () => (socketReady ? sock : null),
-  adminJids: parseAdminJids(),
+  adminJids,
+  workerId: WORKER_ID,
 });
 // Lembretes de pagamento: DM a cada 7 dias (BOT_PAYMENT_REMINDER_DAYS) para
 // arrematantes sem baixa de pagamento; sem aviso/punição; para quando o
@@ -143,7 +155,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 // Ritmo da publicação: a FOTO sai primeiro e a enquete nativa só sai
 // WHATSAPP_POLL_DELAY_MS depois, para o grupo ver a carta antes das
 // opções de lance. Configurável (0 = comportamento antigo, tudo junto).
-const POLL_AFTER_PHOTO_MS = Math.max(0, Number(process.env.WHATSAPP_POLL_DELAY_MS ?? 5000));
+const POLL_AFTER_PHOTO_MS = finiteNumber(process.env.WHATSAPP_POLL_DELAY_MS, 5000, 0, 2_147_483_647);
 const brl = value => new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(Number(value));
 
 function storageValue(value) {
@@ -816,12 +828,9 @@ async function handlePollVote(dispatch, pollUpdate, originalMessageOverride, del
     const contact = participant.phone_e164 ? ` (${participant.phone_e164})` : "";
     if (isBuyout) {
       console.log(`🏆 ARREMATE: ${participant.display_name}${contact} → ${brl(result?.auction?.final_price ?? amount)}`);
-      const { group, card } = await fetchAuctionContext(dispatch);
-      // P-06: @menção real ao arrematante (JID de telefone); sem JID resolvido
-      // a mensagem sai com o nome em texto plano — nunca deixa de ser enviada.
-      const winnerJid = await resolveParticipantJid(db, participant.id);
-      const winnerMention = mentionMessage(participant.display_name, participant.id, winnerJid, who => who);
-      await sock.sendMessage(group.group_jid, { text: `🏆 *ARREMATADO!*\n\n🃏 ${card.name}\n👤 ${winnerMention.text}\n💰 ${brl(result?.auction?.final_price ?? amount)}`, mentions: winnerMention.mentions });
+      // The sale transaction persisted the announcement; delivery can retry independently.
+      auctionNoticeDrain.wake();
+      void auctionNoticeDrain.tick();
     } else if (previous?.active) {
       // Redução de lance = aviso global registrado (regra dos 3, decisão do
       // operador: a PESSOA não recebe DM — só conta; aos 3 os admins são
@@ -989,38 +998,16 @@ async function handleIncomingMessages(messages) {
 
 // ---------------------------------------------------------------------------
 // P-05 — captura da figurinha de abertura ("O leilão vai começar!").
-// Fluxo do operador: com o bot rodando, enviar a figurinha em qualquer
+// Fluxo: a conta conectada ou um administrador em BOT_ADMIN_WA_JIDS envia sua figurinha em uma
 // conversa e digitar `!figurinha` na mesma conversa. O bot responde com a
 // confirmação; a figurinha persiste em bot/data/announcement-sticker.json.
 // ---------------------------------------------------------------------------
-const lastStickerByChat = new Map();
-async function maybeCaptureAnnouncementSticker(message) {
-  const chatJid = message?.key?.remoteJid;
-  if (!chatJid || !message?.message) return;
-  // Mesma correção dos votos (2026-09-29): em conversas com mensagens
-  // temporárias, figurinha e texto chegam ENCAPSULADOS em ephemeralMessage —
-  // o check direto não via nada e a captura falhava em silêncio.
-  const content = unwrapMessageContent(message.message);
-  if (content?.stickerMessage) {
-    lastStickerByChat.set(chatJid, { key: message.key, message: content });
-    // Buffer limitado: só interessa a ÚLTIMA figurinha por chat.
-    if (lastStickerByChat.size > 100) {
-      const oldest = lastStickerByChat.keys().next().value;
-      lastStickerByChat.delete(oldest);
-    }
-    return;
-  }
-  const text = String(content?.conversation ?? content?.extendedTextMessage?.text ?? "").trim();
-  if (text.toLowerCase() !== "!figurinha") return;
-  const sticker = lastStickerByChat.get(chatJid);
-  if (!sticker) {
-    await sock.sendMessage(chatJid, { text: "❗ Não encontrei figurinha recente nesta conversa. Envie a figurinha e DEPOIS digite !figurinha (a figurinha precisa ser enviada com o bot rodando)." });
-    return;
-  }
-  saveAnnouncementSticker(sticker.key, sticker.message);
-  await sock.sendMessage(chatJid, { text: `✅ Figurinha de abertura salva!\n\nEla será enviada ${ANNOUNCE_MINUTES_BEFORE > 0 ? `${ANNOUNCE_MINUTES_BEFORE} minuto(s) antes` : "junto"} do primeiro lote de cada fila de leilão, seguida da mensagem com @all.` });
-  console.log(`🖼️  Figurinha de abertura capturada (chat ${chatJid}, msg ${sticker.key.id}).`);
-}
+const maybeCaptureAnnouncementSticker = createStickerCapture({
+  getSocket: () => sock,
+  adminJids,
+  save: saveAnnouncementSticker,
+  confirmation: `✅ Figurinha de abertura salva! Ela será enviada ${ANNOUNCE_MINUTES_BEFORE > 0 ? `${ANNOUNCE_MINUTES_BEFORE} minuto(s) antes` : "junto"} do primeiro lote de cada fila, seguida da mensagem com @all.`,
+});
 
 // P-07 — Brindes: publica enquetes rápidas criadas no painel (título e
 // opções livres com emoji, "quem clicar primeiro leva"). Tabela própria

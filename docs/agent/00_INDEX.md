@@ -1,5 +1,7 @@
 # 00_INDEX — Memória persistente do projeto
 
+> Revisão completa, fase 1 — 28/10/2026: [40_FULL_REVIEW_PHASE1.md](40_FULL_REVIEW_PHASE1.md). Bot **0.2.22 em disco**, cinco correções, migration **20261028190535 pendente**, sem ativação nem acesso ao projeto Supabase. 173 testes raiz/163 bot/typecheck/37 SQL locais. **Parar antes da fase 2.** Consultar o documento para pré-requisitos de ativação; entradas abaixo são histórico.
+
 > Lista contínua — 28/10/2026: [39_CONTINUOUS_CARD_LISTS.md](39_CONTINUOUS_CARD_LISTS.md). Paginação de 12 itens removida de Cartas, Valores e Revisão. Busca/filtros/seleção/foco mantidos, renderização fora da tela adiada. 200 cartas validadas em desktop/celular; 171 testes raiz, 62 navegador, typecheck e build locais aprovados. Bot e banco inalterados; somente site local iniciado após build. CI do código `69bc51ef` e deploy aprovados. Entrega concluída. Entradas abaixo são histórico.
 
 > Fase 7: [38_PHASE7_SUPERVISOR_CONTROL.md](38_PHASE7_SUPERVISOR_CONTROL.md). Controle do supervisor unificado em uma RPC, mantendo 5s e prioridade de logout. **0.2.21 ativado/conectado após CI e deploy aprovados**. Migration `20261027184029` aplicada, só service_role. 154 testes bot/171 raiz/typecheck/36 SQL locais aprovados; concorrência de oito claims adicionada à CI. CI passou também 60 testes de navegador e oito claims concorrentes. Janela real de 15h45–15h46: 12 RPCs novas, zero nas duas leituras antigas; heartbeat mantido. Às 15h46, pending/review zero. **Fase concluída; parar antes de nova fase.**

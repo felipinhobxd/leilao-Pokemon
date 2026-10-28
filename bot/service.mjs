@@ -1,5 +1,6 @@
 import "./file-logger.mjs";
 import "./session-guard.mjs";
+import { finiteNumber } from './numeric-config.mjs';
 import { spawn } from "node:child_process";
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
@@ -28,8 +29,8 @@ const WORKER_ID = process.env.BOT_WORKER_ID || `bot-${process.pid}`;
 const SESSION_DIR = path.resolve(here, process.env.WHATSAPP_SESSION_DIR || "./sessao");
 const connectionHistory = createConnectionHistory({ directory: path.resolve(here, process.env.BOT_DATA_DIR || './data') });
 const plannedStops = new WeakSet();
-const HEARTBEAT_MS = Math.min(15_000, Math.max(10_000, Number(process.env.BOT_HEARTBEAT_SECONDS || 12) * 1000));
-const QR_TTL_MS = Math.min(180_000, Math.max(45_000, Number(process.env.BOT_QR_TTL_SECONDS || 90) * 1000));
+const HEARTBEAT_MS = finiteNumber(process.env.BOT_HEARTBEAT_SECONDS, 12, 10, 15) * 1000;
+const QR_TTL_MS = finiteNumber(process.env.BOT_QR_TTL_SECONDS, 90, 45, 180) * 1000;
 // Janela de "grupos frescos" para o sync AUTOMÁTICO (2026-09-30: era 5 min —
 // como o bot fica desligado entre leilões, a janela estava SEMPRE vencida no
 // boot e o supervisor matava o bot 750ms após conectar para rodar o sync,
@@ -284,6 +285,11 @@ async function startChild() {
     if (shuttingDown) return;
     if (!desiredRunning) {
       void publishState({ status: "disconnected" });
+      return;
+    }
+    if (code === 3) {
+      desiredRunning = false;
+      void publishState({ status: 'error', lastError: 'Instale a migration 20261028190535 antes de iniciar o bot 0.2.22 e depois use Reconectar.' });
       return;
     }
     if (code === 2) {

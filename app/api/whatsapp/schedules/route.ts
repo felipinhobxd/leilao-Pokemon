@@ -79,11 +79,17 @@ export async function DELETE(request: Request) {
     const body = await request.json() as Record<string, unknown>;
     const auctionId = String(body.auctionId ?? "");
     if (!uuid.test(auctionId)) throw new HttpError(400, "Leilão inválido.");
-    const { data: current } = await db.from("whatsapp_dispatches").select("status").eq("auction_id", auctionId).maybeSingle();
-    if (!current) throw new HttpError(404, "Agendamento não encontrado.");
-    if (["sending", "sent"].includes(current.status)) throw new HttpError(409, "Este disparo já está em processamento ou foi enviado.");
-    const { error } = await db.from("whatsapp_dispatches").update({ status: "cancelled", updated_at: new Date().toISOString() }).eq("auction_id", auctionId);
+    const { data, error } = await db.from("whatsapp_dispatches")
+      .update({ status: "cancelled", updated_at: new Date().toISOString() })
+      .eq("auction_id", auctionId).in("status", ["scheduled", "failed", "cancelled"])
+      .select("id").maybeSingle();
     if (error) throw new Error("whatsapp_schedule_cancel_failed");
+    if (!data) {
+      const { data: current, error: readError } = await db.from("whatsapp_dispatches").select("status").eq("auction_id", auctionId).maybeSingle();
+      if (readError) throw new Error("whatsapp_schedule_read_failed");
+      if (!current) throw new HttpError(404, "Agendamento não encontrado.");
+      throw new HttpError(409, "Este disparo já está em processamento ou foi enviado.");
+    }
     return Response.json({ ok: true });
   } catch (error) { return failure(error); }
 }

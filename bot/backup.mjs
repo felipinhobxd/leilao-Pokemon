@@ -13,6 +13,7 @@ import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { backupRetention } from './numeric-config.mjs';
 import { readBusinessBackup, compressBusinessBackup } from "../lib/business-backup.mjs";
 
 const here = join(fileURLToPath(new URL(".", import.meta.url)));
@@ -44,7 +45,7 @@ export async function uploadBackupToCloud(db, payload, now = new Date(), exportI
   if (confirmed.error || confirmed.data !== true) throw new Error('backup_cloud_confirmation_failed', {cause:confirmed.error});
   // Retenção na nuvem: mantém os N mais recentes (padrão 7 — ponto de
   // recuperação externo semanal; o disco continua guardando 30).
-  const keep = Math.max(1, Number(process.env.BOT_BACKUP_CLOUD_KEEP || 7));
+  const keep = backupRetention(process.env.BOT_BACKUP_CLOUD_KEEP, 7);
   const { data: listed } = await db.storage.from(BACKUP_BUCKET).list("backups", { limit: 100, sortBy: { column: "name", order: "desc" } });
   for (const stale of (listed ?? []).slice(keep)) {
     if (!/^backup-\d{8}-\d{4}\.json(?:\.gz)?$/.test(String(stale.name))) continue;
@@ -60,7 +61,7 @@ export async function runBusinessBackup(db, now = new Date()) {
   mkdirSync(BACKUPS_DIR, { recursive: true });
   const path = join(BACKUPS_DIR, `backup-${stamp}.json`);
   writeFileSync(path, payload, "utf8");
-  const keep = Math.max(1, Number(process.env.BOT_BACKUP_KEEP || 30));
+  const keep = backupRetention(process.env.BOT_BACKUP_KEEP, 30);
   const files = readdirSync(BACKUPS_DIR)
     .filter(name => /^backup-\d{8}-\d{4}\.json$/.test(name))
     .sort()
@@ -75,5 +76,5 @@ export async function runBusinessBackup(db, now = new Date()) {
     // Nuvem é complemento: falha dela NUNCA derruba o backup local diário.
     console.warn("Backup: falha ao subir para o Storage (fica só o local):", reason?.message || reason);
   }
-  return { path, bytes: Buffer.byteLength(payload), kept: Math.min(files.length + 1, keep), cloudPath };
+  return { path, bytes: Buffer.byteLength(payload), kept: Math.min(files.length, keep), cloudPath };
 }

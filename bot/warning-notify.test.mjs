@@ -52,25 +52,22 @@ test("parseAdminJids: env e normalização", () => {
 });
 
 function fakeDb(rows) {
-  const state = { rows: rows.map(row => ({ ...row })), updates: [] };
-  const chain = () => {
-    const c = {
-      select: () => c,
-      is: () => c,
-      order: () => c,
-      limit: () => Promise.resolve({ data: state.rows.filter(row => !row.sent_at).slice(), error: null }),
-      update: payload => ({
-        eq: (_column, value) => {
-          state.updates.push(payload);
-          const target = state.rows.find(row => row.id === value);
-          if (target) Object.assign(target, payload);
-          return Promise.resolve({ error: null });
-        },
-      }),
-    };
-    return c;
-  };
-  return { state, from: () => chain() };
+  const state = { rows: rows.map(row => ({ ...row })), updates: [], now: 0 };
+  return { state, async rpc(name, args) {
+    if (name === 'claim_admin_notification') {
+      const row = state.rows.find(row => !row.sent_at && !row.locked_by && (row.next_attempt_at ?? 0) <= state.now);
+      if (!row) return { data: null };
+      row.locked_by = args.p_worker_id;
+      row.attempts = (row.attempts ?? 0) + 1;
+      return { data: structuredClone(row) };
+    }
+    const row = state.rows.find(row => row.id === args.p_id && row.locked_by === args.p_worker_id);
+    if (!row) return { error: new Error('claim_lost') };
+    const patch = { payload: { ...row.payload, sent_to: args.p_sent_to }, sent_at: args.p_success ? 'sent' : null,
+      next_attempt_at: state.now + 30000, locked_by: null };
+    state.updates.push(patch); Object.assign(row, patch);
+    return {};
+  } };
 }
 
 test("drain: entrega para todos os admins e marca sent_at (idempotente)", async () => {
@@ -78,7 +75,7 @@ test("drain: entrega para todos os admins e marca sent_at (idempotente)", async 
   const sent = [];
   const drain = createAdminNotificationDrain({
     db,
-    getSocket: () => ({ sendMessage: async jid => { sent.push(jid); } }),
+    getSocket: () => ({ sendMessage: async jid => { sent.push(jid); return {key:{id:"sent"}}; } }),
     adminJids: ["10000000001@s.whatsapp.net", "10000000002@s.whatsapp.net"],
     intervalMs: 0,
   });
@@ -101,6 +98,7 @@ test("drain: falha parcial reenvia APENAS para o admin que não recebeu", async 
       sendMessage: async jid => {
         if (jid === failFor) throw new Error("network");
         sent.push(jid);
+        return {key:{id:"sent"}};
       },
     }),
     adminJids: ["10000000001@s.whatsapp.net", "10000000002@s.whatsapp.net"],
@@ -113,6 +111,7 @@ test("drain: falha parcial reenvia APENAS para o admin que não recebeu", async 
   assert.deepEqual(db.state.rows[0].payload.sent_to, ["10000000001@s.whatsapp.net"]);
   // 2ª tentativa: só "b" falta; sem reenvio para "a"
   failFor = null;
+  db.state.now = 30001;
   assert.equal(await drain.tick(9999), 1);
   assert.deepEqual(sent.sort(), ["10000000001@s.whatsapp.net", "10000000002@s.whatsapp.net"].sort());
 });
@@ -154,4 +153,19 @@ test("operational notice alerts identify missing mention permission or pending d
     if(kind==='NOTICE_MENTION_DENIED'){assert.match(text,/sem @all/);assert.match(text,/confirme a entrega/);}
     else assert.match(text,/permanece na fila/);
   }
+});
+
+
+test('failed notices back off without blocking newer notices or rewriting unchanged rows', async () => {
+  const db = fakeDb([1,2,3,4].map(n => ({id: `n${n}`, payload:{}, kind:'DISPATCH_FAILED'})));
+  const ids=[];
+  const drain=createAdminNotificationDrain({db, adminJids:['1@s.whatsapp.net'], intervalMs:0,
+    getSocket:()=>({async sendMessage(_jid,_payload,options){ids.push(options.messageId);if(ids.length<=3)throw new Error('network');return {key:{id:'ok'}};}})});
+  await drain.tick(1);
+  assert.equal(db.state.updates.length,3);
+  assert.equal(await drain.tick(2),1);
+  assert.equal(db.state.rows[3].sent_at,'sent');
+  await drain.tick(3);
+  assert.equal(db.state.updates.length,4);
+  assert.equal(new Set(ids).size,4);
 });

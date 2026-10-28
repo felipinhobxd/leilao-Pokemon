@@ -1,6 +1,6 @@
 # 02_ARCHITECTURE — Arquitetura real do sistema
 
-> Estado atual consolidado: [19_SETTLEMENT_PROTECTION_AND_RECOVERY.md](19_SETTLEMENT_PROTECTION_AND_RECOVERY.md) e [18_RELIABILITY_AND_UI_REVIEW.md](18_RELIABILITY_AND_UI_REVIEW.md), bot 0.2.10, Next.js 16.4.3. Seções de versões anteriores abaixo são histórico; não reaplicar migrations ou instruções antigas automaticamente.
+> Estado atual: [00_INDEX.md](00_INDEX.md) e [40_FULL_REVIEW_PHASE1.md](40_FULL_REVIEW_PHASE1.md). Bot **0.2.22 em disco**, migration/ativação pendentes; não confundir com versão em execução. Next.js 16.4.3. Seções anteriores são histórico; não reaplicar migrations automaticamente.
 
 
 > Área: Arquitetura

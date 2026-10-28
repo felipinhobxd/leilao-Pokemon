@@ -1,3 +1,4 @@
+import { dispatchMessageId } from './dispatch-id.mjs';
 import { createErrorReporter } from "./supabase-resilience.mjs";
 const reportServiceError=createErrorReporter();
 // Avisos globais: disparo da notificação aos administradores.
@@ -91,7 +92,7 @@ export function formatAdminNotification(notification) {
   return formatWarningNotification(notification.payload);
 }
 
-export function createAdminNotificationDrain({ db, getSocket, adminJids = parseAdminJids(), intervalMs = 15_000 }) {
+export function createAdminNotificationDrain({ db, getSocket, adminJids = parseAdminJids(), intervalMs = 15_000, workerId = `bot-${process.pid}` }) {
   if (!adminJids.length) throw new Error("Configure BOT_ADMIN_WA_JIDS no bot/.env antes de iniciar o bot.");
   let inFlight = false;
   let lastTick = 0;
@@ -103,33 +104,31 @@ export function createAdminNotificationDrain({ db, getSocket, adminJids = parseA
       try {
         const sock = getSocket?.();
         if (!sock || !adminJids.length) return 0;
-        const { data: pending, error } = await db.from("admin_notifications")
-          .select("id,participant_id,kind,payload,external_event_id,created_at")
-          .is("sent_at", null)
-          .order("created_at", { ascending: true })
-          .limit(3);
-        if (error) throw new Error(error.message);
         let delivered = 0;
-        for (const notification of pending ?? []) {
+        for (let i = 0; i < 3; i++) {
+          const { data: notification, error } = await db.rpc('claim_admin_notification', { p_worker_id: workerId });
+          if (error) throw error;
+          if (!notification) break;
           const payload = notification.payload ?? {};
           const alreadySent = new Set(Array.isArray(payload.sent_to) ? payload.sent_to : []);
           const remaining = adminJids.filter(jid => !alreadySent.has(jid));
           const sentNow = [];
           for (const jid of remaining) {
             try {
-              await sock.sendMessage(jid, { text: formatAdminNotification(notification) });
+              const sent = await sock.sendMessage(jid, { text: formatAdminNotification(notification) },
+                { messageId: dispatchMessageId(notification.id, `admin-notice:${jid}`) });
+              if (!sent?.key?.id) throw new Error('admin_notice_send_unconfirmed');
               sentNow.push(jid);
             } catch (error) {
-              console.error(`Aviso global: falha ao notificar ${jid}:`, error?.message || error);
+              reportServiceError("Aviso global: falha ao entregar notificação", error);
             }
           }
-          // Persiste progressivamente: um retry reenvia APENAS para quem não
-          // recebeu com confirmação persistida. Resposta perdida ainda pode duplicar DM.
+          // Durable backoff lets newer notices progress; confirmed recipients are retained.
           const sentTo = [...alreadySent, ...sentNow];
           const everyone = adminJids.every(jid => sentTo.includes(jid));
-          const { error: updateError } = await db.from("admin_notifications")
-            .update({ payload: { ...payload, sent_to: sentTo }, sent_at: everyone ? new Date().toISOString() : null })
-            .eq("id", notification.id);
+          const { error: updateError } = await db.rpc('finish_admin_notification', {
+            p_id: notification.id, p_worker_id: workerId, p_sent_to: sentTo, p_success: everyone,
+          });
           if (updateError) throw new Error(updateError.message);
           if (everyone) {
             delivered += 1;

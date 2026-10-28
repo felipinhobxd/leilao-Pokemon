@@ -77,7 +77,7 @@ export function createAuctionNoticeDrain({db,getSocket,workerId,resolveJid,now=D
             const jid=await resolveJid(row.winner_participant_id);
             const winner=mentionMessage(row.winner_name??'Participante',row.winner_participant_id,jid,who=>who);
             const price=new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(Number(row.final_price));
-            payload={text:`🏁 *Leilão encerrado!*\n\n🃏 Lote ${row.lot_number??'—'} — ${row.card_name??'Carta'}\n👤 Vencedor: ${winner.text}\n💰 ${price}${row.tie&&row.win_type==='highest_bid'?'\n⚖️ Empate no valor: venceu quem deu o lance primeiro.':''}`,mentions:winner.mentions};
+            payload={text:`${notice.kind==='buyout_confirmed'?'🏆 *ARREMATADO!*':'🏁 *Leilão encerrado!*'}\n\n🃏 Lote ${row.lot_number??'—'} — ${row.card_name??'Carta'}\n👤 Vencedor: ${winner.text}\n💰 ${price}${row.tie&&row.win_type==='highest_bid'?'\n⚖️ Empate no valor: venceu quem deu o lance primeiro.':''}`,mentions:winner.mentions};
           }else payload={text:`🏁 Leilão de *${row.card_name??'carta'}* (lote ${row.lot_number??'—'}) encerrado sem lances válidos.`};
         }
         const sent=await socket.sendMessage(notice.group_jid,payload,{messageId:dispatchMessageId(notice.id,'auction-notice')});

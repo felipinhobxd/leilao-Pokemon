@@ -1,6 +1,6 @@
 # Leilão Pokémon
 
-> Revisão de 28/10/2026: [fase 1 — correções e pré-requisitos de ativação](docs/agent/40_FULL_REVIEW_PHASE1.md). Código do bot 0.2.22 preparado; migration e reinício ainda pendentes. Próxima fase: economia adicional de consultas.
+> Revisão de 28/10/2026: [fase 2 — economia de consultas e ativação pendente](docs/agent/41_FULL_REVIEW_PHASE2_REQUESTS.md). Bot 0.2.23 em disco; migrations e reinício pendentes. A Central WhatsApp usa um único seletor. A RPC agregada do painel exige `DASHBOARD_OPERATIONS_RPC_ENABLED=1` após instalar a migration.
 
 Bot **0.2.21 ativado** em 27/10/2026: descoberta de trabalho e controle do supervisor reduzem consultas ociosas, mantendo o ciclo de cinco segundos, prioridade de logout e votos/avisos independentes. **154 testes do bot** aprovados. [Controle do supervisor e validação](docs/agent/38_PHASE7_SUPERVISOR_CONTROL.md), [descoberta de trabalho e limites de consumo](docs/agent/37_PHASE5_IDLE_DATABASE_REQUESTS.md). Regras de lance, quiz/brinde e conclusão parcial foram exercitadas na [fase 4](docs/agent/36_GLM_AUDIT_PHASE4_LIVE_VALIDATION.md). O estado de conexão é histórico desta rodada, não monitoramento permanente.
 

@@ -7,7 +7,7 @@ import {createWorkDiscovery} from './work-discovery.mjs';
 test('idle discovery is fresh every cycle; remote work wakes the very next cycle', async () => {
   let calls = 0, active = false, time = 0;
   const hasWork = createWorkDiscovery({db:{rpc:async name => {
-    assert.equal(name,'bot_has_pending_work'); calls++; return {data:active};
+    assert.equal(name,'bot_has_due_work'); calls++; return {data:active};
   }}, now:()=>time});
   for (;time<60_000;time+=5000) assert.equal(await hasWork(),false);
   assert.equal(calls,12);
@@ -58,4 +58,22 @@ test('production idle cycle skips four database workers but drains votes and not
     for(const name of ['opening','dispatch','finalize','poll'])assert.equal(events.includes(name),active);
     if(active){assert.ok(events.indexOf('opening')<events.indexOf('dispatch'));assert.ok(events.indexOf('votes')<events.indexOf('finalize'));assert.ok(events.indexOf('finalize')<events.indexOf('notice'));}
   }
+});
+
+
+test('discovery passes the exact configured opening windows without caching idle results', async()=>{
+ let calls=0;
+ const hasWork=createWorkDiscovery({openingMinutes:12.5,graceMinutes:7,db:{async rpc(name,args){
+  assert.equal(name,'bot_has_due_work');assert.deepEqual(args,{p_opening_minutes:12.5,p_grace_minutes:7});calls++;return {data:false};
+ }}});
+ await hasWork();await hasWork();assert.equal(calls,2);
+});
+
+
+test('one simulated future-only hour falls from 2940 probes/empty worker calls to 720 probes',async()=>{
+ let time=0,oldReads=0,newReads=0;
+ const previous=createWorkDiscovery({db:{rpc:async()=>{oldReads++;return {data:true}}},now:()=>time});
+ const optimized=createWorkDiscovery({db:{rpc:async()=>{newReads++;return {data:false}}},now:()=>time});
+ for(;time<3_600_000;time+=5000){if(await previous())oldReads+=4;if(await optimized())newReads+=4;}
+ assert.equal(oldReads,2940);assert.equal(newReads,720);
 });

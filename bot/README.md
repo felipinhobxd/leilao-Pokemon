@@ -1,6 +1,6 @@
 # Bot WhatsApp — Leilão Pokémon
 
-> **0.2.22 em disco (28/10/2026):** requer `20261028190535_phase_one_delivery_and_admin_retries.sql`. A fase 1 preparou o código e os testes; não instalou a migration nem reiniciou o bot. Pare supervisor/filho antigos antes de aplicar a migration e iniciar a nova versão. Sem ela, a inicialização é bloqueada e o painel orienta a instalação. [Estado e validação](../docs/agent/40_FULL_REVIEW_PHASE1.md).
+> **0.2.23 em disco (28/10/2026):** requer as migrations `20261028190535` e `20261028192328`. Fases 1/2 prepararam código/testes; não instalaram migrations nem reiniciaram o bot. Pare supervisor/filho antigos antes de aplicar as duas migrations e iniciar a nova versão. Sem a revisão 2 do banco, a conexão é bloqueada. [Estado e validação](../docs/agent/41_FULL_REVIEW_PHASE2_REQUESTS.md).
 
 O Baileys continua rodando localmente no Windows. O uso diário não exige uma janela CMD aberta: `service.mjs` supervisiona o processo real do bot e o Windows Task Scheduler inicia o supervisor em segundo plano.
 

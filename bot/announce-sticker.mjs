@@ -1,3 +1,4 @@
+import { finiteNumber } from './numeric-config.mjs';
 // P-05 — Figurinha de abertura do leilão: capturada pelo próprio operador e
 // retransmitida pelo bot antes do primeiro lote de cada fila.
 //
@@ -29,12 +30,12 @@ export const DATA_DIR = process.env.BOT_DATA_DIR ? join(process.env.BOT_DATA_DIR
 export const STICKER_FILE = join(DATA_DIR, "announcement-sticker.json");
 export const ANNOUNCE_STATE_FILE = join(DATA_DIR, "announce-state.json");
 
-export const ANNOUNCE_MINUTES_BEFORE = Number(process.env.BOT_ANNOUNCE_MINUTES_BEFORE ?? 5);
+export const ANNOUNCE_MINUTES_BEFORE = finiteNumber(process.env.BOT_ANNOUNCE_MINUTES_BEFORE, 5, 0);
 // Após o início da fila, o bot ainda avisa por esta janela (restart atrasado
 // cobre); além disso a fila fica em silêncio — "vai começar" tardio seria
 // mentira. Desacoplado do dispatch: fila "Agora" tem o 1º lote claimado
 // antes do anúncio, e fila começando com BRINDE nem tem dispatch na pos. 1.
-export const ANNOUNCE_GRACE_MINUTES = Number(process.env.BOT_ANNOUNCE_GRACE_MINUTES ?? 15);
+export const ANNOUNCE_GRACE_MINUTES = finiteNumber(process.env.BOT_ANNOUNCE_GRACE_MINUTES, 15, 0);
 // REGRAS DO LEILÃO: enviadas ANTES da figurinha+"O leilão vai começar!" —
 // o operador pediu "uns 2 minutos antes" (do anúncio), sempre antes dele.
 // O texto é o da operadora (verbatim); sobreponível em

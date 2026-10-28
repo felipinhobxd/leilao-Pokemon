@@ -4,6 +4,50 @@ function png(color){const crc=buf=>{let n=0xffffffff;for(const x of buf){n^=x;fo
 const photo=(name,color)=>({name,mimeType:'image/png',buffer:png(color)});
 test.beforeEach(async({request})=>{await request.post('/__fixture/reset');});
 
+test('real WhatsApp layout has one group selector and one status polling owner',async({page,request})=>{
+  await page.clock.install();
+  await page.goto('/whatsapp');
+  await expect(page.getByRole('heading',{name:'Grupo padrão',exact:true})).toHaveCount(1);
+  await expect(page.getByRole('main').getByRole('combobox')).toHaveCount(1);
+  let calls=await (await request.get('/__fixture/calls')).json();
+  expect(calls.filter(c=>c.url==='/api/whatsapp/groups'&&c.method==='GET')).toHaveLength(0);
+  expect(calls.filter(c=>c.url==='/api/whatsapp/bootstrap')).toHaveLength(1);
+  for(let tick=1;tick<=6;tick++) {
+    await page.clock.runFor(5000);
+    await expect.poll(async()=>{
+      calls=await (await request.get('/__fixture/calls')).json();
+      return calls.filter(c=>c.url==='/api/whatsapp/bot'&&c.method==='GET').length+calls.filter(c=>c.url==='/api/whatsapp/bootstrap').length;
+    }).toBe(tick+1);
+  }
+  expect(calls.filter(c=>c.url==='/api/whatsapp/groups'&&c.method==='GET')).toHaveLength(0);
+  expect(calls.filter(c=>c.url==='/api/whatsapp/bootstrap')).toHaveLength(2);
+  expect(calls.filter(c=>c.url==='/api/whatsapp/bot'&&c.method==='GET')).toHaveLength(5);
+  const total=calls.length;
+  await page.evaluate(()=>Object.defineProperty(document,'hidden',{configurable:true,get:()=>true}));
+  await page.clock.runFor(30000);
+  expect((await (await request.get('/__fixture/calls')).json()).length).toBe(total);
+  await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,get:()=>false});window.dispatchEvent(new Event('focus'));});
+  await expect.poll(async()=>((await (await request.get('/__fixture/calls')).json()).filter(c=>c.url==='/api/whatsapp/bootstrap').length)).toBe(3);
+});
+
+test('the remaining default group selector still saves and reconciles the chosen group',async({page})=>{
+  const first='00000000-0000-0000-0000-000000000091',second='00000000-0000-0000-0000-000000000092';
+  let selected=first,posted;
+  await page.route('**/api/whatsapp/bootstrap',route=>route.fulfill({json:{
+    botStatus:{worker:{workerId:'demo',status:'connected',heartbeatAt:new Date().toISOString()},online:true,canControl:true},dispatches:[],
+    groups:[{id:first,name:'Grupo um',is_default:selected===first},{id:second,name:'Grupo dois',is_default:selected===second}],
+  }}));
+  await page.route('**/api/whatsapp/groups',route=>{
+    expect(route.request().method()).toBe('POST');posted=route.request().postDataJSON();selected=posted.groupId;
+    return route.fulfill({json:{defaultGroupId:selected}});
+  });
+  await page.goto('/whatsapp');
+  const selector=page.getByRole('main').getByRole('combobox');
+  await expect(selector).toHaveValue(first);await selector.selectOption(second);
+  await expect(page.getByText('Grupo padrão atualizado.',{exact:true})).toBeVisible();
+  await expect(selector).toHaveValue(second);expect(posted).toEqual({groupId:second});
+});
+
 test('connection history distinguishes recovered timeout and process restart without automatic diagnostics requests',async({page,request})=>{
  const now=new Date().toISOString();
  const connection={version:1,monitoredSince:now,count24h:2,processRestarts24h:1,ongoing:false,last:{at:now,cause:'timeout',code:408,recoveredAt:now,durationMs:7000,estimated:false,processExited:false,processRestart:false,exitCode:null}};

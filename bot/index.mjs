@@ -1,3 +1,4 @@
+import { logCurrentLeader as printCurrentLeader } from './leader-log.mjs';
 import { finiteNumber } from './numeric-config.mjs';
 import { createStickerCapture } from './sticker-capture.mjs';
 import { assertDeliverySchema } from './delivery-schema.mjs';
@@ -55,7 +56,7 @@ const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   global: {fetch:createSupabaseFetch()},
 });
 
-const hasPendingWork = createWorkDiscovery({ db, onError: error => reportServiceError('Descoberta de trabalho', error) });
+const hasPendingWork = createWorkDiscovery({ db, openingMinutes: ANNOUNCE_MINUTES_BEFORE, graceMinutes: ANNOUNCE_GRACE_MINUTES, onError: error => reportServiceError('Descoberta de trabalho', error) });
 
 // Check once before connecting WhatsApp: never sell using an uninstalled outbox.
 try { await assertDeliverySchema(db); }
@@ -713,26 +714,7 @@ async function saveVoteState(previous, values) {
 }
 
 async function logCurrentLeader(auctionId) {
-  // Same key the database crowns winners with: amount desc, then TRUE vote
-  // time (whatsapp_event_at) — a tie at the same price leads whoever bid first.
-  const { data: bids, error } = await db.from("bids")
-    .select("participant_id,amount,processed_at,confirmation_order,whatsapp_event_at")
-    .eq("auction_id", auctionId)
-    .eq("status", "active")
-    .order("amount", { ascending: false })
-    .order("whatsapp_event_at", { ascending: true, nullsFirst: true })
-    .order("processed_at", { ascending: true })
-    .order("confirmation_order", { ascending: true })
-    .limit(20);
-  if (error || !bids?.length) return;
-  const now = Date.now();
-  for (const bid of bids) {
-    const { data: person } = await db.from("participants").select("display_name,phone_e164,status,suspension_until").eq("id", bid.participant_id).maybeSingle();
-    if (!person || person.status !== "active") continue;
-    if (person.suspension_until && Date.parse(person.suspension_until) > now) continue;
-    console.log(`🏆 Maior lance: ${person.display_name}${person.phone_e164 ? ` (${person.phone_e164})` : ""} → ${brl(bid.amount)}`);
-    return;
-  }
+  await printCurrentLeader(db, auctionId);
 }
 
 function logResolvedParticipant(participant, identity) {

@@ -289,7 +289,7 @@ async function startChild() {
     }
     if (code === 3) {
       desiredRunning = false;
-      void publishState({ status: 'error', lastError: 'Instale a migration 20261028190535 antes de iniciar o bot 0.2.22 e depois use Reconectar.' });
+      void publishState({ status: 'error', lastError: 'Instale as migrations 20261028190535 e 20261028192328 antes de iniciar o bot 0.2.23 e depois use Reconectar.' });
       return;
     }
     if (code === 2) {

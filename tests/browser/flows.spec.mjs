@@ -159,7 +159,7 @@ test('a lost single creation response recovers after reload without a second POS
  const posts=(await(await request.get('/__fixture/calls')).json()).filter(call=>call.url==='/api/auctions/new'&&call.method==='POST');expect(posts).toHaveLength(1);
 });
 test('saving, adding another detail and reopening preserves both images',async({page,request})=>{await page.goto('/auctions/new');await page.getByRole('button',{name:'Adicionar sem imagem',exact:true}).click();await page.getByLabel('Nome',{exact:true}).fill('Pikachu');await page.locator('.draft-fields-extra input[type=file]').setInputFiles(photo('a.png',[255,0,0]));await page.getByRole('button',{name:'💾 Salvar rascunho',exact:true}).click();await expect(page.getByText('Salvo',{exact:true})).toBeVisible();await page.locator('.draft-fields-extra input[type=file]').setInputFiles(photo('b.png',[0,255,0]));await page.getByRole('button',{name:'💾 Salvar rascunho',exact:true}).click();await expect(page.getByText('Salvo',{exact:true})).toBeVisible();const calls=await (await request.get('/__fixture/calls')).json();const posts=calls.filter(x=>x.url==='/api/auctions/drafts'&&x.method==='POST');expect(posts.at(-1).body.state.cards[0].extraImages).toHaveLength(2);await page.reload();await page.getByRole('button',{name:'Abrir',exact:true}).click();await expect(page.getByRole('img',{name:'Detalhe 1',exact:true})).toHaveCount(1);await expect(page.getByRole('img',{name:'Detalhe 2',exact:true})).toHaveCount(1);});
-test('large lists keep order, paginate and focus the invalid card',async({page})=>{await page.goto('/auctions/new');for(let i=0;i<13;i++)await page.getByRole('button',{name:'Adicionar sem imagem',exact:true}).click();await expect(page.locator('.draft-card')).toHaveCount(12);await page.getByRole('button',{name:'Continuar para valores →',exact:true}).click();await expect(page.locator('[aria-invalid="true"]')).toBeFocused();await page.getByRole('button',{name:'Próxima →',exact:true}).click();await expect(page.locator('.draft-card')).toHaveCount(1);await expect(page.getByLabel('Tipo da carta 13',{exact:true})).toBeVisible();});
+test('large lists show every card and focus the invalid card without pagination',async({page})=>{await page.goto('/auctions/new');for(let i=0;i<13;i++)await page.getByRole('button',{name:'Adicionar sem imagem',exact:true}).click();await expect(page.locator('.draft-card')).toHaveCount(13);await expect(page.getByRole('navigation',{name:'Páginas de cartas'})).toHaveCount(0);await page.getByRole('button',{name:'Continuar para valores →',exact:true}).click();await expect(page.locator('[aria-invalid="true"]')).toBeFocused();await page.getByLabel('Ir para carta',{exact:true}).fill('13');await page.getByLabel('Ir para carta',{exact:true}).press('Enter');await expect(page.locator('.draft-card').nth(12).getByLabel('Nome',{exact:true})).toBeFocused();});
 test('dashboard prioritizes operation, filters purchases and passes automated accessibility',async({page})=>{
  test.setTimeout(30000);
  await test.step('open dashboard and confirm main actions',async()=>{await page.goto('/');await expect(page.getByRole('link',{name:'＋ Novo leilão',exact:true})).toBeVisible();await expect(page.getByRole('heading',{name:'Saúde da operação',exact:true})).toBeHidden();});
@@ -268,19 +268,39 @@ test('single wizard confirms intentional discard and never publishes while navig
  const calls=await(await request.get('/__fixture/calls')).json();expect(calls.filter(c=>c.url==='/api/auctions/new'&&c.method==='POST')).toHaveLength(0);
 });
 
-test('bulk selection survives pagination, filtering and reordering and saves only selected changes',async({page,request})=>{
+test('200 cards stay on one list with editable values and navigation to the last card',async({page,request},testInfo)=>{
+ test.setTimeout(60000);
+ await page.route('https://fixtures.invalid/**',route=>route.fulfill({contentType:'image/png',body:png([20,100,200])}));
+ await page.goto('/auctions/new');await page.getByRole('button',{name:'Adicionar sem imagem',exact:true}).click();
+ await page.getByLabel('Nome',{exact:true}).fill('Base');await page.getByRole('button',{name:'💾 Salvar rascunho',exact:true}).click();await expect(page.getByText('Salvo',{exact:true})).toBeVisible();
+ const calls=await(await request.get('/__fixture/calls')).json();const saved=calls.filter(c=>c.url==='/api/auctions/drafts'&&c.method==='POST').at(-1).body;
+ const cards=Array.from({length:200},(_,i)=>({...saved.state.cards[0],id:crypto.randomUUID(),name:`Carta ${i+1}`,lotNumber:String(i+1),imageUrl:`https://fixtures.invalid/card-${i}.png`}));
+ await request.post('/api/auctions/drafts',{data:{...saved,state:{...saved.state,cards}}});
+ await page.reload();await page.getByRole('button',{name:'Abrir',exact:true}).click();
+ await expect(page.locator('.draft-card')).toHaveCount(200);await expect(page.locator('.draft-thumb img')).toHaveCount(200);await expect(page.getByRole('navigation',{name:'Páginas de cartas'})).toHaveCount(0);
+ await page.getByLabel('Ir para carta',{exact:true}).fill('200');await page.getByLabel('Ir para carta',{exact:true}).press('Enter');
+ const last=page.locator('.draft-card').last();await expect(last.getByLabel('Nome',{exact:true})).toBeFocused();await last.getByLabel('Nome',{exact:true}).fill('Última editada');
+ await page.getByRole('button',{name:'Continuar para valores →',exact:true}).click();await expect(page.locator('.value-row')).toHaveCount(200);
+ await page.locator('.value-row').last().getByLabel('Inicial',{exact:true}).fill('9');await expect(page.locator('.value-row').last().getByLabel('Inicial',{exact:true})).toHaveValue('9');
+ await expect(page.locator('.value-row').first().getByLabel('Inicial',{exact:true})).toHaveValue('5');
+ await page.screenshot({path:testInfo.outputPath('200-values.png')});
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();
+ await page.getByRole('button',{name:'← Cartas',exact:true}).click();await expect(page.locator('.draft-card')).toHaveCount(200);await expect(page.locator('.draft-card').last().getByLabel('Nome',{exact:true})).toHaveValue('Última editada');
+});
+
+test('bulk selection survives continuous lists, filtering and reordering and saves only selected changes',async({page,request})=>{
  await page.goto('/auctions/new');for(let i=0;i<13;i++)await page.getByRole('button',{name:'Adicionar sem imagem',exact:true}).click();
  await page.getByLabel('Nome',{exact:true}).fill('Pikachu');await page.getByRole('checkbox',{name:'Selecionar carta 1',exact:true}).check();
- await page.getByRole('button',{name:'Próxima →',exact:true}).click();await page.locator('.draft-card').getByRole('button',{name:'Editar',exact:true}).click();
- await page.getByLabel('Nome',{exact:true}).fill('Eevee');await page.getByRole('checkbox',{name:'Selecionar carta 13',exact:true}).check();
+ await page.locator('.draft-card').nth(12).getByRole('button',{name:'Editar',exact:true}).click();
+ await page.locator('.draft-card').nth(12).getByLabel('Nome',{exact:true}).fill('Eevee');await page.getByRole('checkbox',{name:'Selecionar carta 13',exact:true}).check();
  const editor=page.getByRole('region',{name:'Editar cartas selecionadas'});
- await expect(editor.getByText('2 cartas selecionadas · 1 fora desta página',{exact:true})).toBeVisible();
- await page.getByLabel('Buscar carta',{exact:true}).fill('Eevee');
+ await expect(editor.getByText('2 cartas selecionadas',{exact:true})).toBeVisible();
+ await page.getByLabel('Buscar carta',{exact:true}).fill('Eevee');await expect(editor.getByText('2 cartas selecionadas · 1 ocultas pelo filtro',{exact:true})).toBeVisible();
  await editor.getByLabel('Idioma a aplicar',{exact:true}).selectOption('ja');
  await editor.getByRole('button',{name:'Aplicar em 2 cartas',exact:true}).click();
  await expect(editor.getByRole('status').filter({hasText:'Última aplicação:'})).toContainText('2 cartas alteradas');
- await page.getByLabel('Buscar carta',{exact:true}).fill('');await page.getByRole('button',{name:'Próxima →',exact:true}).click();
- await page.getByRole('button',{name:'Mover carta 13 para cima',exact:true}).click();await page.getByRole('button',{name:'← Anterior',exact:true}).click();
+ await page.getByLabel('Buscar carta',{exact:true}).fill('');
+ await page.getByRole('button',{name:'Mover carta 13 para cima',exact:true}).click();
  await expect(page.getByRole('checkbox',{name:'Selecionar carta 12',exact:true})).toBeChecked();
  await page.getByRole('button',{name:'💾 Salvar rascunho',exact:true}).press('Enter');await expect(page.getByText('Salvo',{exact:true})).toBeVisible();
  const calls=await(await request.get('/__fixture/calls')).json();const saved=calls.filter(c=>c.url==='/api/auctions/drafts'&&c.method==='POST').at(-1).body.state.cards;
@@ -291,7 +311,7 @@ test('bulk selection survives pagination, filtering and reordering and saves onl
 test('shared editing and undo keep quiz answer and a later typed card name',async({page})=>{
  await addQuiz(page);await page.getByRole('button',{name:'Adicionar sem imagem',exact:true}).click();
  await page.locator('.draft-card').nth(1).getByRole('button',{name:'Editar',exact:true}).click();await page.locator('.draft-card').nth(1).getByLabel('Nome',{exact:true}).fill('Leilão');
- const editor=page.getByRole('region',{name:'Editar cartas selecionadas'});await editor.getByRole('button',{name:'Selecionar esta página',exact:true}).click();
+ const editor=page.getByRole('region',{name:'Editar cartas selecionadas'});await editor.getByRole('button',{name:'Selecionar resultados (2)',exact:true}).click();
  await editor.getByLabel('Campo para as selecionadas',{exact:true}).selectOption('variant');await editor.getByLabel('Variante a aplicar',{exact:true}).fill('Holo');
  await editor.getByRole('button',{name:'Aplicar em 2 cartas',exact:true}).click();
  await expect(page.locator('.draft-card').nth(0).getByLabel('Variante',{exact:true})).toHaveValue('Holo');

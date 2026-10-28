@@ -237,7 +237,7 @@ Na área **Brindes e Quiz**, escolha o tipo, a carta/prêmio, opções e a únic
 
 Criações com confirmação incerta preservam ID/payload e podem ser recuperadas após recarregar a aba. O painel lê o líder do conjunto completo de lances elegíveis da disputa selecionada, sem depender dos 500 lances globais. Rascunhos preservam novos detalhes, mostram estado de salvamento e pausam tentativas após falha.
 
-Cadastro com busca, filtros, páginas de 12 cartas (limite de 200 preservado), escolha explícita do tipo e foco no erro. Painel prioriza operação, diagnóstico recolhível, compras com busca/pagamento/totais e leitura adaptada ao celular. A fila não consulta em segundo plano ou depois de concluída/cancelada; o bot impede sobreposição de ciclos de abertura.
+Cadastro com busca, filtros e lista contínua sem paginação (limite de 200 preservado), com pintura adiada fora da tela, escolha explícita do tipo e foco no erro. Painel prioriza operação, diagnóstico recolhível, compras com busca/pagamento/totais e leitura adaptada ao celular. A fila não consulta em segundo plano ou depois de concluída/cancelada; o bot impede sobreposição de ciclos de abertura.
 
 Dependências atualizadas, Next.js 16.4.3 e auditorias npm sem alertas nesta rodada. Testes de navegador com dados isolados na CI: `npm run test:browser` (instalar Chromium com `npx playwright install chromium`). Não usam credenciais Supabase ou WhatsApp. Reabra o supervisor e o filho do bot para carregar **0.2.10**; a atualização do site não reinicia o bot local. [Estado e limites](docs/agent/18_RELIABILITY_AND_UI_REVIEW.md).
 

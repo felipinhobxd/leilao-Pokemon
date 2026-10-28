@@ -13,6 +13,12 @@
 .bulk-bar label{display:grid;gap:5px;min-width:170px;flex:1}
 .bulk-bar button{align-self:end}
 .draft-list,.value-list,.review-list,.queue-list{display:grid;gap:10px}
+/* Keep every card in the document without painting all off-screen forms.
+   Native focus, find and scrolling can still reveal any item. */
+.draft-list>.draft-card{content-visibility:auto;contain-intrinsic-block-size:auto 150px}
+.value-list>.value-row{content-visibility:auto;contain-intrinsic-block-size:auto 260px}
+.review-list>article{content-visibility:auto;contain-intrinsic-block-size:auto 180px}
+@media print{.draft-list>.draft-card,.value-list>.value-row,.review-list>article{content-visibility:visible}}
 .draft-card,.value-row,.review-list article,.queue-row{border:1px solid var(--line);border-radius:14px;background:var(--surface-soft)}
 .draft-head{display:flex;align-items:center;gap:10px;padding:10px}
 .drag-handle{font-size:20px;cursor:grab;user-select:none;color:var(--muted)}

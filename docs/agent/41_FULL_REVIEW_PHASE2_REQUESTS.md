@@ -2,7 +2,7 @@
 
 ## Estado
 
-Autorização: “inicie a fase 2”. Bot **0.2.23 em disco**. Migrations **20261028190535** (fase 1) e **20261028192328** (fase 2) preparadas e ainda não aplicadas ao projeto Supabase nesta sequência. Nenhum supervisor/filho iniciado ou reiniciado; nenhuma consulta ao projeto de produção ou mensagem ao WhatsApp nesta fase.
+Autorização: “inicie a fase 2”. Bot **0.2.23 em disco**. Migrations **20261028190535** (fase 1) e **20261028192328** (fase 2) preparadas e ainda não aplicadas ao projeto Supabase nesta sequência. Nenhum supervisor/filho iniciado ou reiniciado; nenhuma consulta ao projeto de produção ou mensagem ao WhatsApp nesta fase. Na checagem final de processos locais, não foram encontrados processos Node de `service.mjs`, `index.mjs` ou `start-all.mjs`; nenhuma parada foi executada.
 
 O site pode receber a remoção da interface duplicada antes da migration. A leitura agregada só é habilitada no servidor com **`DASHBOARD_OPERATIONS_RPC_ENABLED=1`**, depois de instalar a migration. Ausência da variável ou `0` preserva as consultas anteriores e não gera sondagens repetidas de uma RPC inexistente. Nenhum `.env` real ou configuração remota foi alterado nesta fase.
 
@@ -45,7 +45,7 @@ Votos continuam recebidos por evento e gravados no journal. O ciclo segue drenan
 - A fixture de navegador agora monta o **layout real de WhatsApp**. Verifica um seletor de grupo, ausência do polling duplicado, consultas de 5s/30s, pausa em aba oculta, atualização no foco e salvamento/reconciliação do grupo escolhido, em desktop e celular.
 - Testes exercitam os dois modos do resumo: variável desligada não sonda uma RPC inexistente; ligada faz uma leitura e não cai silenciosamente para sete consultas após erro.
 - Testes do log verificam uma única consulta, ordenação, limite, candidatos inelegíveis e falhas sem vencedor inventado.
-- CI inclui explicitamente `tests/request-economy.sql` em PostgreSQL 17 e as verificações anteriores de restauração, concorrência, build e autenticação. Resultado remoto deve ser registrado após o push.
+- CI inclui explicitamente `tests/request-economy.sql` em PostgreSQL 17 e as verificações anteriores de restauração, concorrência, build e autenticação. [CI 40755630472](https://github.com/felipinhobxd/leilao-Pokemon/actions/runs/40755630472) aprovada para o código `b5bf72796befa33e923c812bb2eb762b8a2630c2`: 176 testes raiz, 167 bot, 66 navegador, typecheck, PostgreSQL 17, restauração, concorrência, build e guardas de autenticação; job Windows também aprovado. Deploy Vercel com status de sucesso. Commit posterior apenas deste registro não altera o código validado.
 
 ## Próxima fase: ativação controlada
 

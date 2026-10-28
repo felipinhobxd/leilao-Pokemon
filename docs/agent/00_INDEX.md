@@ -1,6 +1,6 @@
 # 00_INDEX — Memória persistente do projeto
 
-> Revisão completa, fase 1 — 28/10/2026: [40_FULL_REVIEW_PHASE1.md](40_FULL_REVIEW_PHASE1.md). Bot **0.2.22 em disco**, cinco correções, migration **20261028190535 pendente**, sem ativação nem acesso ao projeto Supabase. 173 testes raiz/163 bot/typecheck/37 SQL locais. **Parar antes da fase 2.** Consultar o documento para pré-requisitos de ativação; entradas abaixo são histórico.
+> Revisão completa, fase 1 — 28/10/2026: [40_FULL_REVIEW_PHASE1.md](40_FULL_REVIEW_PHASE1.md). Bot **0.2.22 em disco**, cinco correções, migration **20261028190535 pendente**, sem ativação nem acesso ao projeto Supabase. 173 testes raiz/163 bot/typecheck/37 SQL locais; CI `40752302392` e deploy do código `b0081ede` aprovados, incluindo 62 testes de navegador e PostgreSQL real. **Parar antes da fase 2.** Consultar o documento para pré-requisitos de ativação; entradas abaixo são histórico.
 
 > Lista contínua — 28/10/2026: [39_CONTINUOUS_CARD_LISTS.md](39_CONTINUOUS_CARD_LISTS.md). Paginação de 12 itens removida de Cartas, Valores e Revisão. Busca/filtros/seleção/foco mantidos, renderização fora da tela adiada. 200 cartas validadas em desktop/celular; 171 testes raiz, 62 navegador, typecheck e build locais aprovados. Bot e banco inalterados; somente site local iniciado após build. CI do código `69bc51ef` e deploy aprovados. Entrega concluída. Entradas abaixo são histórico.
 

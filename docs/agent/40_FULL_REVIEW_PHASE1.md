@@ -27,7 +27,7 @@ Ativação deve ser coordenada: **parar supervisor e filho anteriores, aplicar s
 - Testes da função real de backup executados com sistema de arquivos e Storage simulados: configuração inválida preserva arquivos novos e antigos; upload continua confirmado sem poda.
 - Teste da rota real reproduz a corrida de cancelamento com backend isolado. Testes de mensagens verificam autorização, identidade LID, autores distintos e falha/reinício do anúncio.
 - Verificação de exposição SQL sem função SECURITY DEFINER pública ou tabela indevidamente exposta.
-- CI inclui explicitamente a nova suíte SQL em PostgreSQL 17, além das verificações já existentes de build, navegador, concorrência e recuperação. Registrar resultado remoto depois do push; resultado local não substitui CI.
+- CI inclui explicitamente a nova suíte SQL em PostgreSQL 17, além das verificações já existentes de build, navegador, concorrência e recuperação. [CI 40752302392](https://github.com/felipinhobxd/leilao-Pokemon/actions/runs/40752302392) aprovada para o código `b0081ede2239a8ffbcf40a53f092c80ba35df816`: 173 testes raiz, 163 bot, 62 navegador, typecheck, PostgreSQL 17, restauração isolada, concorrência, build e guardas de autenticação. Job Windows também aprovado. Status do deploy Vercel: sucesso. Commit posterior apenas deste registro não altera o código validado.
 
 Nenhuma consulta ao projeto Supabase, exportação completa, leitura de logs remotos ou envio ao WhatsApp foi feito nesta fase. Último consumo informado pelo usuário: **0,963 GB**, sem medição nova. Isso não significa que processos já ativos pararam de gerar logs.
 

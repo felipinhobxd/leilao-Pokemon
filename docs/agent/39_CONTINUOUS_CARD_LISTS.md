@@ -13,8 +13,10 @@ Pedido do operador: retirar páginas das listas de cartas e valores, voltando a 
 
 Teste novo de navegador restaura 200 cartas com miniaturas locais interceptadas, verifica os 200 itens sem navegação de páginas, salta/foca a carta 200, edita nome, abre Valores com 200 linhas, altera o último valor sem afetar o primeiro e volta preservando o nome. Executado em desktop e viewport de celular. Nenhuma imagem ou leilão real foi enviado.
 
-Regressões de seleção, filtros, reordenação, rascunho, desfazer e foco de erro foram adaptadas à lista contínua. Os oito cenários focados passaram; **171 testes gerais, typecheck, build de produção e a suíte completa de 62 testes de navegador** também passaram localmente. As capturas desktop/celular foram produzidas pelo teste de 200 cartas, e a captura desktop foi inspecionada visualmente. Conferir CI/deploy do commit final.
+Regressões de seleção, filtros, reordenação, rascunho, desfazer e foco de erro foram adaptadas à lista contínua. Os oito cenários focados passaram; **171 testes gerais, typecheck, build de produção e a suíte completa de 62 testes de navegador** também passaram localmente. As capturas desktop/celular foram produzidas pelo teste de 200 cartas, e a captura desktop foi inspecionada visualmente. Código enviado em `69bc51ef`; [CI aprovada](https://github.com/felipinhobxd/leilao-Pokemon/actions/runs/40743587836), incluindo navegador, banco, restauração, concorrência, build e guards. Deploy Vercel aprovado.
 
 Limite: testes com miniaturas sintéticas não reproduzem todo aparelho/arquivo possível. A proteção da fila de imagens foi mantida, mas não há garantia universal de ausência de travamento. CSS adia pintura fora da tela; não elimina a montagem React de cada item.
 
 Sem alterações no bot, migrations, banco ou intervalos de consulta. O bot não foi iniciado ou reiniciado. Não havia site escutando na porta 3000; após o build, somente o site foi iniciado com `npm run start:web`. Nenhum acesso ao Supabase foi necessário na validação local. Parar após entrega e apresentar o resultado.
+
+O commit posterior registra apenas a evidência de CI nos MDs; não altera o código aprovado. Site local iniciado com a versão compilada desta mudança (sessão 20808), sem iniciar o bot.
